@@ -1,9 +1,8 @@
-fastapi
-uvicorn
-python-multipart
-google-genai
-python-docx
-ffmpeg-python
-pydub
-pydantic
-google-generativeai
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+google-genai==0.9.0
+python-docx==1.1.0
+ffmpeg-python==0.2.0
+pydub==0.25.1
+pydantic==2.5.0

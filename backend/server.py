@@ -1,14 +1,22 @@
 import os
 import json
 import base64
+import logging
 from typing import List, Optional
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .transcriber import process_transcription, TranscriptTurn
+try:
+    from .transcriber import process_transcription, TranscriptTurn
+except ImportError:
+    from transcriber import process_transcription, TranscriptTurn
 
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -45,6 +53,12 @@ async def transcribe(
     speaker_names: Optional[str] = Form(None),
     include_timestamps: Optional[str] = Form(None),
 ):
+    logger.info(f"Received transcription request for file: {file.filename}")
+    
+    # Check if GEMINI_API_KEY is set
+    if not os.getenv("GEMINI_API_KEY"):
+        logger.error("GEMINI_API_KEY environment variable not set")
+        raise HTTPException(status_code=500, detail="Server configuration error: API key not configured")
     file_bytes = await file.read()
     speaker_list: Optional[List[str]] = None
     if speaker_names:
