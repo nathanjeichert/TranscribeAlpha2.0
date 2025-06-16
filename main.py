@@ -33,6 +33,8 @@ except ImportError as e:
 if __name__ == "__main__":
     import uvicorn
     
-    port = int(os.getenv("PORT", 8000))
-    print(f"Starting server on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Cloud Run uses PORT environment variable, defaults to 8080
+    port = int(os.getenv("PORT", 8080))
+    host = os.getenv("HOST", "0.0.0.0")
+    print(f"Starting server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port)

@@ -35,8 +35,9 @@ except ImportError:
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
-    "https://transcribealpha.railway.app",
-    "https://transcribealpha.onrender.com",
+    "https://transcribealpha-*.cloudfunctions.net",
+    "https://transcribealpha-*.appspot.com",
+    "https://transcribealpha-*.run.app",
     # Add your production domains here
 ]
 
@@ -140,6 +141,8 @@ app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Cloud Run uses PORT environment variable, defaults to 8080
+    port = int(os.getenv("PORT", 8080))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port)
 

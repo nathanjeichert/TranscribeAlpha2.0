@@ -1,150 +1,245 @@
-# TranscribeAlpha - Claude Code Documentation
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-TranscribeAlpha is a legal transcript generation application that converts audio/video files into formatted legal transcripts using Google's Gemini 2.5 Pro model. The project consists of a FastAPI backend and a static HTML frontend, designed specifically for legal proceedings such as depositions.
+TranscribeAlpha is a legal transcript generation web application that converts audio/video files into professionally formatted legal transcripts using Google Gemini AI.
 
-## Architecture
+**Architecture**: FastAPI backend + static HTML frontend
+**Purpose**: Audio/video → AI transcription → formatted Word document
+**Deployment**: Configured for Google Cloud Run
 
-### High-Level Structure
-- **Type**: Web application with REST API backend
-- **Frontend**: Static HTML/JavaScript served via FastAPI StaticFiles
-- **Backend**: FastAPI with Google Gemini AI integration
-- **Document Generation**: Word document (.docx) templates with placeholder replacement
+## Development Commands
 
-### Directory Structure
-```
-TranscribeAlpha2.0/
-├── README.md                    # Basic setup and running instructions
-├── requirements.txt             # Python dependencies
-├── packages.txt                # System dependencies (ffmpeg, libsndfile1)
-├── transcript_template.docx     # Word template for output formatting
-├── backend/
-│   ├── server.py               # FastAPI application and API endpoints
-│   └── transcriber.py          # Core transcription logic and AI integration
-└── frontend/
-    └── index.html              # Static HTML frontend
+### Setup & Installation
+```bash
+# Backend setup
+cd backend
+pip install -r requirements.txt
+
+# Environment setup (required)
+export GEMINI_API_KEY="your_api_key_here"
+
+# System dependencies (Ubuntu/Debian)
+sudo apt update
+sudo apt install ffmpeg libsndfile1-dev
 ```
 
-## Technology Stack
+### Running the Application
+```bash
+# Method 1: Direct execution (recommended)
+cd TranscribeAlpha2.0
+python main.py
+# Server runs on http://0.0.0.0:8080
 
-### Backend Dependencies (requirements.txt)
-- **FastAPI**: Web framework for the REST API
-- **uvicorn**: ASGI server for running FastAPI
-- **google-genai**: Google Generative AI SDK for Gemini access
-- **google-generativeai**: Additional Google AI library
-- **python-docx**: Word document manipulation
-- **ffmpeg-python**: Video/audio processing
-- **pydub**: Audio file handling
-- **python-multipart**: File upload support
-- **pydantic**: Data validation and serialization
+# Method 2: Using uvicorn directly
+uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
 
-### System Dependencies (packages.txt)
-- **ffmpeg**: Media conversion and processing
-- **libsndfile1**: Audio file format support
+# Frontend is static - access at http://localhost:8080/
+```
 
-### AI Model
-- **Gemini 2.5 Pro Preview (06-05)**: Used for speech-to-text transcription with speaker diarization
+### Testing
+```bash
+# No automated test suite currently exists
+# Manual testing: upload audio/video files via frontend form
+```
 
-## Key Components
+## Code Architecture
 
-### 1. FastAPI Server (`backend/server.py`)
-- **Main endpoint**: `POST /api/transcribe`
-- **Accepts**: Multipart form data with audio/video file and metadata
-- **Returns**: JSON with transcript text and base64-encoded DOCX file
-- **Static file serving**: Serves frontend from `/frontend/` directory
-- **CORS**: Configured for all origins (development setup)
+### Backend Structure (`backend/`)
+- **`server.py`**: FastAPI application with single `/api/transcribe` endpoint
+- **`transcriber.py`**: Core transcription logic using Google Gemini 2.5 Pro
+- **`requirements.txt`**: Python dependencies
+- **`templates/`**: Word document templates for transcript formatting
 
-### 2. Transcription Engine (`backend/transcriber.py`)
-- **Media processing**: Converts video to audio using ffmpeg
-- **AI integration**: Uploads files to Gemini and generates structured transcripts
-- **Document generation**: Creates formatted Word documents from templates
-- **Speaker diarization**: Supports both automatic and manual speaker identification
-- **Error handling**: Comprehensive error handling for media processing and AI calls
+### Frontend Structure (`frontend/`)
+- **`index.html`**: Professional HTML form for file upload and case metadata input
+- **Direct JavaScript**: Fetch integration with backend API
 
-### 3. Frontend (`frontend/index.html`)
-- **Form interface**: Collects case metadata and file upload
-- **API integration**: Calls transcription endpoint via fetch API
-- **Document download**: Provides direct download of generated DOCX files
-- **Minimal styling**: Basic form styling with Arial font
+### Key Components
 
-## Key Features
+**Transcription Pipeline**:
+1. File upload → temporary storage
+2. Video files → audio conversion (ffmpeg)
+3. Audio → Google Gemini AI transcription with timestamps
+4. Raw transcript → legal formatting
+5. Template-based Word document generation
+6. Download response to user
 
-### Audio/Video Support
-- **Video formats**: mp4, mov, avi, mkv (converted to audio via ffmpeg)
-- **Audio formats**: mp3, wav, m4a, flac, ogg, aac, aiff
-- **Duration calculation**: Automatic media duration detection
+**Media Processing**:
+- Supports: mp4, avi, mov, mkv, wav, mp3, m4a, flac, ogg
+- Automatic video-to-audio conversion using ffmpeg
+- Audio duration calculation for processing estimates
+- Cross-platform ffmpeg path detection
 
-### Transcript Generation
-- **AI-powered**: Uses Gemini 2.5 Pro for accurate speech recognition
-- **Speaker diarization**: Automatic speaker identification or manual speaker names
-- **Legal formatting**: Structured as deposition-style transcripts
-- **JSON output**: Structured data format for processing
+**AI Integration**:
+- Google Gemini 2.5 Pro Preview model
+- Structured JSON output for speaker identification
+- Speaker diarization (automatic detection or manual assignment)
+- Native timestamp generation support
+- Retry logic for API failures
 
-### Document Processing
-- **Template-based**: Uses Word template with placeholder replacement
-- **Legal formatting**: Double-spaced, indented paragraphs with Courier New font
-- **Metadata integration**: Case information, duration, and file details
-- **Professional output**: Formatted for legal documentation standards
-
-## Environment Setup
-
-### Required Environment Variables
-- `GEMINI_API_KEY`: Google Gemini API key (required)
-
-### Development Setup
-1. Install system dependencies: `ffmpeg` and `libsndfile1`
-2. Install Python dependencies: `pip install -r requirements.txt`
-3. Set Gemini API key: `export GEMINI_API_KEY="your_key_here"`
-4. Run server: `uvicorn backend.server:app --reload`
-5. Access at: `http://localhost:8000`
+**Document Generation**:
+- Professional legal transcript formatting (double-spaced, Courier New)
+- Template placeholder replacement system
+- Automatic case metadata integration
+- Optional timestamp inclusion in transcripts
 
 ## Important Implementation Details
 
-### FFmpeg Configuration
-- **Windows-specific paths**: Hard-coded common Windows ffmpeg installation paths
-- **Dynamic detection**: Uses `where` command and `shutil.which` for ffmpeg discovery
-- **pydub integration**: Configures pydub with detected ffmpeg paths
-- **Subprocess calls**: Direct ffmpeg/ffprobe subprocess execution for reliability
-
-### Gemini AI Integration
-- **File upload**: Uploads audio files to Gemini for processing
-- **Processing wait**: Polls file status until ACTIVE before transcription
-- **Safety settings**: Disabled all content filtering for legal content
-- **Structured output**: Uses JSON schema validation for transcript format
-- **Cleanup**: Automatically deletes uploaded files after processing
+### Environment Requirements
+- `GEMINI_API_KEY` environment variable is mandatory
+- System ffmpeg installation required for media processing
+- Python 3.x with specific package versions in requirements.txt
 
 ### Error Handling
-- **Media conversion**: Graceful fallbacks for ffmpeg detection
-- **AI processing**: Retry logic and validation for Gemini responses
-- **File handling**: Temporary directories and proper cleanup
-- **API errors**: Structured error responses with detailed logging
+- Comprehensive try-catch blocks throughout transcription pipeline
+- User-friendly error messages for common failure scenarios
+- API retry logic with exponential backoff
 
-## Working with This Codebase
+### Security Considerations
+- CORS enabled for Cloud Run domains in production
+- Temporary file cleanup after processing
+- No authentication/authorization currently implemented
+
+### Performance Notes
+- Single-threaded processing (no async queue system)
+- Files processed synchronously
+- Memory usage scales with audio file size during processing
+- 500MB file size limit for uploads
+
+### Cloud Run Optimizations
+- **Cross-platform compatibility**: Works on containerized Linux environments
+- **Environment variables**: `PORT` defaults to 8080, `HOST` to 0.0.0.0
+- **Health checks**: `/health` endpoint for container orchestration
+- **Docker support**: Multi-stage build with ffmpeg installation
+- **Auto-scaling**: Configured for 0-10 instances based on CPU usage
+
+## Deployment Instructions
+
+### Google Cloud Run (Recommended)
+1. **Prerequisites**: 
+   - Google Cloud account with billing enabled
+   - Google Cloud CLI installed and authenticated
+   - Docker installed locally (optional for local testing)
+
+2. **Deploy to Cloud Run**:
+   ```bash
+   # Set your project ID
+   gcloud config set project YOUR_PROJECT_ID
+   
+   # Deploy directly from source
+   gcloud run deploy transcribealpha \
+     --source . \
+     --platform managed \
+     --region us-central1 \
+     --allow-unauthenticated \
+     --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
+     --memory 2Gi \
+     --cpu 1 \
+     --max-instances 10
+   ```
+
+3. **Alternative: Deploy with Docker**:
+   ```bash
+   # Build and push to Google Container Registry
+   gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/transcribealpha
+   
+   # Deploy from container
+   gcloud run deploy transcribealpha \
+     --image gcr.io/YOUR_PROJECT_ID/transcribealpha \
+     --platform managed \
+     --region us-central1 \
+     --allow-unauthenticated \
+     --set-env-vars GEMINI_API_KEY=your_gemini_api_key
+   ```
+
+### Railway (Alternative - see railway-deployment branch)
+For Railway deployment, switch to the `railway-deployment` branch:
+```bash
+git checkout railway-deployment
+```
+That branch contains Railway-specific configuration files.
+
+### Environment Variables for Production
+- `GEMINI_API_KEY`: Required - Your Google Gemini API key
+- `PORT`: Optional - Defaults to 8080 (Cloud Run standard)
+- `HOST`: Optional - Defaults to 0.0.0.0
+- `ENVIRONMENT`: Set to "production" for CORS restrictions
+
+## Development Tips
+
+### Adding New Features
+- New audio formats: Update `ALLOWED_EXTENSIONS` in `server.py`
+- Template modifications: Edit files in `backend/templates/`
+- Frontend changes: Modify `frontend/index.html` and associated files
+
+### Debugging
+- Backend logs print to console during development
+- Check ffmpeg installation if audio conversion fails
+- Verify Gemini API key if transcription requests fail
+- Use `/health` endpoint to verify API key configuration
 
 ### Common Tasks
-- **Add new audio/video formats**: Update `SUPPORTED_*_TYPES` lists in `transcriber.py`
-- **Modify transcript formatting**: Edit the Word template or document generation logic
-- **Enhance frontend**: Modify `frontend/index.html` for UI improvements
-- **Add new endpoints**: Extend `backend/server.py` with additional API routes
+- **Add new document template**: Place in `backend/templates/` and update template loading logic
+- **Modify transcript formatting**: Edit the formatting section in `transcriber.py`
+- **Change AI model**: Update model name in Gemini client initialization
+- **Adjust timestamp format**: Modify timestamp prompt and formatting logic
 
-### Testing Considerations
-- No formal test suite currently exists
-- Manual testing requires:
-  - Valid Gemini API key
-  - Sample audio/video files
-  - Word template file in correct location
+### Local Development with Docker
+```bash
+# Build locally
+docker build -t transcribealpha .
 
-### Deployment Notes
-- Requires system-level ffmpeg installation
-- Environment variable for Gemini API key
-- Consider security implications of CORS configuration for production
-- Static file serving may need adjustment for production deployment
+# Run locally
+docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
+```
 
-## Potential Areas for Enhancement
-- Add automated testing suite
-- Implement proper logging configuration
-- Add input validation and file size limits
-- Implement async processing for large files
-- Add progress indicators for long transcriptions
-- Consider containerization for deployment consistency
+## Branch Structure
+
+### Main Branch (master)
+- **Purpose**: Google Cloud Run deployment
+- **Configuration**: Dockerfile, app.yaml, .gcloudignore
+- **Port**: 8080 (Cloud Run standard)
+- **CORS**: Configured for Cloud Run domains
+
+### Railway Deployment Branch
+- **Purpose**: Railway platform deployment
+- **Configuration**: railway.json, packages.txt
+- **Port**: 8000 (Railway default)
+- **Switch command**: `git checkout railway-deployment`
+
+## Cost Considerations
+
+### Google Cloud Run Pricing
+- **Free Tier**: 2 million requests/month, 400,000 GB-seconds/month
+- **CPU/Memory**: Pay per 100ms of CPU time and memory usage
+- **Typically**: $0.10-$0.50 per transcription for average files
+- **Large files**: May cost more due to processing time
+
+### Gemini API Pricing
+- **Audio Input**: ~$0.125 per minute of audio
+- **File size limits**: 2GB max file size
+- **Processing time**: Usually 1-3x real-time speed
+
+## Troubleshooting
+
+### Common Issues
+- **502 errors**: Usually ffmpeg installation or memory limits
+- **Timeout errors**: Large files exceeding Cloud Run timeout (15 min max)
+- **Import errors**: Python path issues in containerized deployment
+- **CORS errors**: Check ENVIRONMENT variable and allowed origins
+
+### Debug Commands
+```bash
+# Check health endpoint
+curl https://your-app.run.app/health
+
+# Local debug
+export GEMINI_API_KEY=your_key
+python main.py
+
+# Container debug
+docker run -it --entrypoint=/bin/bash transcribealpha
+```
