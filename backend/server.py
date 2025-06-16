@@ -73,6 +73,14 @@ async def transcribe(
     if not os.getenv("GEMINI_API_KEY"):
         logger.error("GEMINI_API_KEY environment variable not set")
         raise HTTPException(status_code=500, detail="Server configuration error: API key not configured")
+    
+    # Check file size
+    file_size = len(await file.read())
+    await file.seek(0)  # Reset file pointer
+    logger.info(f"File size: {file_size / (1024*1024):.2f} MB")
+    
+    if file_size > 500 * 1024 * 1024:  # 500MB limit
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 500MB.")
     file_bytes = await file.read()
     speaker_list: Optional[List[str]] = None
     if speaker_names:
@@ -102,13 +110,15 @@ async def transcribe(
     # Convert checkbox value to boolean
     timestamps_enabled = include_timestamps == "on"
     
+    logger.info("Starting transcription process...")
     try:
         turns, docx_bytes = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled)
+        logger.info(f"Transcription completed successfully. Generated {len(turns)} turns.")
     except Exception as e:
         import traceback
         error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-        print(f"Transcription error: {error_detail}")  # This will show in the server logs
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Transcription error: {error_detail}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
     transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
     encoded = base64.b64encode(docx_bytes).decode()
@@ -117,7 +127,12 @@ async def transcribe(
 @app.get("/health")
 async def health_check():
     """Health check endpoint for deployment platforms"""
-    return {"status": "healthy", "service": "TranscribeAlpha"}
+    api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
+    return {
+        "status": "healthy", 
+        "service": "TranscribeAlpha",
+        "api_key_configured": api_key_configured
+    }
 
 # Mount static files LAST so API routes take precedence
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
