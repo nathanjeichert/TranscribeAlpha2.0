@@ -10,12 +10,25 @@ from fastapi.staticfiles import StaticFiles
 
 from .transcriber import process_transcription, TranscriptTurn
 
-app = FastAPI(title="TranscribeAlpha API")
+# Environment-based CORS configuration
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
+    "https://transcribealpha.railway.app",
+    "https://transcribealpha.onrender.com",
+    # Add your production domains here
+]
+
+app = FastAPI(
+    title="TranscribeAlpha API",
+    description="Professional Legal Transcript Generator using Google Gemini AI",
+    version="2.0.0"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -76,7 +89,13 @@ async def transcribe(
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for deployment platforms"""
+    return {"status": "healthy", "service": "TranscribeAlpha"}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 

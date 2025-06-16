@@ -1,46 +1,542 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>TranscribeAlpha</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TranscribeAlpha - Legal Transcript Generator</title>
     <style>
-        body { font-family: Arial, sans-serif; }
-        label { display:block; margin-top:8px; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            color: white;
+            font-size: 2.5rem;
+            font-weight: 300;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            color: rgba(255,255,255,0.9);
+            font-size: 1.1rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+
+        .card-header {
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .card-header h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #495057;
+            margin: 0;
+        }
+
+        .card-body {
+            padding: 2rem;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group.full-width {
+            grid-column: 1 / -1;
+        }
+
+        .form-group label {
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .form-group input[type="text"],
+        .form-group input[type="date"],
+        .form-group input[type="time"] {
+            padding: 0.75rem;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 1rem;
+            transition: all 0.2s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-group small {
+            color: #6c757d;
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+        }
+
+        .file-upload {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 120px;
+            border: 2px dashed #d6d8db;
+            border-radius: 8px;
+            background: #f8f9fa;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .file-upload:hover {
+            border-color: #667eea;
+            background: #f0f3ff;
+        }
+
+        .file-upload.dragover {
+            border-color: #667eea;
+            background: #e8f0fe;
+        }
+
+        .file-upload input[type="file"] {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .file-upload-content {
+            text-align: center;
+            pointer-events: none;
+        }
+
+        .file-upload-icon {
+            font-size: 2rem;
+            color: #6c757d;
+            margin-bottom: 0.5rem;
+        }
+
+        .file-upload-text {
+            color: #495057;
+            font-weight: 500;
+        }
+
+        .file-upload-hint {
+            color: #6c757d;
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 1rem 0;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #667eea;
+        }
+
+        .checkbox-group label {
+            margin: 0;
+            font-weight: 500;
+            color: #495057;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 1rem 2rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.7;
+            transform: none;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results.show {
+            display: block;
+        }
+
+        .download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 1rem 2rem;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            transition: all 0.2s ease;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3);
+        }
+
+        .transcript-output {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 1.5rem;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            max-height: 500px;
+            overflow-y: auto;
+            line-height: 1.8;
+        }
+
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 6px;
+            margin: 1rem 0;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .form-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+            
+            .card-body {
+                padding: 1.5rem;
+            }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.5s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
-<h1>Gemini Legal Transcript Generator</h1>
-<form id="uploadForm">
-    <label>Case Name:<input type="text" name="case_name"></label>
-    <label>Case Number:<input type="text" name="case_number"></label>
-    <label>Firm or Organization Name:<input type="text" name="firm_name"></label>
-    <label>Date:<input type="date" name="input_date"></label>
-    <label>Time:<input type="time" name="input_time"></label>
-    <label>Location:<input type="text" name="location"></label>
-    <label>Speaker Names (comma-separated, leave blank for auto-detection):<br>
-    <small style="color: #666;">Example: John Smith, Jane Doe, Dr. Williams</small><br>
-    <input type="text" name="speaker_names" placeholder="Speaker 1, Speaker 2, etc."></label>
-    <label><input type="checkbox" name="include_timestamps"> Include Timestamps</label>
-    <label>Audio/Video File:<input type="file" name="file" required></label>
-    <button type="submit">Generate Transcript</button>
-</form>
-<a id="download" style="display:none">Download DOCX</a>
-<pre id="transcript"></pre>
-<script>
-const form = document.getElementById('uploadForm');
-form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const data = new FormData(form);
-    const resp = await fetch('/api/transcribe', { method:'POST', body:data });
-    if (!resp.ok) { alert('Error generating transcript'); return; }
-    const result = await resp.json();
-    document.getElementById('transcript').textContent = result.transcript;
-    const link = document.getElementById('download');
-    link.href = 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,' + result.docx_base64;
-    link.download = 'transcript.docx';
-    link.style.display = 'block';
-    link.textContent = 'Download Transcript';
-});
-</script>
+    <div class="container">
+        <div class="header">
+            <h1>TranscribeAlpha</h1>
+            <p>Professional Legal Transcript Generator</p>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2>Case Information</h2>
+                <p style="color: #6c757d; font-size: 0.9rem; margin: 0.5rem 0 0 0; font-weight: normal;">All fields are optional except audio/video file</p>
+            </div>
+            <div class="card-body">
+                <form id="uploadForm">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="case_name">Case Name</label>
+                            <input type="text" id="case_name" name="case_name" placeholder="Enter case name">
+                        </div>
+                        <div class="form-group">
+                            <label for="case_number">Case Number</label>
+                            <input type="text" id="case_number" name="case_number" placeholder="Enter case number">
+                        </div>
+                        <div class="form-group">
+                            <label for="firm_name">Firm or Organization</label>
+                            <input type="text" id="firm_name" name="firm_name" placeholder="Enter firm name">
+                        </div>
+                        <div class="form-group">
+                            <label for="location">Location</label>
+                            <input type="text" id="location" name="location" placeholder="Enter location">
+                        </div>
+                        <div class="form-group">
+                            <label for="input_date">Date</label>
+                            <input type="date" id="input_date" name="input_date">
+                        </div>
+                        <div class="form-group">
+                            <label for="input_time">Time</label>
+                            <input type="time" id="input_time" name="input_time">
+                        </div>
+                        <div class="form-group full-width">
+                            <label for="speaker_names">Speaker Names</label>
+                            <input type="text" id="speaker_names" name="speaker_names" placeholder="John Smith, Jane Doe, Dr. Williams">
+                            <small>Enter speaker names separated by commas, or leave blank for automatic detection</small>
+                        </div>
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="include_timestamps" name="include_timestamps">
+                        <label for="include_timestamps">Include Timestamps</label>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label>Audio/Video File</label>
+                        <div class="file-upload" id="fileUpload">
+                            <input type="file" name="file" id="file" required accept="audio/*,video/*">
+                            <div class="file-upload-content">
+                                <div class="file-upload-icon">📁</div>
+                                <div class="file-upload-text">Choose file or drag & drop</div>
+                                <div class="file-upload-hint">Supports MP4, WAV, MP3, M4A, FLAC, OGG, and more</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="submitBtn">
+                        Generate Transcript
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <h3>Processing your transcript...</h3>
+            <p>This may take a few minutes depending on file size</p>
+        </div>
+
+        <div class="card results fade-in" id="results">
+            <div class="card-header">
+                <h2>Transcript Results</h2>
+            </div>
+            <div class="card-body">
+                <a id="download" class="download-btn" style="display:none">
+                    📄 Download Word Document
+                </a>
+                <pre id="transcript" class="transcript-output"></pre>
+            </div>
+        </div>
+
+        <div id="error" class="error" style="display:none"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const error = document.getElementById('error');
+        const fileUpload = document.getElementById('fileUpload');
+        const fileInput = document.getElementById('file');
+
+        // File upload drag and drop functionality
+        fileUpload.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileUpload.classList.add('dragover');
+        });
+
+        fileUpload.addEventListener('dragleave', () => {
+            fileUpload.classList.remove('dragover');
+        });
+
+        fileUpload.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileUpload.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                updateFileUploadText(files[0].name);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                updateFileUploadText(e.target.files[0].name);
+            }
+        });
+
+        function updateFileUploadText(filename) {
+            const content = fileUpload.querySelector('.file-upload-content');
+            content.innerHTML = `
+                <div class="file-upload-icon">✅</div>
+                <div class="file-upload-text">${filename}</div>
+                <div class="file-upload-hint">File selected successfully</div>
+            `;
+        }
+
+        function showError(message) {
+            error.textContent = message;
+            error.style.display = 'block';
+            error.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function hideError() {
+            error.style.display = 'none';
+        }
+
+        function generateFilename(caseName, date) {
+            let filename = '';
+            
+            // Add case name if provided
+            if (caseName && caseName.trim()) {
+                // Sanitize case name: remove special characters, replace spaces with hyphens
+                const sanitizedCase = caseName.trim()
+                    .replace(/[^a-zA-Z0-9\s-]/g, '') // Remove special chars except spaces and hyphens
+                    .replace(/\s+/g, '-') // Replace spaces with hyphens
+                    .replace(/-+/g, '-') // Replace multiple hyphens with single
+                    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+                
+                if (sanitizedCase) {
+                    filename += sanitizedCase + '-';
+                }
+            }
+            
+            filename += 'transcript';
+            
+            // Add date if provided
+            if (date && date.trim()) {
+                filename += '-' + date.trim();
+            }
+            
+            return filename + '.docx';
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            hideError();
+            
+            // Show loading state
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Processing...';
+            loading.classList.add('show');
+            results.classList.remove('show');
+            
+            try {
+                const data = new FormData(form);
+                const resp = await fetch('/api/transcribe', { 
+                    method: 'POST', 
+                    body: data 
+                });
+                
+                if (!resp.ok) {
+                    const errorText = await resp.text();
+                    throw new Error(`Server error: ${errorText}`);
+                }
+                
+                const result = await resp.json();
+                
+                // Hide loading and show results
+                loading.classList.remove('show');
+                results.classList.add('show');
+                
+                // Update transcript display
+                document.getElementById('transcript').textContent = result.transcript;
+                
+                // Setup download link
+                const link = document.getElementById('download');
+                link.href = 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,' + result.docx_base64;
+                
+                // Generate custom filename based on case name and date
+                const caseName = document.getElementById('case_name').value;
+                const date = document.getElementById('input_date').value;
+                link.download = generateFilename(caseName, date);
+                
+                link.style.display = 'inline-flex';
+                
+                // Scroll to results
+                results.scrollIntoView({ behavior: 'smooth' });
+                
+            } catch (err) {
+                loading.classList.remove('show');
+                showError('Error generating transcript: ' + err.message);
+            } finally {
+                // Reset button state
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Generate Transcript';
+            }
+        });
+    </script>
 </body>
 </html>
