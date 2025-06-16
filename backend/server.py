@@ -30,14 +30,22 @@ async def transcribe(
     input_time: str = Form(""),
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
+    include_timestamps: Optional[str] = Form(None),
 ):
     file_bytes = await file.read()
     speaker_list: Optional[List[str]] = None
     if speaker_names:
-        try:
-            speaker_list = json.loads(speaker_names)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="speaker_names must be JSON array")
+        # Handle both comma-separated and JSON formats for backward compatibility
+        speaker_names = speaker_names.strip()
+        if speaker_names.startswith('[') and speaker_names.endswith(']'):
+            # JSON format
+            try:
+                speaker_list = json.loads(speaker_names)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
+        else:
+            # Comma-separated format
+            speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
 
     title_data = {
         "CASE_NAME": case_name,
@@ -50,8 +58,11 @@ async def transcribe(
         "FILE_DURATION": "Calculating...",
     }
 
+    # Convert checkbox value to boolean
+    timestamps_enabled = include_timestamps == "on"
+    
     try:
-        turns, docx_bytes = process_transcription(file_bytes, file.filename, speaker_list, title_data)
+        turns, docx_bytes = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled)
     except Exception as e:
         import traceback
         error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
@@ -64,4 +75,8 @@ async def transcribe(
 
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 

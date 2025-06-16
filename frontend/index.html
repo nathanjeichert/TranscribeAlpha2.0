@@ -17,12 +17,15 @@
     <label>Date:<input type="date" name="input_date"></label>
     <label>Time:<input type="time" name="input_time"></label>
     <label>Location:<input type="text" name="location"></label>
-    <label>Speaker Names (JSON list or leave blank):<input type="text" name="speaker_names"></label>
+    <label>Speaker Names (comma-separated, leave blank for auto-detection):<br>
+    <small style="color: #666;">Example: John Smith, Jane Doe, Dr. Williams</small><br>
+    <input type="text" name="speaker_names" placeholder="Speaker 1, Speaker 2, etc."></label>
+    <label><input type="checkbox" name="include_timestamps"> Include Timestamps</label>
     <label>Audio/Video File:<input type="file" name="file" required></label>
     <button type="submit">Generate Transcript</button>
 </form>
-<pre id="transcript"></pre>
 <a id="download" style="display:none">Download DOCX</a>
+<pre id="transcript"></pre>
 <script>
 const form = document.getElementById('uploadForm');
 form.addEventListener('submit', async (e) => {

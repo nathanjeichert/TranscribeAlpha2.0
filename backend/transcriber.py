@@ -19,56 +19,75 @@ from pydantic import BaseModel, ValidationError
 
 # Configure both ffmpeg libraries to find ffmpeg
 import subprocess
+import platform
 
-# Common Windows ffmpeg paths to check
-common_ffmpeg_paths = [
-    r"C:\Users\NathanEichert\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-7.1.1-full_build\bin\ffmpeg.exe",
-    r"C:\ffmpeg\bin\ffmpeg.exe",
-    r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-    r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe"
-]
+def find_executable_path(executable_name: str) -> Optional[str]:
+    """Cross-platform executable finder"""
+    # First try shutil.which (works on all platforms)
+    path = shutil.which(executable_name)
+    if path:
+        return path
+    
+    # Platform-specific fallback commands
+    system = platform.system().lower()
+    if system == "windows":
+        try:
+            result = subprocess.run(['where', executable_name], capture_output=True, text=True, shell=True)
+            if result.returncode == 0:
+                return result.stdout.strip().split('\n')[0]
+        except Exception:
+            pass
+    else:
+        try:
+            result = subprocess.run(['which', executable_name], capture_output=True, text=True)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+    
+    return None
 
-ffmpeg_executable_path = None
+def get_ffprobe_path(ffmpeg_path: str) -> Optional[str]:
+    """Get ffprobe path from ffmpeg path"""
+    if not ffmpeg_path:
+        return None
+    
+    # Get directory and base name
+    ffmpeg_dir = os.path.dirname(ffmpeg_path)
+    ffmpeg_name = os.path.basename(ffmpeg_path)
+    
+    # Replace ffmpeg with ffprobe, keeping the same extension
+    if ffmpeg_name.endswith('.exe'):
+        ffprobe_name = ffmpeg_name.replace('ffmpeg.exe', 'ffprobe.exe')
+    else:
+        ffprobe_name = ffmpeg_name.replace('ffmpeg', 'ffprobe')
+    
+    ffprobe_path = os.path.join(ffmpeg_dir, ffprobe_name)
+    
+    # Check if it exists
+    if os.path.exists(ffprobe_path):
+        return ffprobe_path
+    
+    # Try finding ffprobe independently
+    return find_executable_path('ffprobe')
 
-# First try the known working path
-for path in common_ffmpeg_paths:
-    if os.path.exists(path):
-        ffmpeg_executable_path = path
-        print(f"Found ffmpeg at known path: {ffmpeg_executable_path}")
-        break
+# Find ffmpeg and ffprobe
+ffmpeg_executable_path = find_executable_path('ffmpeg')
+ffprobe_executable_path = None
 
-if not ffmpeg_executable_path:
-    try:
-        # Get the actual ffmpeg path using where command
-        result = subprocess.run(['where', 'ffmpeg'], capture_output=True, text=True, shell=True)
-        if result.returncode == 0:
-            ffmpeg_executable_path = result.stdout.strip().split('\n')[0]
-            print(f"Found ffmpeg with 'where': {ffmpeg_executable_path}")
-        else:
-            print("where ffmpeg failed, trying shutil.which")
-            # Fallback to shutil.which
-            ffmpeg_executable_path = shutil.which("ffmpeg")
-            if ffmpeg_executable_path:
-                print(f"Found ffmpeg with shutil.which: {ffmpeg_executable_path}")
-    except Exception as e:
-        print(f"Exception in ffmpeg detection: {e}")
-        # If all else fails, try shutil.which
-        ffmpeg_executable_path = shutil.which("ffmpeg")
-        if ffmpeg_executable_path:
-            print(f"Fallback found ffmpeg: {ffmpeg_executable_path}")
-
-# Configure pydub if we found ffmpeg
 if ffmpeg_executable_path:
+    print(f"Found ffmpeg: {ffmpeg_executable_path}")
+    ffprobe_executable_path = get_ffprobe_path(ffmpeg_executable_path)
+    if ffprobe_executable_path:
+        print(f"Found ffprobe: {ffprobe_executable_path}")
+    else:
+        print("Warning: ffprobe not found")
+    
+    # Configure pydub
     AudioSegment.converter = ffmpeg_executable_path
     AudioSegment.ffmpeg = ffmpeg_executable_path
-    # Set ffprobe path (same directory as ffmpeg)
-    ffprobe_path = ffmpeg_executable_path.replace('ffmpeg.exe', 'ffprobe.exe')
-    if os.path.exists(ffprobe_path):
-        AudioSegment.ffprobe = ffprobe_path
-        print(f"Found ffprobe at: {ffprobe_path}")
-    else:
-        print(f"ffprobe not found at expected location: {ffprobe_path}")
-    print(f"Configured pydub with ffmpeg: {ffmpeg_executable_path}")
+    if ffprobe_executable_path:
+        AudioSegment.ffprobe = ffprobe_executable_path
 else:
     print("WARNING: Could not find ffmpeg executable!")
 
@@ -88,6 +107,7 @@ client = genai.Client(api_key=API_KEY)
 class TranscriptTurn(BaseModel):
     speaker: str
     text: str
+    timestamp: Optional[str] = None
 
 def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3") -> Optional[str]:
     try:
@@ -162,7 +182,7 @@ def upload_to_gemini(file_path: str) -> Optional[types.File]:
         return None
 
 
-def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[List[str]] = None) -> Optional[List[TranscriptTurn]]:
+def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[List[str]] = None, include_timestamps: bool = False) -> Optional[List[TranscriptTurn]]:
     safety_settings = [
         types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
         types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
@@ -178,11 +198,18 @@ def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[Lis
         speaker_prompt_part = "Speaker identifiers are not provided; use generic identifiers like SPEAKER 1, SPEAKER 2, etc., IN ALL CAPS."
         num_speakers_part = "Determine the number of speakers from the audio."
 
+    if include_timestamps:
+        timestamp_prompt_part = "Include precise timestamps in format [MM:SS] for each speaker turn. Each object MUST contain a 'timestamp' field with the start time of that speaker turn."
+        required_fields = "BOTH a 'speaker' field, a 'text' field containing ALL consecutive speech from that speaker before the speaker changes, AND a 'timestamp' field"
+    else:
+        timestamp_prompt_part = ""
+        required_fields = "BOTH a 'speaker' field and a 'text' field containing ALL consecutive speech from that speaker before the speaker changes"
+
     prompt = (
         f"Generate an exact, word-for-word, deposition-style transcript of the speech in this audio file. Pay close attention to the speaker names, the number of speakers, and the changes between speakers. {num_speakers_part} {speaker_prompt_part} "
+        f"{timestamp_prompt_part} "
         "Structure the output STRICTLY as a JSON list of objects. "
-        "Each object represents a continuous block of speech from a single speaker and MUST contain BOTH a 'speaker' field "
-        "and a 'text' field containing ALL consecutive speech from that speaker before the speaker changes."
+        f"Each object represents a continuous block of speech from a single speaker and MUST contain {required_fields}."
     )
 
     contents = [prompt, gemini_file]
@@ -203,6 +230,9 @@ def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[Lis
                 continue
             if 'text' not in turn_data:
                 turn_data['text'] = ""
+            # Ensure timestamp field exists if timestamps were requested
+            if include_timestamps and 'timestamp' not in turn_data:
+                turn_data['timestamp'] = None
             try:
                 validated_turns.append(TranscriptTurn(**turn_data))
             except ValidationError:
@@ -253,6 +283,13 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.first_line_indent = Inches(1.0)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
+            
+            # Include timestamp if available
+            if turn.timestamp:
+                timestamp_text = f"{turn.timestamp} "
+                timestamp_run = p.add_run(timestamp_text)
+                timestamp_run.font.name = "Courier New"
+            
             speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
             text_run = p.add_run(turn.text)
@@ -264,6 +301,13 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.first_line_indent = Inches(1.0)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
+            
+            # Include timestamp if available
+            if turn.timestamp:
+                timestamp_text = f"{turn.timestamp} "
+                timestamp_run = p.add_run(timestamp_text)
+                timestamp_run.font.name = "Courier New"
+            
             speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
             text_run = p.add_run(turn.text)
@@ -279,21 +323,15 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
 
 def get_media_duration(file_path: str) -> Optional[float]:
     """Return the duration of an audio/video file in **seconds** using ffprobe.
-
-    This runs ffprobe directly (located next to ``ffmpeg_executable_path``) so we
-    do not rely on it being discoverable via PATH – the root cause of the
-    FileNotFoundError seen on some Windows setups.
+    
+    Uses the cross-platform ffprobe path detection.
     """
-    if not ffmpeg_executable_path:
-        return None  # we have no idea where ffprobe lives
-
-    ffprobe_path = ffmpeg_executable_path.replace("ffmpeg.exe", "ffprobe.exe")
-    if not os.path.exists(ffprobe_path):
-        return None
+    if not ffprobe_executable_path:
+        return None  # ffprobe not available
 
     try:
         cmd = [
-            ffprobe_path,
+            ffprobe_executable_path,
             "-i",
             file_path,
             "-v",
@@ -312,7 +350,7 @@ def get_media_duration(file_path: str) -> Optional[float]:
     return None
 
 
-def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict):
+def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
         with open(input_path, "wb") as f:
@@ -370,7 +408,7 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
         gemini_file = upload_to_gemini(audio_path)
         if not gemini_file:
             raise RuntimeError("Failed to upload file to Gemini")
-        turns = generate_transcript(gemini_file, speaker_names)
+        turns = generate_transcript(gemini_file, speaker_names, include_timestamps)
         client.files.delete(name=gemini_file.name)
         if not turns:
             raise RuntimeError("Failed to generate transcript")
