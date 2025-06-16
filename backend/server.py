@@ -13,10 +13,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import sys
+import os
+
+# Add current directory and backend directory to path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, current_dir)
+sys.path.insert(0, parent_dir)
+
 try:
     from .transcriber import process_transcription, TranscriptTurn
 except ImportError:
-    from transcriber import process_transcription, TranscriptTurn
+    try:
+        from transcriber import process_transcription, TranscriptTurn
+    except ImportError:
+        import transcriber
+        process_transcription = transcriber.process_transcription
+        TranscriptTurn = transcriber.TranscriptTurn
 
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
