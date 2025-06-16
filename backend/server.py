@@ -114,13 +114,14 @@ async def transcribe(
     encoded = base64.b64encode(docx_bytes).decode()
     return JSONResponse({"transcript": transcript_text, "docx_base64": encoded})
 
-frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
-app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint for deployment platforms"""
     return {"status": "healthy", "service": "TranscribeAlpha"}
+
+# Mount static files LAST so API routes take precedence
+frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
