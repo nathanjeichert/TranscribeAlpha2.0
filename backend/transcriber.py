@@ -100,9 +100,10 @@ logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise RuntimeError("GEMINI_API_KEY environment variable not set")
-
-client = genai.Client(api_key=API_KEY)
+    print("WARNING: GEMINI_API_KEY environment variable not set")
+    client = None
+else:
+    client = genai.Client(api_key=API_KEY)
 
 class TranscriptTurn(BaseModel):
     speaker: str
@@ -158,6 +159,9 @@ def get_audio_mime_type(ext: str) -> Optional[str]:
 
 
 def upload_to_gemini(file_path: str) -> Optional[types.File]:
+    if not client:
+        logger.error("Gemini client not initialized - API key not set")
+        return None
     try:
         gemini_file = client.files.upload(file=file_path)
         file_state = "PROCESSING"
