@@ -286,6 +286,59 @@
             margin: 1rem 0;
         }
 
+        .model-selection {
+            display: flex;
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .model-option {
+            flex: 1;
+            cursor: pointer;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1rem;
+            transition: all 0.2s ease;
+            background: white;
+        }
+
+        .model-option:hover {
+            border-color: #667eea;
+            background: #f8faff;
+        }
+
+        .model-option input[type="radio"] {
+            display: none;
+        }
+
+        .model-option input[type="radio"]:checked + .model-info {
+            color: #667eea;
+        }
+
+        .model-option input[type="radio"]:checked {
+            & ~ * {
+                background: #f0f4ff;
+            }
+        }
+
+        .model-option:has(input[type="radio"]:checked) {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .model-name {
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+            color: #2d3748;
+        }
+
+        .model-description {
+            font-size: 0.875rem;
+            color: #6c757d;
+            line-height: 1.4;
+        }
+
         @media (max-width: 768px) {
             .header h1 {
                 font-size: 2rem;
@@ -298,6 +351,11 @@
             
             .card-body {
                 padding: 1.5rem;
+            }
+
+            .model-selection {
+                flex-direction: column;
+                gap: 0.75rem;
             }
         }
 
@@ -360,6 +418,26 @@
                     <div class="checkbox-group">
                         <input type="checkbox" id="include_timestamps" name="include_timestamps">
                         <label for="include_timestamps">Include Timestamps</label>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label>AI Model Selection</label>
+                        <div class="model-selection">
+                            <label class="model-option">
+                                <input type="radio" name="ai_model" value="flash" checked>
+                                <div class="model-info">
+                                    <div class="model-name">⚡ Faster & Cheaper</div>
+                                    <div class="model-description">Gemini 2.5 Flash - Good accuracy, faster processing, lower cost</div>
+                                </div>
+                            </label>
+                            <label class="model-option">
+                                <input type="radio" name="ai_model" value="pro">
+                                <div class="model-info">
+                                    <div class="model-name">🎯 More Accurate</div>
+                                    <div class="model-description">Gemini 2.5 Pro - Higher accuracy, slower processing, higher cost</div>
+                                </div>
+                            </label>
+                        </div>
                     </div>
 
                     <div class="form-group full-width">
@@ -439,10 +517,29 @@
 
         function updateFileUploadText(filename) {
             const content = fileUpload.querySelector('.file-upload-content');
+            const fileInput = document.getElementById('file');
+            const file = fileInput.files[0];
+            const FILE_SIZE_LIMIT = 30 * 1024 * 1024; // 30MB
+            
+            let sizeInfo = '';
+            let uploadMethod = '';
+            
+            if (file) {
+                const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+                sizeInfo = `(${sizeMB} MB)`;
+                
+                if (file.size > FILE_SIZE_LIMIT) {
+                    uploadMethod = '<div style="color: #667eea; font-size: 0.9em; margin-top: 4px;">📤 Large file - will use Cloud Storage upload</div>';
+                } else {
+                    uploadMethod = '<div style="color: #48bb78; font-size: 0.9em; margin-top: 4px;">⚡ Small file - direct upload</div>';
+                }
+            }
+            
             content.innerHTML = `
                 <div class="file-upload-icon">✅</div>
-                <div class="file-upload-text">${filename}</div>
+                <div class="file-upload-text">${filename} ${sizeInfo}</div>
                 <div class="file-upload-hint">File selected successfully</div>
+                ${uploadMethod}
             `;
         }
 
@@ -487,25 +584,34 @@
             e.preventDefault();
             hideError();
             
+            const fileInput = document.getElementById('file');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showError('Please select a file to transcribe.');
+                return;
+            }
+            
+            // Check file size (30MB threshold for direct upload vs Cloud Storage)
+            const FILE_SIZE_LIMIT = 30 * 1024 * 1024; // 30MB in bytes
+            const isLargeFile = file.size > FILE_SIZE_LIMIT;
+            
             // Show loading state
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Processing...';
+            submitBtn.textContent = isLargeFile ? 'Uploading large file...' : 'Processing...';
             loading.classList.add('show');
             results.classList.remove('show');
             
             try {
-                const data = new FormData(form);
-                const resp = await fetch('/api/transcribe', { 
-                    method: 'POST', 
-                    body: data 
-                });
+                let result;
                 
-                if (!resp.ok) {
-                    const errorText = await resp.text();
-                    throw new Error(`Server error: ${errorText}`);
+                if (isLargeFile) {
+                    // Use Cloud Storage for large files
+                    result = await handleLargeFileUpload(file);
+                } else {
+                    // Use direct upload for smaller files
+                    result = await handleDirectUpload();
                 }
-                
-                const result = await resp.json();
                 
                 // Hide loading and show results
                 loading.classList.remove('show');
@@ -537,6 +643,90 @@
                 submitBtn.textContent = 'Generate Transcript';
             }
         });
+
+        async function handleDirectUpload() {
+            const data = new FormData(form);
+            const resp = await fetch('/api/transcribe', { 
+                method: 'POST', 
+                body: data 
+            });
+            
+            if (!resp.ok) {
+                const errorText = await resp.text();
+                throw new Error(`Server error: ${errorText}`);
+            }
+            
+            return await resp.json();
+        }
+
+        async function handleLargeFileUpload(file) {
+            // Step 1: Upload file in chunks
+            const fileId = generateUUID();
+            const chunkSize = 20 * 1024 * 1024; // 20MB chunks
+            const totalChunks = Math.ceil(file.size / chunkSize);
+            
+            submitBtn.textContent = `Uploading... (0/${totalChunks})`;
+            
+            for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
+                const start = chunkNumber * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+                
+                const chunkData = new FormData();
+                chunkData.append('file_id', fileId);
+                chunkData.append('filename', file.name);
+                chunkData.append('chunk_number', chunkNumber.toString());
+                chunkData.append('total_chunks', totalChunks.toString());
+                chunkData.append('file_chunk', chunk);
+                
+                const chunkResp = await fetch('/api/upload-large-chunk', {
+                    method: 'POST',
+                    body: chunkData
+                });
+                
+                if (!chunkResp.ok) {
+                    const errorText = await chunkResp.text();
+                    throw new Error(`Chunk upload failed: ${errorText}`);
+                }
+                
+                // Update progress
+                submitBtn.textContent = `Uploading... (${chunkNumber + 1}/${totalChunks})`;
+            }
+            
+            // Step 2: Process the uploaded file
+            submitBtn.textContent = 'Processing transcript...';
+            
+            const processData = new FormData();
+            processData.append('file_id', fileId);
+            processData.append('filename', file.name);
+            
+            // Add all form fields
+            const formData = new FormData(form);
+            for (let [key, value] of formData.entries()) {
+                if (key !== 'file') { // Don't re-add the file
+                    processData.append(key, value);
+                }
+            }
+            
+            const processResp = await fetch('/api/transcribe-large', {
+                method: 'POST',
+                body: processData
+            });
+            
+            if (!processResp.ok) {
+                const errorText = await processResp.text();
+                throw new Error(`Processing failed: ${errorText}`);
+            }
+            
+            return await processResp.json();
+        }
+
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
     </script>
 </body>
 </html>

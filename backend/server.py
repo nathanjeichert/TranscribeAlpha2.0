@@ -2,6 +2,8 @@ import os
 import json
 import base64
 import logging
+import uuid
+import tempfile
 from typing import List, Optional
 
 # Configure logging
@@ -12,6 +14,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from google.cloud import storage
 
 import sys
 import os
@@ -41,6 +44,10 @@ ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
     # Add your production domains here
 ]
 
+# Cloud Storage configuration
+BUCKET_NAME = "transcribealpha-uploads-1750110926"
+storage_client = storage.Client()
+
 app = FastAPI(
     title="TranscribeAlpha API",
     description="Professional Legal Transcript Generator using Google Gemini AI",
@@ -67,6 +74,7 @@ async def transcribe(
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
     include_timestamps: Optional[str] = Form(None),
+    ai_model: str = Form("flash"),
 ):
     logger.info(f"Received transcription request for file: {file.filename}")
     
@@ -111,9 +119,9 @@ async def transcribe(
     # Convert checkbox value to boolean
     timestamps_enabled = include_timestamps == "on"
     
-    logger.info("Starting transcription process...")
+    logger.info(f"Starting transcription process with model: {ai_model}...")
     try:
-        turns, docx_bytes = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled)
+        turns, docx_bytes = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model)
         logger.info(f"Transcription completed successfully. Generated {len(turns)} turns.")
     except Exception as e:
         import traceback
@@ -124,6 +132,157 @@ async def transcribe(
     transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
     encoded = base64.b64encode(docx_bytes).decode()
     return JSONResponse({"transcript": transcript_text, "docx_base64": encoded})
+
+@app.post("/api/upload-large-chunk")
+async def upload_large_chunk(
+    file_id: str = Form(...),
+    filename: str = Form(...),
+    chunk_number: int = Form(...),
+    total_chunks: int = Form(...),
+    file_chunk: UploadFile = File(...)
+):
+    """Upload large files in chunks to avoid request size limits"""
+    try:
+        # Store chunks in a temporary location in Cloud Storage
+        temp_blob_name = f"temp/{file_id}/{filename}_chunk_{chunk_number}"
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(temp_blob_name)
+        
+        # Upload chunk
+        chunk_data = await file_chunk.read()
+        blob.upload_from_string(chunk_data)
+        
+        logger.info(f"Uploaded chunk {chunk_number}/{total_chunks} for {filename}")
+        
+        # If this is the last chunk, combine all chunks
+        if chunk_number == total_chunks - 1:
+            final_blob_name = f"uploads/{file_id}/{filename}"
+            final_blob = bucket.blob(final_blob_name)
+            
+            # Combine all chunks
+            combined_data = b""
+            for i in range(total_chunks):
+                chunk_blob_name = f"temp/{file_id}/{filename}_chunk_{i}"
+                chunk_blob = bucket.blob(chunk_blob_name)
+                combined_data += chunk_blob.download_as_bytes()
+                # Delete the chunk after reading
+                chunk_blob.delete()
+            
+            # Upload combined file
+            final_blob.upload_from_string(combined_data)
+            logger.info(f"Combined {total_chunks} chunks into {final_blob_name}")
+            
+            return JSONResponse({
+                "file_id": file_id,
+                "filename": filename,
+                "status": "complete",
+                "total_size": len(combined_data)
+            })
+        else:
+            return JSONResponse({
+                "file_id": file_id,
+                "filename": filename,
+                "status": "chunk_uploaded",
+                "chunk": chunk_number
+            })
+        
+    except Exception as e:
+        logger.error(f"Chunk upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Chunk upload failed: {str(e)}")
+
+@app.post("/api/transcribe-large")
+async def transcribe_large_file(
+    file_id: str = Form(...),
+    filename: str = Form(...),
+    case_name: str = Form(""),
+    case_number: str = Form(""),
+    firm_name: str = Form(""),
+    input_date: str = Form(""),
+    input_time: str = Form(""),
+    location: str = Form(""),
+    speaker_names: Optional[str] = Form(None),
+    include_timestamps: Optional[str] = Form(None),
+    ai_model: str = Form("flash"),
+):
+    """Process large files from Cloud Storage"""
+    logger.info(f"Received large file transcription request for file_id: {file_id}")
+    
+    # Check if GEMINI_API_KEY is set
+    if not os.getenv("GEMINI_API_KEY"):
+        logger.error("GEMINI_API_KEY environment variable not set")
+        raise HTTPException(status_code=500, detail="Server configuration error: API key not configured")
+    
+    try:
+        # Download file from Cloud Storage
+        blob_name = f"uploads/{file_id}/{filename}"
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        
+        if not blob.exists():
+            raise HTTPException(status_code=404, detail="File not found in storage")
+        
+        # Download file content
+        file_bytes = blob.download_as_bytes()
+        logger.info(f"Downloaded file from storage: {len(file_bytes)} bytes")
+        
+        # Process speaker names
+        speaker_list: Optional[List[str]] = None
+        if speaker_names:
+            speaker_names = speaker_names.strip()
+            if speaker_names.startswith('[') and speaker_names.endswith(']'):
+                try:
+                    speaker_list = json.loads(speaker_names)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
+            else:
+                speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
+
+        title_data = {
+            "CASE_NAME": case_name,
+            "CASE_NUMBER": case_number,
+            "FIRM_OR_ORGANIZATION_NAME": firm_name,
+            "DATE": input_date,
+            "TIME": input_time,
+            "LOCATION": location,
+            "FILE_NAME": filename,
+            "FILE_DURATION": "Calculating...",
+        }
+
+        # Convert checkbox value to boolean
+        timestamps_enabled = include_timestamps == "on"
+        
+        logger.info(f"Starting transcription process for large file with model: {ai_model}...")
+        turns, docx_bytes = process_transcription(file_bytes, filename, speaker_list, title_data, timestamps_enabled, ai_model)
+        logger.info(f"Transcription completed successfully. Generated {len(turns)} turns.")
+        
+        # Clean up - delete file from storage
+        try:
+            blob.delete()
+            logger.info(f"Cleaned up file {blob_name} from storage")
+        except Exception as cleanup_error:
+            logger.warning(f"Failed to cleanup file {blob_name}: {cleanup_error}")
+        
+        transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
+        encoded = base64.b64encode(docx_bytes).decode()
+        return JSONResponse({"transcript": transcript_text, "docx_base64": encoded})
+        
+    except Exception as e:
+        import traceback
+        error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+        logger.error(f"Large file transcription error: {error_detail}")
+        
+        # Try to cleanup file even on error
+        try:
+            blob_name = f"uploads/{file_id}/{filename}"
+            bucket = storage_client.bucket(BUCKET_NAME)
+            blob = bucket.blob(blob_name)
+            if blob.exists():
+                blob.delete()
+                logger.info(f"Cleaned up file {blob_name} after error")
+        except Exception:
+            pass
+            
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
 @app.get("/health")
 async def health_check():

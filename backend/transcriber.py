@@ -91,7 +91,15 @@ if ffmpeg_executable_path:
 else:
     print("WARNING: Could not find ffmpeg executable!")
 
-MODEL_NAME = "gemini-2.5-pro-preview-06-05"
+# Model configurations
+MODELS = {
+    "flash": "gemini-2.5-flash-preview-05-20",
+    "pro": "gemini-2.5-pro-preview-06-05"
+}
+
+def get_model_name(ai_model: str = "flash") -> str:
+    """Get the model name based on user selection"""
+    return MODELS.get(ai_model, MODELS["flash"])
 SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
 SUPPORTED_AUDIO_TYPES = ["mp3", "wav", "m4a", "flac", "ogg", "aac", "aiff"]
 
@@ -186,7 +194,7 @@ def upload_to_gemini(file_path: str) -> Optional[types.File]:
         return None
 
 
-def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[List[str]] = None, include_timestamps: bool = False) -> Optional[List[TranscriptTurn]]:
+def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[List[str]] = None, include_timestamps: bool = False, ai_model: str = "flash") -> Optional[List[TranscriptTurn]]:
     safety_settings = [
         types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
         types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
@@ -218,8 +226,10 @@ def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[Lis
 
     contents = [prompt, gemini_file]
     try:
+        model_name = get_model_name(ai_model)
+        logger.info(f"Using model: {model_name}")
         response = client.models.generate_content(
-            model=MODEL_NAME,
+            model=model_name,
             contents=contents,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
@@ -354,7 +364,7 @@ def get_media_duration(file_path: str) -> Optional[float]:
     return None
 
 
-def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False):
+def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False, ai_model: str = "flash"):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
         with open(input_path, "wb") as f:
@@ -412,7 +422,7 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
         gemini_file = upload_to_gemini(audio_path)
         if not gemini_file:
             raise RuntimeError("Failed to upload file to Gemini")
-        turns = generate_transcript(gemini_file, speaker_names, include_timestamps)
+        turns = generate_transcript(gemini_file, speaker_names, include_timestamps, ai_model)
         client.files.delete(name=gemini_file.name)
         if not turns:
             raise RuntimeError("Failed to generate transcript")
