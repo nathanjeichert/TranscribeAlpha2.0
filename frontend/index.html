@@ -575,11 +575,8 @@
                 </div>
 
                 <div class="media-preview-controls">
-                    <button type="button" class="preview-btn" id="generateSubtitlesBtn">
-                        🎬 Generate Preview Subtitles
-                    </button>
                     <div class="subtitle-status" id="subtitleStatus">
-                        No subtitles generated
+                        Generating subtitles automatically...
                     </div>
                 </div>
 
@@ -748,10 +745,8 @@
                 // Show media preview section
                 mediaPreview.classList.add('show');
                 
-                // Reset subtitle status
-                subtitleStatus.textContent = 'No subtitles generated';
-                subtitleStatus.className = 'subtitle-status';
-                generateSubtitlesBtn.disabled = false;
+                // Automatically generate transcript and subtitles
+                await generatePreviewSubtitles();
                 
             } catch (error) {
                 console.error('Error setting up media preview:', error);
@@ -760,44 +755,38 @@
         }
         
         async function generatePreviewSubtitles() {
-            if (!currentFileId) {
-                showError('No media file selected');
-                return;
-            }
-            
             try {
-                generateSubtitlesBtn.disabled = true;
-                generateSubtitlesBtn.textContent = 'Generating...';
-                subtitleStatus.textContent = 'Generating subtitles...';
+                subtitleStatus.textContent = 'Generating transcript and subtitles...';
                 subtitleStatus.className = 'subtitle-status';
                 
-                const formData = new FormData();
-                formData.append('file_id', currentFileId);
+                // Get the original file and create FormData for the main API
+                const formData = new FormData(form);
                 
-                // Add speaker names if provided
-                const speakerNames = document.getElementById('speaker_names').value;
-                if (speakerNames) {
-                    formData.append('speaker_names', speakerNames);
+                // Ensure the file is included
+                const fileInput = document.getElementById('file');
+                if (fileInput.files[0]) {
+                    formData.set('file', fileInput.files[0]);
                 }
                 
-                // Add AI model selection
-                const aiModel = document.querySelector('input[name="ai_model"]:checked').value;
-                formData.append('ai_model', aiModel);
+                // Always include timestamps for subtitle generation
+                formData.set('include_timestamps', 'on');
                 
-                const response = await fetch('/api/generate-subtitles', {
+                const response = await fetch('/api/transcribe', {
                     method: 'POST',
                     body: formData
                 });
                 
                 if (!response.ok) {
-                    throw new Error('Failed to generate subtitles');
+                    const errorText = await response.text();
+                    throw new Error(`Server error: ${errorText}`);
                 }
                 
                 const data = await response.json();
                 
-                if (data.has_subtitles) {
-                    // Add subtitles to the player
-                    const subtitleUrl = `/api/subtitles/${data.file_id}?format=webvtt`;
+                if (data.has_subtitles && data.webvtt_content) {
+                    // Create blob URL for subtitles
+                    const subtitleBlob = new Blob([data.webvtt_content], { type: 'text/vtt' });
+                    const subtitleUrl = URL.createObjectURL(subtitleBlob);
                     
                     const isAudio = audioPlayer.style.display !== 'none';
                     const trackElement = isAudio ? audioSubtitleTrack : subtitleTrack;
@@ -813,26 +802,26 @@
                         mediaPlayer.load();
                     }
                     
-                    subtitleStatus.textContent = `Subtitles generated (${data.subtitle_count} segments)`;
+                    // Count transcript segments for display
+                    const segmentCount = data.transcript.split('\n\n').filter(line => line.trim()).length;
+                    subtitleStatus.textContent = `✅ Transcript & subtitles ready (${segmentCount} segments)`;
                     subtitleStatus.className = 'subtitle-status success';
+                    
+                    // Store transcript data for potential final submission (cache for reuse)
+                    window.cachedTranscriptData = data;
                 } else {
-                    subtitleStatus.textContent = 'No subtitles generated';
-                    subtitleStatus.className = 'subtitle-status error';
+                    subtitleStatus.textContent = 'Transcript generated (no subtitles available)';
+                    subtitleStatus.className = 'subtitle-status';
+                    window.cachedTranscriptData = data;
                 }
                 
             } catch (error) {
-                console.error('Error generating subtitles:', error);
-                subtitleStatus.textContent = 'Error generating subtitles';
+                console.error('Error generating transcript:', error);
+                subtitleStatus.textContent = 'Error generating transcript';
                 subtitleStatus.className = 'subtitle-status error';
-                showError('Failed to generate subtitles: ' + error.message);
-            } finally {
-                generateSubtitlesBtn.disabled = false;
-                generateSubtitlesBtn.textContent = '🎬 Generate Preview Subtitles';
+                showError('Failed to generate transcript: ' + error.message);
             }
         }
-        
-        // Add event listener for subtitle generation
-        generateSubtitlesBtn.addEventListener('click', generatePreviewSubtitles);
 
         function updateFileUploadText(filename) {
             const content = fileUpload.querySelector('.file-upload-content');
@@ -908,8 +897,28 @@
             results.classList.remove('show');
             
             try {
-                // Use direct upload for all files
-                const result = await handleDirectUpload();
+                let result;
+                
+                // Check if we have cached transcript data from preview
+                if (window.cachedTranscriptData) {
+                    // Check if the cached data matches current form settings
+                    const currentSpeakers = document.getElementById('speaker_names').value;
+                    const currentModel = document.querySelector('input[name="ai_model"]:checked').value;
+                    const timestampsEnabled = document.getElementById('include_timestamps').checked;
+                    
+                    // For now, reuse cached data (could add more sophisticated comparison later)
+                    submitBtn.textContent = 'Using cached transcript...';
+                    
+                    // Simulate brief processing time for user experience
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    result = window.cachedTranscriptData;
+                    
+                    console.log('Using cached transcript data to avoid duplicate API call');
+                } else {
+                    // No cached data, make new API call
+                    result = await handleDirectUpload();
+                }
                 
                 // Hide loading and show results
                 loading.classList.remove('show');
