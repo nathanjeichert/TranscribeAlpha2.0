@@ -275,7 +275,7 @@ def replace_placeholder_text(element, placeholder: str, replacement: str) -> Non
                     replace_placeholder_text(cell, placeholder, replacement)
 
 
-def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> bytes:
+def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], include_timestamps: bool = False) -> bytes:
     doc = Document("transcript_template.docx")
     for key, value in title_data.items():
         placeholder = f"{{{{{key}}}}}"
@@ -298,8 +298,8 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
             
-            # Include timestamp if available
-            if turn.timestamp:
+            # Include timestamp if available and requested
+            if include_timestamps and turn.timestamp:
                 timestamp_text = f"{turn.timestamp} "
                 timestamp_run = p.add_run(timestamp_text)
                 timestamp_run.font.name = "Courier New"
@@ -316,8 +316,8 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
             
-            # Include timestamp if available
-            if turn.timestamp:
+            # Include timestamp if available and requested
+            if include_timestamps and turn.timestamp:
                 timestamp_text = f"{turn.timestamp} "
                 timestamp_run = p.add_run(timestamp_text)
                 timestamp_run.font.name = "Courier New"
@@ -432,7 +432,7 @@ def srt_to_webvtt(srt_content: str) -> str:
     webvtt += srt_content.replace(',', '.')
     return webvtt
 
-def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False, ai_model: str = "flash"):
+def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False, ai_model: str = "flash", force_timestamps_for_subtitles: bool = False):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
         with open(input_path, "wb") as f:
@@ -487,19 +487,24 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
         # ------------------------------------------------------------------
         # Proceed with upload & transcription
         # ------------------------------------------------------------------
+        # Determine if we need timestamps (either requested by user or forced for subtitles)
+        need_timestamps = include_timestamps or force_timestamps_for_subtitles
+        
         gemini_file = upload_to_gemini(audio_path)
         if not gemini_file:
             raise RuntimeError("Failed to upload file to Gemini")
-        turns = generate_transcript(gemini_file, speaker_names, include_timestamps, ai_model)
+        turns = generate_transcript(gemini_file, speaker_names, need_timestamps, ai_model)
         client.files.delete(name=gemini_file.name)
         if not turns:
             raise RuntimeError("Failed to generate transcript")
-        docx_bytes = create_docx(title_data, turns)
         
-        # Generate subtitles if timestamps are included
+        # Create docx with or without timestamps based on user preference
+        docx_bytes = create_docx(title_data, turns, include_timestamps)
+        
+        # Generate subtitles if we have timestamps
         srt_content = None
         webvtt_content = None
-        if include_timestamps and turns:
+        if need_timestamps and turns:
             srt_content = generate_srt_from_transcript(turns)
             webvtt_content = srt_to_webvtt(srt_content)
         

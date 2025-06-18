@@ -4,6 +4,7 @@ import base64
 import logging
 import uuid
 import tempfile
+import hashlib
 from typing import List, Optional, Dict
 
 # Configure logging
@@ -51,6 +52,18 @@ ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
 # Temporary file storage for media preview (use Redis or database in production)
 temp_file_storage: Dict[str, bytes] = {}
 temp_subtitle_storage: Dict[str, str] = {}
+temp_transcript_cache: Dict[str, dict] = {}
+
+def create_cache_key(file_bytes: bytes, speaker_list: Optional[List[str]], ai_model: str) -> str:
+    """Create a cache key based on file content and transcription settings"""
+    # Create hash of file content
+    file_hash = hashlib.md5(file_bytes).hexdigest()
+    
+    # Create hash of settings
+    settings_str = f"{ai_model}_{speaker_list or []}"
+    settings_hash = hashlib.md5(settings_str.encode()).hexdigest()
+    
+    return f"{file_hash}_{settings_hash}"
 
 app = FastAPI(
     title="TranscribeAlpha API",
@@ -123,23 +136,58 @@ async def transcribe(
     # Convert checkbox value to boolean
     timestamps_enabled = include_timestamps == "on"
     
-    logger.info(f"Starting transcription process with model: {ai_model}...")
-    try:
-        result = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model)
-        if len(result) == 4:
-            turns, docx_bytes, srt_content, webvtt_content = result
-        else:
-            # Backward compatibility for old version
-            turns, docx_bytes = result
-            srt_content, webvtt_content = None, None
-        logger.info(f"Transcription completed successfully. Generated {len(turns)} turns.")
-    except Exception as e:
-        import traceback
-        error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-        logger.error(f"Transcription error: {error_detail}")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    # Check cache first
+    cache_key = create_cache_key(file_bytes, speaker_list, ai_model)
+    
+    if cache_key in temp_transcript_cache:
+        logger.info(f"Using cached transcription for model: {ai_model}")
+        cached_result = temp_transcript_cache[cache_key]
+        turns = cached_result["turns"]
+        srt_content = cached_result["srt_content"]
+        webvtt_content = cached_result["webvtt_content"]
+        
+        # Re-generate docx with current timestamp setting
+        try:
+            from .transcriber import create_docx
+        except ImportError:
+            try:
+                from transcriber import create_docx
+            except ImportError:
+                import transcriber
+                create_docx = transcriber.create_docx
+        
+        docx_bytes = create_docx(title_data, turns, timestamps_enabled)
+        logger.info(f"Used cached transcription with {len(turns)} turns.")
+    else:
+        # Generate new transcription
+        logger.info(f"Starting new transcription process with model: {ai_model}...")
+        try:
+            result = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model, force_timestamps_for_subtitles=True)
+            if len(result) == 4:
+                turns, docx_bytes, srt_content, webvtt_content = result
+            else:
+                # Backward compatibility for old version
+                turns, docx_bytes = result
+                srt_content, webvtt_content = None, None
+                
+            # Cache the transcript results (not the docx, as that depends on timestamp setting)
+            temp_transcript_cache[cache_key] = {
+                "turns": turns,
+                "srt_content": srt_content,
+                "webvtt_content": webvtt_content
+            }
+            logger.info(f"Transcription completed and cached. Generated {len(turns)} turns.")
+        except Exception as e:
+            import traceback
+            error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+            logger.error(f"Transcription error: {error_detail}")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
-    transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
+    # Format transcript text based on user's timestamp preference
+    if timestamps_enabled:
+        transcript_text = "\n\n".join([f"{t.timestamp + ' ' if t.timestamp else ''}{t.speaker.upper()}:\t\t{t.text}" for t in turns])
+    else:
+        transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
     encoded = base64.b64encode(docx_bytes).decode()
     
     response_data = {
@@ -389,7 +437,7 @@ async def generate_preview_subtitles(
     speaker_names: Optional[str] = Form(None),
     ai_model: str = Form("flash")
 ):
-    """Generate subtitles for preview (always includes timestamps)"""
+    """Generate subtitles for preview using cached transcription if available"""
     if file_id not in temp_file_storage:
         raise HTTPException(status_code=404, detail="File not found")
     
@@ -412,36 +460,54 @@ async def generate_preview_subtitles(
             else:
                 speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
         
-        # Create minimal title data for subtitle generation
-        title_data = {
-            "CASE_NAME": "Preview",
-            "CASE_NUMBER": "",
-            "FIRM_OR_ORGANIZATION_NAME": "",
-            "DATE": "",
-            "TIME": "",
-            "LOCATION": "",
-            "FILE_NAME": f"preview_{file_id}",
-            "FILE_DURATION": "Calculating...",
-        }
+        # Check cache first to avoid duplicate API calls
+        cache_key = create_cache_key(file_bytes, speaker_list, ai_model)
         
-        logger.info(f"Generating preview subtitles with model: {ai_model}")
-        result = process_transcription(file_bytes, f"preview_{file_id}.mp3", speaker_list, title_data, True, ai_model)
-        
-        if len(result) == 4:
-            turns, docx_bytes, srt_content, webvtt_content = result
+        if cache_key in temp_transcript_cache:
+            logger.info(f"Using cached transcription for subtitle preview with model: {ai_model}")
+            cached_result = temp_transcript_cache[cache_key]
+            turns = cached_result["turns"]
+            srt_content = cached_result["srt_content"]
+            webvtt_content = cached_result["webvtt_content"]
         else:
-            # Fallback for older version
-            turns, docx_bytes = result
-            srt_content, webvtt_content = None, None
+            # Generate new transcription only if not cached
+            title_data = {
+                "CASE_NAME": "Preview",
+                "CASE_NUMBER": "",
+                "FIRM_OR_ORGANIZATION_NAME": "",
+                "DATE": "",
+                "TIME": "",
+                "LOCATION": "",
+                "FILE_NAME": f"preview_{file_id}",
+                "FILE_DURATION": "Calculating...",
+            }
+            
+            logger.info(f"Generating new preview subtitles with model: {ai_model}")
+            result = process_transcription(file_bytes, f"preview_{file_id}.mp3", speaker_list, title_data, True, ai_model, force_timestamps_for_subtitles=True)
+            
+            if len(result) == 4:
+                turns, docx_bytes, srt_content, webvtt_content = result
+            else:
+                # Fallback for older version
+                turns, docx_bytes = result
+                srt_content, webvtt_content = None, None
+            
+            # Cache the results for later use
+            if srt_content:
+                temp_transcript_cache[cache_key] = {
+                    "turns": turns,
+                    "srt_content": srt_content,
+                    "webvtt_content": webvtt_content
+                }
         
         if not srt_content:
             raise HTTPException(status_code=500, detail="Failed to generate subtitles")
         
-        # Store subtitles in temporary storage
+        # Store subtitles in temporary storage for the media player
         temp_subtitle_storage[f"{file_id}_srt"] = srt_content
         temp_subtitle_storage[f"{file_id}_webvtt"] = webvtt_content
         
-        logger.info(f"Generated subtitles for preview: {len(turns)} turns")
+        logger.info(f"Subtitles ready for preview: {len(turns)} turns")
         
         return JSONResponse({
             "file_id": file_id,
