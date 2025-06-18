@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TranscribeAlpha - Legal Transcript Generator</title>
+    <!-- Plyr CSS -->
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
         * {
             margin: 0;
@@ -367,6 +369,98 @@
             from { opacity: 0; transform: translateY(20px); }
             to { opacity: 1; transform: translateY(0); }
         }
+
+        /* Media Preview Styles */
+        .media-preview {
+            display: none;
+            margin: 2rem 0;
+        }
+
+        .media-preview.show {
+            display: block;
+        }
+
+        .media-player-container {
+            position: relative;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+
+        .media-preview-controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .preview-btn {
+            padding: 0.5rem 1rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+        }
+
+        .preview-btn:hover {
+            background: #5a67d8;
+        }
+
+        .preview-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .subtitle-status {
+            padding: 0.5rem 1rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            color: #495057;
+        }
+
+        .subtitle-status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .subtitle-status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        /* Custom Plyr styling */
+        .plyr {
+            border-radius: 8px;
+        }
+
+        .plyr__video-wrapper {
+            background: #000;
+        }
+
+        /* Media info display */
+        .media-info {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding: 1rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            color: #495057;
+        }
+
+        .media-info-item {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
     </style>
 </head>
 <body>
@@ -459,6 +553,51 @@
             </div>
         </div>
 
+        <!-- Media Preview Section -->
+        <div class="card media-preview fade-in" id="mediaPreview">
+            <div class="card-header">
+                <h2>Media Preview</h2>
+            </div>
+            <div class="card-body">
+                <div class="media-info" id="mediaInfo">
+                    <div class="media-info-item">
+                        <span>📁</span>
+                        <span id="mediaFilename">No file selected</span>
+                    </div>
+                    <div class="media-info-item">
+                        <span>📏</span>
+                        <span id="mediaSize">0 MB</span>
+                    </div>
+                    <div class="media-info-item">
+                        <span>🎵</span>
+                        <span id="mediaType">Unknown</span>
+                    </div>
+                </div>
+
+                <div class="media-preview-controls">
+                    <button type="button" class="preview-btn" id="generateSubtitlesBtn">
+                        🎬 Generate Preview Subtitles
+                    </button>
+                    <div class="subtitle-status" id="subtitleStatus">
+                        No subtitles generated
+                    </div>
+                </div>
+
+                <div class="media-player-container">
+                    <video id="mediaPlayer" class="plyr-video" controls crossorigin playsinline>
+                        <source id="mediaSource" src="" type="">
+                        <track id="subtitleTrack" kind="subtitles" src="" srclang="en" label="English" style="display: none;">
+                        Your browser does not support the video tag.
+                    </video>
+                    <audio id="audioPlayer" class="plyr-audio" controls crossorigin style="display: none;">
+                        <source id="audioSource" src="" type="">
+                        <track id="audioSubtitleTrack" kind="subtitles" src="" srclang="en" label="English" style="display: none;">
+                        Your browser does not support the audio tag.
+                    </audio>
+                </div>
+            </div>
+        </div>
+
         <div class="loading" id="loading">
             <div class="spinner"></div>
             <h3>Processing your transcript...</h3>
@@ -470,9 +609,14 @@
                 <h2>Transcript Results</h2>
             </div>
             <div class="card-body">
-                <a id="download" class="download-btn" style="display:none">
-                    📄 Download Word Document
-                </a>
+                <div class="download-buttons" style="display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap;">
+                    <a id="download" class="download-btn" style="display:none">
+                        📄 Download Word Document
+                    </a>
+                    <a id="downloadSrt" class="download-btn" style="display:none; background: #6c757d;">
+                        🎬 Download Subtitles (SRT)
+                    </a>
+                </div>
                 <pre id="transcript" class="transcript-output"></pre>
             </div>
         </div>
@@ -480,6 +624,8 @@
         <div id="error" class="error" style="display:none"></div>
     </div>
 
+    <!-- Plyr JavaScript -->
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
     <script>
         const form = document.getElementById('uploadForm');
         const submitBtn = document.getElementById('submitBtn');
@@ -488,6 +634,25 @@
         const error = document.getElementById('error');
         const fileUpload = document.getElementById('fileUpload');
         const fileInput = document.getElementById('file');
+        
+        // Media preview elements
+        const mediaPreview = document.getElementById('mediaPreview');
+        const mediaPlayer = document.getElementById('mediaPlayer');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const mediaSource = document.getElementById('mediaSource');
+        const audioSource = document.getElementById('audioSource');
+        const subtitleTrack = document.getElementById('subtitleTrack');
+        const audioSubtitleTrack = document.getElementById('audioSubtitleTrack');
+        const generateSubtitlesBtn = document.getElementById('generateSubtitlesBtn');
+        const subtitleStatus = document.getElementById('subtitleStatus');
+        const mediaFilename = document.getElementById('mediaFilename');
+        const mediaSize = document.getElementById('mediaSize');
+        const mediaType = document.getElementById('mediaType');
+        
+        // Initialize Plyr players
+        let videoPlayer = null;
+        let audioPlayerInstance = null;
+        let currentFileId = null;
 
         // File upload drag and drop functionality
         fileUpload.addEventListener('dragover', (e) => {
@@ -499,47 +664,191 @@
             fileUpload.classList.remove('dragover');
         });
 
-        fileUpload.addEventListener('drop', (e) => {
+        fileUpload.addEventListener('drop', async (e) => {
             e.preventDefault();
             fileUpload.classList.remove('dragover');
             const files = e.dataTransfer.files;
             if (files.length > 0) {
                 fileInput.files = files;
                 updateFileUploadText(files[0].name);
+                await setupMediaPreview(files[0]);
             }
         });
 
-        fileInput.addEventListener('change', (e) => {
+        fileInput.addEventListener('change', async (e) => {
             if (e.target.files.length > 0) {
-                updateFileUploadText(e.target.files[0].name);
+                const file = e.target.files[0];
+                updateFileUploadText(file.name);
+                await setupMediaPreview(file);
             }
         });
+
+        // Media preview functions
+        async function setupMediaPreview(file) {
+            try {
+                // Upload file for preview
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                const response = await fetch('/api/upload-preview', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to upload file for preview');
+                }
+                
+                const data = await response.json();
+                currentFileId = data.file_id;
+                
+                // Update media info
+                mediaFilename.textContent = data.filename;
+                mediaSize.textContent = `${(data.size / (1024 * 1024)).toFixed(1)} MB`;
+                mediaType.textContent = data.content_type || 'Unknown';
+                
+                // Setup media player
+                const mediaUrl = `/api/media/${data.file_id}`;
+                const isAudio = data.content_type && data.content_type.startsWith('audio/');
+                
+                if (isAudio) {
+                    // Show audio player, hide video player
+                    audioPlayer.style.display = 'block';
+                    mediaPlayer.style.display = 'none';
+                    
+                    audioSource.src = mediaUrl;
+                    audioSource.type = data.content_type;
+                    audioPlayer.load();
+                    
+                    // Initialize Plyr for audio
+                    if (audioPlayerInstance) {
+                        audioPlayerInstance.destroy();
+                    }
+                    audioPlayerInstance = new Plyr(audioPlayer, {
+                        controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'captions', 'settings']
+                    });
+                } else {
+                    // Show video player, hide audio player
+                    mediaPlayer.style.display = 'block';
+                    audioPlayer.style.display = 'none';
+                    
+                    mediaSource.src = mediaUrl;
+                    mediaSource.type = data.content_type;
+                    mediaPlayer.load();
+                    
+                    // Initialize Plyr for video
+                    if (videoPlayer) {
+                        videoPlayer.destroy();
+                    }
+                    videoPlayer = new Plyr(mediaPlayer, {
+                        controls: ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen']
+                    });
+                }
+                
+                // Show media preview section
+                mediaPreview.classList.add('show');
+                
+                // Reset subtitle status
+                subtitleStatus.textContent = 'No subtitles generated';
+                subtitleStatus.className = 'subtitle-status';
+                generateSubtitlesBtn.disabled = false;
+                
+            } catch (error) {
+                console.error('Error setting up media preview:', error);
+                showError('Failed to setup media preview: ' + error.message);
+            }
+        }
+        
+        async function generatePreviewSubtitles() {
+            if (!currentFileId) {
+                showError('No media file selected');
+                return;
+            }
+            
+            try {
+                generateSubtitlesBtn.disabled = true;
+                generateSubtitlesBtn.textContent = 'Generating...';
+                subtitleStatus.textContent = 'Generating subtitles...';
+                subtitleStatus.className = 'subtitle-status';
+                
+                const formData = new FormData();
+                formData.append('file_id', currentFileId);
+                
+                // Add speaker names if provided
+                const speakerNames = document.getElementById('speaker_names').value;
+                if (speakerNames) {
+                    formData.append('speaker_names', speakerNames);
+                }
+                
+                // Add AI model selection
+                const aiModel = document.querySelector('input[name="ai_model"]:checked').value;
+                formData.append('ai_model', aiModel);
+                
+                const response = await fetch('/api/generate-subtitles', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to generate subtitles');
+                }
+                
+                const data = await response.json();
+                
+                if (data.has_subtitles) {
+                    // Add subtitles to the player
+                    const subtitleUrl = `/api/subtitles/${data.file_id}?format=webvtt`;
+                    
+                    const isAudio = audioPlayer.style.display !== 'none';
+                    const trackElement = isAudio ? audioSubtitleTrack : subtitleTrack;
+                    
+                    trackElement.src = subtitleUrl;
+                    trackElement.style.display = 'block';
+                    trackElement.default = true;
+                    
+                    // Reload the media element to pick up the new track
+                    if (isAudio) {
+                        audioPlayer.load();
+                    } else {
+                        mediaPlayer.load();
+                    }
+                    
+                    subtitleStatus.textContent = `Subtitles generated (${data.subtitle_count} segments)`;
+                    subtitleStatus.className = 'subtitle-status success';
+                } else {
+                    subtitleStatus.textContent = 'No subtitles generated';
+                    subtitleStatus.className = 'subtitle-status error';
+                }
+                
+            } catch (error) {
+                console.error('Error generating subtitles:', error);
+                subtitleStatus.textContent = 'Error generating subtitles';
+                subtitleStatus.className = 'subtitle-status error';
+                showError('Failed to generate subtitles: ' + error.message);
+            } finally {
+                generateSubtitlesBtn.disabled = false;
+                generateSubtitlesBtn.textContent = '🎬 Generate Preview Subtitles';
+            }
+        }
+        
+        // Add event listener for subtitle generation
+        generateSubtitlesBtn.addEventListener('click', generatePreviewSubtitles);
 
         function updateFileUploadText(filename) {
             const content = fileUpload.querySelector('.file-upload-content');
             const fileInput = document.getElementById('file');
             const file = fileInput.files[0];
-            const FILE_SIZE_LIMIT = 30 * 1024 * 1024; // 30MB
-            
             let sizeInfo = '';
-            let uploadMethod = '';
             
             if (file) {
                 const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
                 sizeInfo = `(${sizeMB} MB)`;
-                
-                if (file.size > FILE_SIZE_LIMIT) {
-                    uploadMethod = '<div style="color: #667eea; font-size: 0.9em; margin-top: 4px;">📤 Large file - will use Cloud Storage upload</div>';
-                } else {
-                    uploadMethod = '<div style="color: #48bb78; font-size: 0.9em; margin-top: 4px;">⚡ Small file - direct upload</div>';
-                }
             }
             
             content.innerHTML = `
                 <div class="file-upload-icon">✅</div>
                 <div class="file-upload-text">${filename} ${sizeInfo}</div>
                 <div class="file-upload-hint">File selected successfully</div>
-                ${uploadMethod}
             `;
         }
 
@@ -592,26 +901,15 @@
                 return;
             }
             
-            // Check file size (30MB threshold for direct upload vs Cloud Storage)
-            const FILE_SIZE_LIMIT = 30 * 1024 * 1024; // 30MB in bytes
-            const isLargeFile = file.size > FILE_SIZE_LIMIT;
-            
             // Show loading state
             submitBtn.disabled = true;
-            submitBtn.textContent = isLargeFile ? 'Uploading large file...' : 'Processing...';
+            submitBtn.textContent = 'Processing...';
             loading.classList.add('show');
             results.classList.remove('show');
             
             try {
-                let result;
-                
-                if (isLargeFile) {
-                    // Use Cloud Storage for large files
-                    result = await handleLargeFileUpload(file);
-                } else {
-                    // Use direct upload for smaller files
-                    result = await handleDirectUpload();
-                }
+                // Use direct upload for all files
+                const result = await handleDirectUpload();
                 
                 // Hide loading and show results
                 loading.classList.remove('show');
@@ -620,16 +918,29 @@
                 // Update transcript display
                 document.getElementById('transcript').textContent = result.transcript;
                 
-                // Setup download link
+                // Setup download links
                 const link = document.getElementById('download');
+                const srtLink = document.getElementById('downloadSrt');
+                
                 link.href = 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,' + result.docx_base64;
                 
                 // Generate custom filename based on case name and date
                 const caseName = document.getElementById('case_name').value;
                 const date = document.getElementById('input_date').value;
-                link.download = generateFilename(caseName, date);
+                const baseFilename = generateFilename(caseName, date).replace('.docx', '');
                 
+                link.download = baseFilename + '.docx';
                 link.style.display = 'inline-flex';
+                
+                // Setup SRT download if subtitles are available
+                if (result.has_subtitles && result.srt_content) {
+                    const srtBlob = new Blob([result.srt_content], { type: 'application/x-subrip' });
+                    srtLink.href = URL.createObjectURL(srtBlob);
+                    srtLink.download = baseFilename + '.srt';
+                    srtLink.style.display = 'inline-flex';
+                } else {
+                    srtLink.style.display = 'none';
+                }
                 
                 // Scroll to results
                 results.scrollIntoView({ behavior: 'smooth' });
@@ -659,67 +970,7 @@
             return await resp.json();
         }
 
-        async function handleLargeFileUpload(file) {
-            // Step 1: Upload file in chunks
-            const fileId = generateUUID();
-            const chunkSize = 20 * 1024 * 1024; // 20MB chunks
-            const totalChunks = Math.ceil(file.size / chunkSize);
-            
-            submitBtn.textContent = `Uploading... (0/${totalChunks})`;
-            
-            for (let chunkNumber = 0; chunkNumber < totalChunks; chunkNumber++) {
-                const start = chunkNumber * chunkSize;
-                const end = Math.min(start + chunkSize, file.size);
-                const chunk = file.slice(start, end);
-                
-                const chunkData = new FormData();
-                chunkData.append('file_id', fileId);
-                chunkData.append('filename', file.name);
-                chunkData.append('chunk_number', chunkNumber.toString());
-                chunkData.append('total_chunks', totalChunks.toString());
-                chunkData.append('file_chunk', chunk);
-                
-                const chunkResp = await fetch('/api/upload-large-chunk', {
-                    method: 'POST',
-                    body: chunkData
-                });
-                
-                if (!chunkResp.ok) {
-                    const errorText = await chunkResp.text();
-                    throw new Error(`Chunk upload failed: ${errorText}`);
-                }
-                
-                // Update progress
-                submitBtn.textContent = `Uploading... (${chunkNumber + 1}/${totalChunks})`;
-            }
-            
-            // Step 2: Process the uploaded file
-            submitBtn.textContent = 'Processing transcript...';
-            
-            const processData = new FormData();
-            processData.append('file_id', fileId);
-            processData.append('filename', file.name);
-            
-            // Add all form fields
-            const formData = new FormData(form);
-            for (let [key, value] of formData.entries()) {
-                if (key !== 'file') { // Don't re-add the file
-                    processData.append(key, value);
-                }
-            }
-            
-            const processResp = await fetch('/api/transcribe-large', {
-                method: 'POST',
-                body: processData
-            });
-            
-            if (!processResp.ok) {
-                const errorText = await processResp.text();
-                throw new Error(`Processing failed: ${errorText}`);
-            }
-            
-            return await processResp.json();
-        }
+        // Large file upload function removed - using direct upload for all files in local development
 
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {

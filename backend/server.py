@@ -4,7 +4,7 @@ import base64
 import logging
 import uuid
 import tempfile
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from google.cloud import storage
+import mimetypes
 
 import sys
 import os
@@ -44,9 +44,13 @@ ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
     # Add your production domains here
 ]
 
-# Cloud Storage configuration
-BUCKET_NAME = "transcribealpha-uploads-1750110926"
-storage_client = storage.Client()
+# Cloud Storage configuration (commented out for local development)
+# BUCKET_NAME = "transcribealpha-uploads-1750110926"
+# storage_client = storage.Client()
+
+# Temporary file storage for media preview (use Redis or database in production)
+temp_file_storage: Dict[str, bytes] = {}
+temp_subtitle_storage: Dict[str, str] = {}
 
 app = FastAPI(
     title="TranscribeAlpha API",
@@ -121,7 +125,13 @@ async def transcribe(
     
     logger.info(f"Starting transcription process with model: {ai_model}...")
     try:
-        turns, docx_bytes = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model)
+        result = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model)
+        if len(result) == 4:
+            turns, docx_bytes, srt_content, webvtt_content = result
+        else:
+            # Backward compatibility for old version
+            turns, docx_bytes = result
+            srt_content, webvtt_content = None, None
         logger.info(f"Transcription completed successfully. Generated {len(turns)} turns.")
     except Exception as e:
         import traceback
@@ -131,99 +141,264 @@ async def transcribe(
 
     transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
     encoded = base64.b64encode(docx_bytes).decode()
-    return JSONResponse({"transcript": transcript_text, "docx_base64": encoded})
+    
+    response_data = {
+        "transcript": transcript_text, 
+        "docx_base64": encoded,
+        "has_subtitles": srt_content is not None
+    }
+    
+    # Include subtitles if available
+    if srt_content:
+        response_data["srt_content"] = srt_content
+        response_data["webvtt_content"] = webvtt_content
+    
+    return JSONResponse(response_data)
 
-@app.post("/api/upload-large-chunk")
-async def upload_large_chunk(
-    file_id: str = Form(...),
-    filename: str = Form(...),
-    chunk_number: int = Form(...),
-    total_chunks: int = Form(...),
-    file_chunk: UploadFile = File(...)
-):
-    """Upload large files in chunks to avoid request size limits"""
+# Large file upload functions (disabled for local development - requires Google Cloud Storage)
+# In production, these would handle chunked uploads for files larger than 30MB
+
+# Store for temporary media files and subtitles (in production, use Redis or similar)
+temporary_files = {}
+
+@app.post("/api/upload-preview")
+async def upload_media_preview(file: UploadFile = File(...)):
+    """Upload media file for preview purposes"""
     try:
-        # Store chunks in a temporary location in Cloud Storage
-        temp_blob_name = f"temp/{file_id}/{filename}_chunk_{chunk_number}"
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(temp_blob_name)
+        # Generate unique file ID
+        file_id = str(uuid.uuid4())
+        file_bytes = await file.read()
         
-        # Upload chunk
-        chunk_data = await file_chunk.read()
-        blob.upload_from_string(chunk_data)
+        # Store file temporarily (in memory for now, use persistent storage in production)
+        temporary_files[file_id] = {
+            'filename': file.filename,
+            'content': file_bytes,
+            'content_type': file.content_type or mimetypes.guess_type(file.filename)[0]
+        }
         
-        logger.info(f"Uploaded chunk {chunk_number}/{total_chunks} for {filename}")
+        logger.info(f"Uploaded media file for preview: {file.filename} ({len(file_bytes)} bytes)")
         
-        # If this is the last chunk, combine all chunks
-        if chunk_number == total_chunks - 1:
-            final_blob_name = f"uploads/{file_id}/{filename}"
-            final_blob = bucket.blob(final_blob_name)
-            
-            # Combine all chunks
-            combined_data = b""
-            for i in range(total_chunks):
-                chunk_blob_name = f"temp/{file_id}/{filename}_chunk_{i}"
-                chunk_blob = bucket.blob(chunk_blob_name)
-                combined_data += chunk_blob.download_as_bytes()
-                # Delete the chunk after reading
-                chunk_blob.delete()
-            
-            # Upload combined file
-            final_blob.upload_from_string(combined_data)
-            logger.info(f"Combined {total_chunks} chunks into {final_blob_name}")
-            
-            return JSONResponse({
-                "file_id": file_id,
-                "filename": filename,
-                "status": "complete",
-                "total_size": len(combined_data)
-            })
-        else:
-            return JSONResponse({
-                "file_id": file_id,
-                "filename": filename,
-                "status": "chunk_uploaded",
-                "chunk": chunk_number
-            })
+        return JSONResponse({
+            "file_id": file_id,
+            "filename": file.filename,
+            "size": len(file_bytes),
+            "content_type": file.content_type
+        })
         
     except Exception as e:
-        logger.error(f"Chunk upload failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Chunk upload failed: {str(e)}")
+        logger.error(f"Media preview upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-@app.post("/api/transcribe-large")
-async def transcribe_large_file(
+@app.get("/api/media/{file_id}")
+async def serve_media_file(file_id: str):
+    """Serve media file for preview"""
+    if file_id not in temporary_files:
+        raise HTTPException(status_code=404, detail="Media file not found")
+    
+    file_data = temporary_files[file_id]
+    
+    # Get content type
+    content_type = file_data['content_type'] or 'application/octet-stream'
+    
+    # Create streaming response for large files
+    def generate():
+        yield file_data['content']
+    
+    return StreamingResponse(
+        generate(),
+        media_type=content_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(len(file_data['content'])),
+            "Cache-Control": "public, max-age=3600"
+        }
+    )
+
+@app.post("/api/generate-subtitles")
+async def generate_subtitles_preview(
     file_id: str = Form(...),
-    filename: str = Form(...),
-    case_name: str = Form(""),
-    case_number: str = Form(""),
-    firm_name: str = Form(""),
-    input_date: str = Form(""),
-    input_time: str = Form(""),
-    location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
-    include_timestamps: Optional[str] = Form(None),
-    ai_model: str = Form("flash"),
+    ai_model: str = Form("flash")
 ):
-    """Process large files from Cloud Storage"""
-    logger.info(f"Received large file transcription request for file_id: {file_id}")
+    """Generate subtitles for media preview"""
+    if file_id not in temporary_files:
+        raise HTTPException(status_code=404, detail="Media file not found")
+    
+    file_data = temporary_files[file_id]
+    
+    # Process speaker names
+    speaker_list: Optional[List[str]] = None
+    if speaker_names:
+        speaker_names = speaker_names.strip()
+        if speaker_names.startswith('[') and speaker_names.endswith(']'):
+            try:
+                speaker_list = json.loads(speaker_names)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
+        else:
+            speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
+    
+    # Basic title data for subtitle generation
+    title_data = {
+        "FILE_NAME": file_data['filename'],
+        "FILE_DURATION": "Calculating...",
+    }
+    
+    try:
+        # Process with timestamps enabled
+        result = process_transcription(
+            file_data['content'], 
+            file_data['filename'], 
+            speaker_list, 
+            title_data, 
+            include_timestamps=True,  # Always include timestamps for subtitles
+            ai_model=ai_model
+        )
+        
+        if len(result) == 4:
+            turns, _, srt_content, webvtt_content = result
+        else:
+            # Fallback if subtitles not generated
+            turns, _ = result
+            srt_content, webvtt_content = None, None
+        
+        if not srt_content:
+            # Generate subtitles from turns if not already generated
+            try:
+                from .transcriber import generate_srt_from_transcript, srt_to_webvtt
+            except ImportError:
+                try:
+                    from transcriber import generate_srt_from_transcript, srt_to_webvtt
+                except ImportError:
+                    import transcriber
+                    generate_srt_from_transcript = transcriber.generate_srt_from_transcript
+                    srt_to_webvtt = transcriber.srt_to_webvtt
+            srt_content = generate_srt_from_transcript(turns)
+            webvtt_content = srt_to_webvtt(srt_content)
+        
+        # Store subtitles with the file
+        temporary_files[file_id]['srt_content'] = srt_content
+        temporary_files[file_id]['webvtt_content'] = webvtt_content
+        
+        return JSONResponse({
+            "file_id": file_id,
+            "has_subtitles": bool(srt_content),
+            "subtitle_count": len([t for t in turns if t.timestamp]),
+            "webvtt_content": webvtt_content
+        })
+        
+    except Exception as e:
+        logger.error(f"Subtitle generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Subtitle generation failed: {str(e)}")
+
+@app.get("/api/subtitles/{file_id}")
+async def serve_subtitles(file_id: str, format: str = "webvtt"):
+    """Serve subtitle file in requested format"""
+    if file_id not in temporary_files:
+        raise HTTPException(status_code=404, detail="Media file not found")
+    
+    file_data = temporary_files[file_id]
+    
+    if format.lower() == "srt":
+        content = file_data.get('srt_content')
+        media_type = "text/plain"
+        filename = f"{file_data['filename']}.srt"
+    else:  # webvtt
+        content = file_data.get('webvtt_content')
+        media_type = "text/vtt"
+        filename = f"{file_data['filename']}.vtt"
+    
+    if not content:
+        raise HTTPException(status_code=404, detail="Subtitles not found for this file")
+    
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{filename}\"",
+            "Cache-Control": "public, max-age=3600"
+        }
+    )
+
+@app.post("/api/upload-preview")
+async def upload_preview_file(file: UploadFile = File(...)):
+    """Upload a file for preview without full transcription processing"""
+    try:
+        file_id = str(uuid.uuid4())
+        file_bytes = await file.read()
+        
+        # Store in temporary storage
+        temp_file_storage[file_id] = file_bytes
+        
+        # Get file info
+        file_size = len(file_bytes)
+        mime_type, _ = mimetypes.guess_type(file.filename)
+        
+        # Determine if it's video or audio
+        is_video = mime_type and mime_type.startswith('video')
+        is_audio = mime_type and mime_type.startswith('audio')
+        
+        if not (is_video or is_audio):
+            # Try to determine by extension
+            ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+            is_video = ext in ['mp4', 'avi', 'mov', 'mkv', 'webm']
+            is_audio = ext in ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac', 'aiff']
+        
+        logger.info(f"Uploaded preview file: {file.filename} ({file_size} bytes)")
+        
+        return JSONResponse({
+            "file_id": file_id,
+            "filename": file.filename,
+            "file_size": file_size,
+            "mime_type": mime_type or "application/octet-stream",
+            "is_video": is_video,
+            "is_audio": is_audio,
+            "status": "uploaded"
+        })
+        
+    except Exception as e:
+        logger.error(f"Preview upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@app.get("/api/media/{file_id}")
+async def get_media_file(file_id: str):
+    """Stream media file for preview"""
+    if file_id not in temp_file_storage:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_bytes = temp_file_storage[file_id]
+    
+    # Try to determine content type
+    # For now, we'll use a generic type and let the browser figure it out
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(len(file_bytes))
+    }
+    
+    return Response(
+        content=file_bytes,
+        media_type="application/octet-stream",
+        headers=headers
+    )
+
+
+@app.post("/api/generate-subtitles")
+async def generate_preview_subtitles(
+    file_id: str = Form(...),
+    speaker_names: Optional[str] = Form(None),
+    ai_model: str = Form("flash")
+):
+    """Generate subtitles for preview (always includes timestamps)"""
+    if file_id not in temp_file_storage:
+        raise HTTPException(status_code=404, detail="File not found")
     
     # Check if GEMINI_API_KEY is set
     if not os.getenv("GEMINI_API_KEY"):
-        logger.error("GEMINI_API_KEY environment variable not set")
         raise HTTPException(status_code=500, detail="Server configuration error: API key not configured")
     
     try:
-        # Download file from Cloud Storage
-        blob_name = f"uploads/{file_id}/{filename}"
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-        
-        if not blob.exists():
-            raise HTTPException(status_code=404, detail="File not found in storage")
-        
-        # Download file content
-        file_bytes = blob.download_as_bytes()
-        logger.info(f"Downloaded file from storage: {len(file_bytes)} bytes")
+        file_bytes = temp_file_storage[file_id]
         
         # Process speaker names
         speaker_list: Optional[List[str]] = None
@@ -236,53 +411,75 @@ async def transcribe_large_file(
                     raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
             else:
                 speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
-
+        
+        # Create minimal title data for subtitle generation
         title_data = {
-            "CASE_NAME": case_name,
-            "CASE_NUMBER": case_number,
-            "FIRM_OR_ORGANIZATION_NAME": firm_name,
-            "DATE": input_date,
-            "TIME": input_time,
-            "LOCATION": location,
-            "FILE_NAME": filename,
+            "CASE_NAME": "Preview",
+            "CASE_NUMBER": "",
+            "FIRM_OR_ORGANIZATION_NAME": "",
+            "DATE": "",
+            "TIME": "",
+            "LOCATION": "",
+            "FILE_NAME": f"preview_{file_id}",
             "FILE_DURATION": "Calculating...",
         }
-
-        # Convert checkbox value to boolean
-        timestamps_enabled = include_timestamps == "on"
         
-        logger.info(f"Starting transcription process for large file with model: {ai_model}...")
-        turns, docx_bytes = process_transcription(file_bytes, filename, speaker_list, title_data, timestamps_enabled, ai_model)
-        logger.info(f"Transcription completed successfully. Generated {len(turns)} turns.")
+        logger.info(f"Generating preview subtitles with model: {ai_model}")
+        result = process_transcription(file_bytes, f"preview_{file_id}.mp3", speaker_list, title_data, True, ai_model)
         
-        # Clean up - delete file from storage
-        try:
-            blob.delete()
-            logger.info(f"Cleaned up file {blob_name} from storage")
-        except Exception as cleanup_error:
-            logger.warning(f"Failed to cleanup file {blob_name}: {cleanup_error}")
+        if len(result) == 4:
+            turns, docx_bytes, srt_content, webvtt_content = result
+        else:
+            # Fallback for older version
+            turns, docx_bytes = result
+            srt_content, webvtt_content = None, None
         
-        transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
-        encoded = base64.b64encode(docx_bytes).decode()
-        return JSONResponse({"transcript": transcript_text, "docx_base64": encoded})
+        if not srt_content:
+            raise HTTPException(status_code=500, detail="Failed to generate subtitles")
+        
+        # Store subtitles in temporary storage
+        temp_subtitle_storage[f"{file_id}_srt"] = srt_content
+        temp_subtitle_storage[f"{file_id}_webvtt"] = webvtt_content
+        
+        logger.info(f"Generated subtitles for preview: {len(turns)} turns")
+        
+        return JSONResponse({
+            "file_id": file_id,
+            "subtitle_count": len(turns),
+            "has_subtitles": True,
+            "status": "completed"
+        })
         
     except Exception as e:
         import traceback
         error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-        logger.error(f"Large file transcription error: {error_detail}")
-        
-        # Try to cleanup file even on error
-        try:
-            blob_name = f"uploads/{file_id}/{filename}"
-            bucket = storage_client.bucket(BUCKET_NAME)
-            blob = bucket.blob(blob_name)
-            if blob.exists():
-                blob.delete()
-                logger.info(f"Cleaned up file {blob_name} after error")
-        except Exception:
-            pass
-            
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+        logger.error(f"Subtitle generation error: {error_detail}")
+        raise HTTPException(status_code=500, detail=f"Subtitle generation failed: {str(e)}")
+
+
+@app.get("/api/subtitles/{file_id}")
+async def get_subtitles(file_id: str, format: str = "webvtt"):
+    """Get subtitle file in SRT or WebVTT format"""
+    storage_key = f"{file_id}_{format}"
+    
+    if storage_key not in temp_subtitle_storage:
+        raise HTTPException(status_code=404, detail="Subtitles not found")
+    
+    content = temp_subtitle_storage[storage_key]
+    
+    if format == "srt":
+        media_type = "application/x-subrip"
+        filename = f"subtitles_{file_id}.srt"
+    else:  # webvtt
+        media_type = "text/vtt"
+        filename = f"subtitles_{file_id}.vtt"
+    
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 
 @app.get("/health")
 async def health_check():

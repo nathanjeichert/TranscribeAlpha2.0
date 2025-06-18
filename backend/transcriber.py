@@ -364,6 +364,74 @@ def get_media_duration(file_path: str) -> Optional[float]:
     return None
 
 
+def format_timestamp_for_srt(seconds: float) -> str:
+    """Format seconds to SRT timestamp format (HH:MM:SS,mmm)"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millisecs = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
+
+def generate_srt_from_transcript(transcript_turns: List[TranscriptTurn]) -> str:
+    """Generate SRT subtitle content from transcript turns with timestamps"""
+    srt_content = ""
+    
+    for i, turn in enumerate(transcript_turns, 1):
+        if not turn.timestamp:
+            continue  # Skip turns without timestamps
+        
+        # Parse timestamp from format [MM:SS] to seconds
+        try:
+            timestamp_str = turn.timestamp.strip('[]')
+            if ':' in timestamp_str:
+                time_parts = timestamp_str.split(':')
+                if len(time_parts) == 2:
+                    minutes, seconds = map(float, time_parts)
+                    start_seconds = minutes * 60 + seconds
+                else:
+                    continue  # Skip invalid timestamps
+            else:
+                continue  # Skip invalid timestamps
+        except (ValueError, AttributeError):
+            continue  # Skip invalid timestamps
+        
+        # Estimate end time (start of next turn or +5 seconds if last)
+        if i < len(transcript_turns) and transcript_turns[i].timestamp:
+            try:
+                next_timestamp_str = transcript_turns[i].timestamp.strip('[]')
+                if ':' in next_timestamp_str:
+                    time_parts = next_timestamp_str.split(':')
+                    if len(time_parts) == 2:
+                        next_minutes, next_seconds = map(float, time_parts)
+                        end_seconds = next_minutes * 60 + next_seconds
+                    else:
+                        end_seconds = start_seconds + 5
+                else:
+                    end_seconds = start_seconds + 5
+            except (ValueError, AttributeError, IndexError):
+                end_seconds = start_seconds + 5
+        else:
+            end_seconds = start_seconds + 5
+        
+        # Format timestamps for SRT
+        start_time = format_timestamp_for_srt(start_seconds)
+        end_time = format_timestamp_for_srt(end_seconds)
+        
+        # Create subtitle text with speaker name
+        subtitle_text = f"{turn.speaker.upper()}: {turn.text}"
+        
+        # Add to SRT content
+        srt_content += f"{i}\n{start_time} --> {end_time}\n{subtitle_text}\n\n"
+    
+    return srt_content
+
+def srt_to_webvtt(srt_content: str) -> str:
+    """Convert SRT content to WebVTT format for HTML5 video"""
+    webvtt = "WEBVTT\n\n"
+    # Replace comma with period for milliseconds (WebVTT format)
+    webvtt += srt_content.replace(',', '.')
+    return webvtt
+
 def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False, ai_model: str = "flash"):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
@@ -427,4 +495,129 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
         if not turns:
             raise RuntimeError("Failed to generate transcript")
         docx_bytes = create_docx(title_data, turns)
-        return turns, docx_bytes
+        
+        # Generate subtitles if timestamps are included
+        srt_content = None
+        webvtt_content = None
+        if include_timestamps and turns:
+            srt_content = generate_srt_from_transcript(turns)
+            webvtt_content = srt_to_webvtt(srt_content)
+        
+        return turns, docx_bytes, srt_content, webvtt_content
+
+
+def format_timestamp_for_srt(timestamp_str: str) -> str:
+    """Convert timestamp from [MM:SS] format to SRT format (HH:MM:SS,mmm)"""
+    try:
+        if not timestamp_str or timestamp_str.strip() == "":
+            return "00:00:00,000"
+        
+        # Remove brackets and strip whitespace
+        clean_timestamp = timestamp_str.strip("[]").strip()
+        
+        # Handle different input formats
+        if ":" in clean_timestamp:
+            parts = clean_timestamp.split(":")
+            if len(parts) == 2:  # MM:SS format
+                minutes, seconds = parts
+                hours = "00"
+            elif len(parts) == 3:  # HH:MM:SS format
+                hours, minutes, seconds = parts
+            else:
+                return "00:00:00,000"
+        else:
+            # Assume it's just seconds
+            total_seconds = float(clean_timestamp)
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = total_seconds % 60
+            return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{int((seconds % 1) * 1000):03d}"
+        
+        # Convert to proper format
+        h = int(hours) if hours.isdigit() else 0
+        m = int(minutes) if minutes.isdigit() else 0
+        s = float(seconds) if seconds.replace('.', '').isdigit() else 0.0
+        
+        # Format as HH:MM:SS,mmm
+        return f"{h:02d}:{m:02d}:{int(s):02d},{int((s % 1) * 1000):03d}"
+    except Exception:
+        return "00:00:00,000"
+
+
+def generate_srt_from_transcript(turns: List[TranscriptTurn]) -> str:
+    """Generate SRT subtitle format from transcript turns"""
+    srt_content = []
+    
+    for i, turn in enumerate(turns, 1):
+        if not turn.text.strip():
+            continue
+            
+        # Calculate start and end times
+        start_time = format_timestamp_for_srt(turn.timestamp) if turn.timestamp else f"00:00:{i*3:02d},000"
+        
+        # Estimate end time (start of next turn or +3 seconds)
+        if i < len(turns) and turns[i].timestamp:
+            end_time = format_timestamp_for_srt(turns[i].timestamp)
+        else:
+            # Add 3 seconds to start time as default duration
+            try:
+                parts = start_time.split(':')
+                h, m, s_ms = int(parts[0]), int(parts[1]), parts[2].split(',')
+                s, ms = int(s_ms[0]), int(s_ms[1])
+                
+                total_ms = (h * 3600 + m * 60 + s) * 1000 + ms + 3000
+                
+                end_h = total_ms // 3600000
+                end_m = (total_ms % 3600000) // 60000
+                end_s = (total_ms % 60000) // 1000
+                end_ms = total_ms % 1000
+                
+                end_time = f"{end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms:03d}"
+            except:
+                end_time = f"00:00:{i*3+3:02d},000"
+        
+        # Format SRT entry
+        srt_entry = f"{i}\n{start_time} --> {end_time}\n{turn.speaker.upper()}: {turn.text}\n"
+        srt_content.append(srt_entry)
+    
+    return "\n".join(srt_content)
+
+
+def srt_to_webvtt(srt_content: str) -> str:
+    """Convert SRT format to WebVTT format for HTML5 video"""
+    lines = srt_content.strip().split('\n')
+    webvtt_lines = ["WEBVTT", ""]
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Skip empty lines
+        if not line:
+            i += 1
+            continue
+            
+        # Skip subtitle numbers (SRT format)
+        if line.isdigit():
+            i += 1
+            continue
+            
+        # Process timestamp lines
+        if " --> " in line:
+            # Convert SRT timestamps to WebVTT (replace comma with period)
+            webvtt_timestamp = line.replace(',', '.')
+            webvtt_lines.append(webvtt_timestamp)
+            i += 1
+            
+            # Add subtitle text lines
+            subtitle_lines = []
+            while i < len(lines) and lines[i].strip() and not lines[i].strip().isdigit():
+                subtitle_lines.append(lines[i].strip())
+                i += 1
+            
+            webvtt_lines.extend(subtitle_lines)
+            webvtt_lines.append("")  # Empty line between subtitles
+        else:
+            i += 1
+    
+    return "\n".join(webvtt_lines)
