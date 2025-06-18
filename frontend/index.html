@@ -771,6 +771,13 @@
                 // Always include timestamps for subtitle generation
                 formData.set('include_timestamps', 'on');
                 
+                // Debug: Log speaker names to see if they're being passed
+                const speakerNames = document.getElementById('speaker_names').value;
+                console.log('Speaker names for preview:', speakerNames);
+                if (speakerNames && speakerNames.trim()) {
+                    formData.set('speaker_names', speakerNames.trim());
+                }
+                
                 const response = await fetch('/api/transcribe', {
                     method: 'POST',
                     body: formData
@@ -807,12 +814,22 @@
                     subtitleStatus.textContent = `✅ Transcript & subtitles ready (${segmentCount} segments)`;
                     subtitleStatus.className = 'subtitle-status success';
                     
-                    // Store transcript data for potential final submission (cache for reuse)
+                    // Store transcript data and settings for potential final submission (cache for reuse)
                     window.cachedTranscriptData = data;
+                    window.cachedTranscriptSettings = {
+                        speakers: document.getElementById('speaker_names').value.trim(),
+                        model: document.querySelector('input[name="ai_model"]:checked').value,
+                        timestamps: true // Preview always uses timestamps
+                    };
                 } else {
                     subtitleStatus.textContent = 'Transcript generated (no subtitles available)';
                     subtitleStatus.className = 'subtitle-status';
                     window.cachedTranscriptData = data;
+                    window.cachedTranscriptSettings = {
+                        speakers: document.getElementById('speaker_names').value.trim(),
+                        model: document.querySelector('input[name="ai_model"]:checked').value,
+                        timestamps: true // Preview always uses timestamps
+                    };
                 }
                 
             } catch (error) {
@@ -900,21 +917,35 @@
                 let result;
                 
                 // Check if we have cached transcript data from preview
-                if (window.cachedTranscriptData) {
+                if (window.cachedTranscriptData && window.cachedTranscriptSettings) {
                     // Check if the cached data matches current form settings
-                    const currentSpeakers = document.getElementById('speaker_names').value;
+                    const currentSpeakers = document.getElementById('speaker_names').value.trim();
                     const currentModel = document.querySelector('input[name="ai_model"]:checked').value;
                     const timestampsEnabled = document.getElementById('include_timestamps').checked;
                     
-                    // For now, reuse cached data (could add more sophisticated comparison later)
-                    submitBtn.textContent = 'Using cached transcript...';
+                    const settingsMatch = (
+                        window.cachedTranscriptSettings.speakers === currentSpeakers &&
+                        window.cachedTranscriptSettings.model === currentModel &&
+                        window.cachedTranscriptSettings.timestamps === timestampsEnabled
+                    );
                     
-                    // Simulate brief processing time for user experience
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    
-                    result = window.cachedTranscriptData;
-                    
-                    console.log('Using cached transcript data to avoid duplicate API call');
+                    if (settingsMatch) {
+                        // Settings match, reuse cached data
+                        submitBtn.textContent = 'Using cached transcript...';
+                        
+                        // Simulate brief processing time for user experience
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        
+                        result = window.cachedTranscriptData;
+                        
+                        console.log('Using cached transcript data - settings match');
+                    } else {
+                        // Settings changed, make new API call
+                        console.log('Settings changed, making new API call');
+                        console.log('Cached:', window.cachedTranscriptSettings);
+                        console.log('Current:', {speakers: currentSpeakers, model: currentModel, timestamps: timestampsEnabled});
+                        result = await handleDirectUpload();
+                    }
                 } else {
                     // No cached data, make new API call
                     result = await handleDirectUpload();
