@@ -535,6 +535,12 @@
                     </div>
 
                     <div class="form-group full-width">
+                        <label for="lines_per_page">Lines Per Page (OnCue XML)</label>
+                        <input type="number" id="lines_per_page" name="lines_per_page" value="25" min="1">
+                        <small>Default is 25 lines per page</small>
+                    </div>
+
+                    <div class="form-group full-width">
                         <label>Audio/Video File</label>
                         <div class="file-upload" id="fileUpload">
                             <input type="file" name="file" id="file" required accept="audio/*,video/*">
@@ -612,6 +618,9 @@
                     </a>
                     <a id="downloadSrt" class="download-btn" style="display:none; background: #6c757d;">
                         🎬 Download Subtitles (SRT)
+                    </a>
+                    <a id="downloadOncue" class="download-btn" style="display:none; background: #17a2b8;">
+                        📑 Download OnCue XML
                     </a>
                 </div>
                 <pre id="transcript" class="transcript-output"></pre>
@@ -961,6 +970,7 @@
                 // Setup download links
                 const link = document.getElementById('download');
                 const srtLink = document.getElementById('downloadSrt');
+                const oncueLink = document.getElementById('downloadOncue');
                 
                 link.href = 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,' + result.docx_base64;
                 
@@ -971,7 +981,7 @@
                 
                 link.download = baseFilename + '.docx';
                 link.style.display = 'inline-flex';
-                
+
                 // Setup SRT download if subtitles are available
                 if (result.has_subtitles && result.srt_content) {
                     const srtBlob = new Blob([result.srt_content], { type: 'application/x-subrip' });
@@ -980,6 +990,14 @@
                     srtLink.style.display = 'inline-flex';
                 } else {
                     srtLink.style.display = 'none';
+                }
+
+                if (result.oncue_xml_base64) {
+                    oncueLink.href = 'data:application/xml;base64,' + result.oncue_xml_base64;
+                    oncueLink.download = baseFilename + '.xml';
+                    oncueLink.style.display = 'inline-flex';
+                } else {
+                    oncueLink.style.display = 'none';
                 }
                 
                 // Scroll to results
