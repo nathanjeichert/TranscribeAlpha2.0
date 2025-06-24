@@ -157,39 +157,18 @@ async def transcribe(
                 create_docx = transcriber.create_docx
         
         docx_bytes = create_docx(title_data, turns, timestamps_enabled)
-        try:
-            from .transcriber import create_oncue_xml
-        except ImportError:
-            try:
-                from transcriber import create_oncue_xml
-            except ImportError:
-                import transcriber
-                create_oncue_xml = transcriber.create_oncue_xml
-
-        xml_bytes = create_oncue_xml(title_data, turns, timestamps_enabled)
         logger.info(f"Used cached transcription with {len(turns)} turns.")
     else:
         # Generate new transcription
         logger.info(f"Starting new transcription process with model: {ai_model}...")
         try:
-            result = process_transcription(
-                file_bytes,
-                file.filename,
-                speaker_list,
-                title_data,
-                timestamps_enabled,
-                ai_model,
-                force_timestamps_for_subtitles=True,
-            )
-            if len(result) == 5:
-                turns, docx_bytes, srt_content, webvtt_content, xml_bytes = result
-            elif len(result) == 4:
+            result = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model, force_timestamps_for_subtitles=True)
+            if len(result) == 4:
                 turns, docx_bytes, srt_content, webvtt_content = result
-                xml_bytes = None
             else:
                 # Backward compatibility for old version
                 turns, docx_bytes = result
-                srt_content, webvtt_content, xml_bytes = None, None, None
+                srt_content, webvtt_content = None, None
                 
             # Cache the transcript results (not the docx, as that depends on timestamp setting)
             temp_transcript_cache[cache_key] = {
@@ -210,13 +189,11 @@ async def transcribe(
     else:
         transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
     encoded = base64.b64encode(docx_bytes).decode()
-    xml_encoded = base64.b64encode(xml_bytes).decode() if xml_bytes else None
     
     response_data = {
         "transcript": transcript_text, 
         "docx_base64": encoded,
-        "has_subtitles": srt_content is not None,
-        "oncue_xml_base64": xml_encoded
+        "has_subtitles": srt_content is not None
     }
     
     # Include subtitles if available
@@ -318,20 +295,19 @@ async def generate_subtitles_preview(
     try:
         # Process with timestamps enabled
         result = process_transcription(
-            file_data['content'],
-            file_data['filename'],
-            speaker_list,
-            title_data,
+            file_data['content'], 
+            file_data['filename'], 
+            speaker_list, 
+            title_data, 
             include_timestamps=True,  # Always include timestamps for subtitles
             ai_model=ai_model
         )
-
-        if len(result) >= 4:
-            turns = result[0]
-            srt_content = result[2]
-            webvtt_content = result[3]
+        
+        if len(result) == 4:
+            turns, _, srt_content, webvtt_content = result
         else:
-            turns = result[0]
+            # Fallback if subtitles not generated
+            turns, _ = result
             srt_content, webvtt_content = None, None
         
         if not srt_content:
