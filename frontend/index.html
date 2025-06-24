@@ -613,6 +613,9 @@
                     <a id="downloadSrt" class="download-btn" style="display:none; background: #6c757d;">
                         🎬 Download Subtitles (SRT)
                     </a>
+                    <a id="downloadXml" class="download-btn" style="display:none; background: #28a745;">
+                        📁 Download OnCue XML
+                    </a>
                 </div>
                 <pre id="transcript" class="transcript-output"></pre>
             </div>
@@ -961,6 +964,7 @@
                 // Setup download links
                 const link = document.getElementById('download');
                 const srtLink = document.getElementById('downloadSrt');
+                const xmlLink = document.getElementById('downloadXml');
                 
                 link.href = 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,' + result.docx_base64;
                 
@@ -980,6 +984,14 @@
                     srtLink.style.display = 'inline-flex';
                 } else {
                     srtLink.style.display = 'none';
+                }
+
+                if (result.oncue_xml_base64) {
+                    xmlLink.href = 'data:text/xml;base64,' + result.oncue_xml_base64;
+                    xmlLink.download = baseFilename + '.xml';
+                    xmlLink.style.display = 'inline-flex';
+                } else {
+                    xmlLink.style.display = 'none';
                 }
                 
                 // Scroll to results

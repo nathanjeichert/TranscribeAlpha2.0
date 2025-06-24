@@ -5,6 +5,8 @@ import time
 import tempfile
 import logging
 import shutil
+import uuid
+import xml.etree.ElementTree as ET
 from typing import List, Optional
 
 from google import genai
@@ -333,6 +335,74 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], includ
     return buffer.read()
 
 
+def create_oncue_xml(title_data: dict, transcript_turns: List[TranscriptTurn], include_timestamps: bool = False) -> bytes:
+    """Generate a minimal OnCue-compatible XML transcript."""
+    root = ET.Element(
+        "OpenDVT",
+        UUID="{" + str(uuid.uuid4()) + "}",
+        ShortID=title_data.get("CASE_NUMBER", "TRANSCRIPT"),
+        Type="Deposition",
+        Version="1.4",
+    )
+
+    info = ET.SubElement(root, "Information")
+    case = ET.SubElement(info, "Case")
+    ET.SubElement(case, "MatterNumber").text = title_data.get("CASE_NUMBER", "")
+    ET.SubElement(info, "FirstPageNo").text = "1"
+
+    lines_elem = ET.SubElement(root, "Lines")
+
+    page_no = 1
+    line_no = 1
+    line_id = 0
+    max_lines_per_page = 25
+
+    for turn in transcript_turns:
+        line = ET.SubElement(lines_elem, "Line", ID=str(line_id))
+        ET.SubElement(line, "PageNo").text = str(page_no)
+        ET.SubElement(line, "LineNo").text = str(line_no)
+        ET.SubElement(line, "QA").text = "-"
+        ET.SubElement(line, "Text").text = f"{turn.speaker.upper()}: {turn.text}"
+
+        if include_timestamps and turn.timestamp:
+            ts = turn.timestamp.strip("[]")
+            try:
+                minutes, seconds = map(float, ts.split(":"))
+                ms = int((minutes * 60 + seconds) * 1000)
+            except Exception:
+                ms = 0
+            ET.SubElement(line, "Stream").text = "0"
+            ET.SubElement(line, "TimeMs").text = str(ms)
+
+        line_id += 1
+        line_no += 1
+        if line_no > max_lines_per_page:
+            page_no += 1
+            line_no = 1
+
+    lines_elem.set("Count", str(line_id))
+    ET.SubElement(info, "LastPageNo").text = str(page_no)
+    ET.SubElement(info, "MaxLinesPerPage").text = str(max_lines_per_page)
+
+    streams = ET.SubElement(root, "Streams", Count="1")
+    stream = ET.SubElement(streams, "Stream", ID="0")
+    file_name = title_data.get("FILE_NAME", "media")
+    ET.SubElement(stream, "URI").text = file_name
+    ET.SubElement(stream, "URIRelative").text = file_name
+
+    duration = title_data.get("FILE_DURATION")
+    if duration:
+        try:
+            h, m, s = map(int, duration.split(":"))
+            dur_ms = (h * 3600 + m * 60 + s) * 1000
+            ET.SubElement(stream, "DurationMs").text = str(dur_ms)
+        except Exception:
+            pass
+
+    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return xml_bytes
+
+
 # Helper to get media duration with ffprobe, avoids pydub's internal lookup issues
 
 def get_media_duration(file_path: str) -> Optional[float]:
@@ -507,8 +577,11 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
         if need_timestamps and turns:
             srt_content = generate_srt_from_transcript(turns)
             webvtt_content = srt_to_webvtt(srt_content)
-        
-        return turns, docx_bytes, srt_content, webvtt_content
+
+        # Create OnCue XML
+        xml_bytes = create_oncue_xml(title_data, turns, include_timestamps)
+
+        return turns, docx_bytes, srt_content, webvtt_content, xml_bytes
 
 
 def format_timestamp_for_srt(timestamp_str: str) -> str:
