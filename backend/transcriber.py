@@ -508,7 +508,7 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
             srt_content = generate_srt_from_transcript(turns)
             webvtt_content = srt_to_webvtt(srt_content)
         
-        return turns, docx_bytes, srt_content, webvtt_content
+        return turns, docx_bytes, srt_content, webvtt_content, duration_seconds
 
 
 def format_timestamp_for_srt(timestamp_str: str) -> str:
@@ -626,3 +626,95 @@ def srt_to_webvtt(srt_content: str) -> str:
             i += 1
     
     return "\n".join(webvtt_lines)
+
+
+def timestamp_to_seconds(timestamp: Optional[str]) -> float:
+    """Convert timestamp like '[MM:SS]' or 'MM:SS' to seconds."""
+    if not timestamp:
+        return 0.0
+    ts = timestamp.strip('[]').strip()
+    parts = ts.split(':')
+    try:
+        if len(parts) == 3:
+            h, m, s = map(float, parts)
+            return h * 3600 + m * 60 + s
+        elif len(parts) == 2:
+            m, s = map(float, parts)
+            return m * 60 + s
+        else:
+            return float(ts)
+    except ValueError:
+        return 0.0
+
+
+def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, audio_duration: float, lines_per_page: int = 25) -> str:
+    """Generate OnCue-compatible XML from transcript turns."""
+    from xml.etree.ElementTree import Element, SubElement, tostring
+
+    root = Element(
+        "onCue",
+        {
+            "xmlns:xsd": "http://www.w3.org/2001/XMLSchema",
+            "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+        },
+    )
+
+    media_id = os.path.splitext(metadata.get("FILE_NAME", "deposition"))[0]
+    depo_attrs = {
+        "mediaId": media_id,
+        "linesPerPage": str(lines_per_page),
+    }
+    if metadata.get("DATE"):
+        depo_attrs["date"] = metadata["DATE"]
+
+    deposition = SubElement(root, "deposition", depo_attrs)
+
+    video_attrs = {
+        "ID": "1",
+        "filename": metadata.get("FILE_NAME", "audio.mp3"),
+        "startTime": "0",
+        "stopTime": str(int(round(audio_duration))),
+        "firstPGLN": "101",
+        "lastPGLN": "0",  # placeholder
+        "startTuned": "no",
+        "stopTuned": "no",
+    }
+    depo_video = SubElement(deposition, "depoVideo", video_attrs)
+
+    last_pgln = 101
+    for idx, turn in enumerate(transcript_turns):
+        page = idx // lines_per_page + 1
+        line = idx % lines_per_page + 1
+        pgln = page * 100 + line
+        last_pgln = pgln
+
+        start_sec = timestamp_to_seconds(turn.timestamp)
+        if idx < len(transcript_turns) - 1:
+            stop_sec = timestamp_to_seconds(transcript_turns[idx + 1].timestamp)
+        else:
+            stop_sec = audio_duration
+
+        SubElement(
+            depo_video,
+            "depoLine",
+            {
+                "prefix": "",
+                "text": f"{turn.speaker.upper()}: {turn.text}",
+                "page": str(page),
+                "line": str(line),
+                "pgLN": str(pgln),
+                "videoID": "1",
+                "videoStart": f"{start_sec:.2f}",
+                "videoStop": f"{stop_sec:.2f}",
+                "isEdited": "no",
+                "isSynched": "yes",
+                "isRedacted": "no",
+            },
+        )
+
+    depo_video.set("lastPGLN", str(last_pgln))
+
+    xml_bytes = tostring(root, encoding="utf-8", method="xml")
+    xml_str = xml_bytes.decode("utf-8")
+    xml_str = "".join(xml_str.splitlines())  # single line like sample
+    return xml_str
