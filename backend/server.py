@@ -5,7 +5,9 @@ import logging
 import uuid
 import tempfile
 import hashlib
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict
+from google.cloud import storage
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,7 +20,6 @@ from fastapi.staticfiles import StaticFiles
 import mimetypes
 
 import sys
-import os
 
 # Add current directory and backend directory to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,9 +47,9 @@ ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
     # Add your production domains here
 ]
 
-# Cloud Storage configuration (commented out for local development)
-# BUCKET_NAME = "transcribealpha-uploads-1750110926"
-# storage_client = storage.Client()
+# Cloud Storage configuration
+BUCKET_NAME = "transcribealpha-uploads-1750110926"
+storage_client = storage.Client()
 
 # Temporary file storage for media preview (use Redis or database in production)
 temp_file_storage: Dict[str, bytes] = {}
@@ -66,6 +67,49 @@ def create_cache_key(file_bytes: bytes, speaker_list: Optional[List[str]], ai_mo
     
     return f"{file_hash}_{settings_hash}"
 
+def cleanup_old_files():
+    """Clean up files older than 1 day from Cloud Storage to prevent billing issues"""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        cutoff_date = datetime.now() - timedelta(days=1)
+        
+        blobs = bucket.list_blobs()
+        deleted_count = 0
+        
+        for blob in blobs:
+            # Check if blob is older than 1 day
+            if blob.time_created and blob.time_created.replace(tzinfo=None) < cutoff_date:
+                blob.delete()
+                deleted_count += 1
+                logger.info(f"Deleted old file: {blob.name}")
+        
+        logger.info(f"Cleanup completed. Deleted {deleted_count} old files.")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
+
+def upload_to_cloud_storage(file_bytes: bytes, filename: str) -> str:
+    """Upload file to Cloud Storage and return the blob name"""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
+        blob = bucket.blob(blob_name)
+        blob.upload_from_string(file_bytes)
+        logger.info(f"Uploaded {filename} to Cloud Storage as {blob_name}")
+        return blob_name
+    except Exception as e:
+        logger.error(f"Error uploading to Cloud Storage: {str(e)}")
+        raise
+
+def download_from_cloud_storage(blob_name: str) -> bytes:
+    """Download file from Cloud Storage"""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        return blob.download_as_bytes()
+    except Exception as e:
+        logger.error(f"Error downloading from Cloud Storage: {str(e)}")
+        raise
+
 app = FastAPI(
     title="TranscribeAlpha API",
     description="Professional Legal Transcript Generator using Google Gemini AI",
@@ -79,6 +123,12 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Run cleanup on startup and log Cloud Storage status"""
+    logger.info("Starting TranscribeAlpha with Cloud Storage enabled")
+    cleanup_old_files()
 
 
 @app.post("/api/transcribe")
@@ -102,14 +152,26 @@ async def transcribe(
         logger.error("GEMINI_API_KEY environment variable not set")
         raise HTTPException(status_code=500, detail="Server configuration error: API key not configured")
     
-    # Check file size
+    # Check file size and handle large files with Cloud Storage
     file_size = len(await file.read())
     await file.seek(0)  # Reset file pointer
     logger.info(f"File size: {file_size / (1024*1024):.2f} MB")
     
-    if file_size > 500 * 1024 * 1024:  # 500MB limit
-        raise HTTPException(status_code=413, detail="File too large. Maximum size is 500MB.")
+    # Increase limit to 2GB for Cloud Storage handling
+    if file_size > 2 * 1024 * 1024 * 1024:  # 2GB limit
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+    
     file_bytes = await file.read()
+    
+    # For large files (>100MB), use Cloud Storage
+    use_cloud_storage = file_size > 100 * 1024 * 1024
+    blob_name = None
+    
+    if use_cloud_storage:
+        logger.info(f"Large file detected ({file_size / (1024*1024):.2f} MB), uploading to Cloud Storage")
+        blob_name = upload_to_cloud_storage(file_bytes, file.filename)
+        # Run cleanup after upload to manage storage costs
+        cleanup_old_files()
     speaker_list: Optional[List[str]] = None
     if speaker_names:
         # Handle both comma-separated and JSON formats for backward compatibility
@@ -214,9 +276,6 @@ async def transcribe(
         response_data["webvtt_content"] = webvtt_content
     
     return JSONResponse(response_data)
-
-# Large file upload functions (disabled for local development - requires Google Cloud Storage)
-# In production, these would handle chunked uploads for files larger than 30MB
 
 # Store for temporary media files and subtitles (in production, use Redis or similar)
 temporary_files = {}
@@ -381,72 +440,6 @@ async def serve_subtitles(file_id: str, format: str = "webvtt"):
             "Cache-Control": "public, max-age=3600"
         }
     )
-
-@app.post("/api/upload-preview")
-async def upload_preview_file(file: UploadFile = File(...)):
-    """Upload a file for preview without full transcription processing"""
-    try:
-        file_id = str(uuid.uuid4())
-        file_bytes = await file.read()
-        
-        # Store in temporary storage
-        temp_file_storage[file_id] = file_bytes
-        
-        # Get file info
-        file_size = len(file_bytes)
-        mime_type, _ = mimetypes.guess_type(file.filename)
-        
-        # Determine if it's video or audio
-        is_video = mime_type and mime_type.startswith('video')
-        is_audio = mime_type and mime_type.startswith('audio')
-        
-        if not (is_video or is_audio):
-            # Try to determine by extension
-            ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
-            is_video = ext in ['mp4', 'avi', 'mov', 'mkv', 'webm']
-            is_audio = ext in ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac', 'aiff']
-        
-        logger.info(f"Uploaded preview file: {file.filename} ({file_size} bytes)")
-        
-        return JSONResponse({
-            "file_id": file_id,
-            "filename": file.filename,
-            "file_size": file_size,
-            "mime_type": mime_type or "application/octet-stream",
-            "is_video": is_video,
-            "is_audio": is_audio,
-            "status": "uploaded"
-        })
-        
-    except Exception as e:
-        logger.error(f"Preview upload failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-@app.get("/api/media/{file_id}")
-async def get_media_file(file_id: str):
-    """Stream media file for preview"""
-    if file_id not in temp_file_storage:
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    file_bytes = temp_file_storage[file_id]
-    
-    # Try to determine content type
-    # For now, we'll use a generic type and let the browser figure it out
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(len(file_bytes))
-    }
-    
-    return Response(
-        content=file_bytes,
-        media_type="application/octet-stream",
-        headers=headers
-    )
-
-
-
-
 
 @app.get("/health")
 async def health_check():

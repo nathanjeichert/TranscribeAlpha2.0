@@ -363,68 +363,6 @@ def get_media_duration(file_path: str) -> Optional[float]:
         print(f"ffprobe duration extraction failed: {e}")
     return None
 
-
-def format_timestamp_for_srt(seconds: float) -> str:
-    """Format seconds to SRT timestamp format (HH:MM:SS,mmm)"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millisecs = int((seconds % 1) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
-
-def generate_srt_from_transcript(transcript_turns: List[TranscriptTurn]) -> str:
-    """Generate SRT subtitle content from transcript turns with timestamps"""
-    srt_content = ""
-    
-    for i, turn in enumerate(transcript_turns, 1):
-        if not turn.timestamp:
-            continue  # Skip turns without timestamps
-        
-        # Parse timestamp from format [MM:SS] to seconds
-        try:
-            timestamp_str = turn.timestamp.strip('[]')
-            if ':' in timestamp_str:
-                time_parts = timestamp_str.split(':')
-                if len(time_parts) == 2:
-                    minutes, seconds = map(float, time_parts)
-                    start_seconds = minutes * 60 + seconds
-                else:
-                    continue  # Skip invalid timestamps
-            else:
-                continue  # Skip invalid timestamps
-        except (ValueError, AttributeError):
-            continue  # Skip invalid timestamps
-        
-        # Estimate end time (start of next turn or +5 seconds if last)
-        if i < len(transcript_turns) and transcript_turns[i].timestamp:
-            try:
-                next_timestamp_str = transcript_turns[i].timestamp.strip('[]')
-                if ':' in next_timestamp_str:
-                    time_parts = next_timestamp_str.split(':')
-                    if len(time_parts) == 2:
-                        next_minutes, next_seconds = map(float, time_parts)
-                        end_seconds = next_minutes * 60 + next_seconds
-                    else:
-                        end_seconds = start_seconds + 5
-                else:
-                    end_seconds = start_seconds + 5
-            except (ValueError, AttributeError, IndexError):
-                end_seconds = start_seconds + 5
-        else:
-            end_seconds = start_seconds + 5
-        
-        # Format timestamps for SRT
-        start_time = format_timestamp_for_srt(start_seconds)
-        end_time = format_timestamp_for_srt(end_seconds)
-        
-        # Create subtitle text with speaker name
-        subtitle_text = f"{turn.speaker.upper()}: {turn.text}"
-        
-        # Add to SRT content
-        srt_content += f"{i}\n{start_time} --> {end_time}\n{subtitle_text}\n\n"
-    
-    return srt_content
-
 def srt_to_webvtt(srt_content: str) -> str:
     """Convert SRT content to WebVTT format for HTML5 video"""
     webvtt = "WEBVTT\n\n"

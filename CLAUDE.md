@@ -110,8 +110,10 @@ hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
 - Single-threaded processing (no async queue system)
 - Files processed synchronously
 - Memory usage scales with audio file size during processing
-- 500MB file size limit for uploads
+- 2GB file size limit for uploads
+- **Large file handling**: Files >100MB automatically use Cloud Storage
 - **HTTP/2 support**: Bypasses Cloud Run's 32MB HTTP/1 request limit
+- **Auto-cleanup**: Daily cleanup of Cloud Storage files to manage costs
 
 ### Cloud Run Optimizations
 - **Cross-platform compatibility**: Works on containerized Linux environments
@@ -170,12 +172,6 @@ hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
    gcloud builds submit --config cloudbuild.yaml
    ```
 
-### Railway (Alternative - see railway-deployment branch)
-For Railway deployment, switch to the `railway-deployment` branch:
-```bash
-git checkout railway-deployment
-```
-That branch contains Railway-specific configuration files.
 
 ### Environment Variables for Production
 - `GEMINI_API_KEY`: Required - Your Google Gemini API key
@@ -215,15 +211,9 @@ docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
 
 ### Main Branch (master)
 - **Purpose**: Google Cloud Run deployment
-- **Configuration**: Dockerfile, app.yaml, .gcloudignore
+- **Configuration**: Dockerfile, cloudbuild.yaml, .gcloudignore
 - **Port**: 8080 (Cloud Run standard)
 - **CORS**: Configured for Cloud Run domains
-
-### Railway Deployment Branch
-- **Purpose**: Railway platform deployment
-- **Configuration**: railway.json, packages.txt
-- **Port**: 8000 (Railway default)
-- **Switch command**: `git checkout railway-deployment`
 
 ## Cost Considerations
 
