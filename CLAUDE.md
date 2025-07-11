@@ -31,10 +31,13 @@ sudo apt install ffmpeg libsndfile1-dev
 # Method 1: Direct execution (recommended)
 cd TranscribeAlpha2.0
 python main.py
-# Server runs on http://0.0.0.0:8080
+# Server runs on http://0.0.0.0:8080 with HTTP/2 support
 
-# Method 2: Using uvicorn directly
+# Method 2: Using uvicorn directly (local development only)
 uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
+
+# Method 3: Using hypercorn with HTTP/2 (production-like)
+hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
 
 # Frontend is static - access at http://localhost:8080/
 ```
@@ -48,9 +51,9 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
 ## Code Architecture
 
 ### Backend Structure (`backend/`)
-- **`server.py`**: FastAPI application with single `/api/transcribe` endpoint
+- **`server.py`**: FastAPI application with `/api/transcribe` endpoint, HTTP/2 H2C support via Hypercorn
 - **`transcriber.py`**: Core transcription logic using Google Gemini 2.5 Pro
-- **`requirements.txt`**: Python dependencies
+- **`requirements.txt`**: Python dependencies including Hypercorn for HTTP/2
 - **`templates/`**: Word document templates for transcript formatting
 
 ### Frontend Structure (`frontend/`)
@@ -108,6 +111,7 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
 - Files processed synchronously
 - Memory usage scales with audio file size during processing
 - 500MB file size limit for uploads
+- **HTTP/2 support**: Bypasses Cloud Run's 32MB HTTP/1 request limit
 
 ### Cloud Run Optimizations
 - **Cross-platform compatibility**: Works on containerized Linux environments
@@ -115,6 +119,7 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
 - **Health checks**: `/health` endpoint for container orchestration
 - **Docker support**: Multi-stage build with ffmpeg installation
 - **Auto-scaling**: Configured for 0-10 instances based on CPU usage
+- **HTTP/2 H2C**: End-to-end HTTP/2 support using Hypercorn for large file uploads
 
 ## Deployment Instructions
 
@@ -129,7 +134,7 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
    # Set your project ID
    gcloud config set project YOUR_PROJECT_ID
    
-   # Deploy directly from source
+   # Deploy directly from source with HTTP/2 support
    gcloud run deploy transcribealpha \
      --source . \
      --platform managed \
@@ -138,7 +143,9 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
      --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
      --memory 2Gi \
      --cpu 1 \
-     --max-instances 10
+     --max-instances 10 \
+     --port 8080 \
+     --http2
    ```
 
 3. **Alternative: Deploy with Docker**:
@@ -146,13 +153,21 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
    # Build and push to Google Container Registry
    gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/transcribealpha
    
-   # Deploy from container
+   # Deploy from container with HTTP/2 support
    gcloud run deploy transcribealpha \
      --image gcr.io/YOUR_PROJECT_ID/transcribealpha \
      --platform managed \
      --region us-central1 \
      --allow-unauthenticated \
-     --set-env-vars GEMINI_API_KEY=your_gemini_api_key
+     --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
+     --port 8080 \
+     --http2
+   ```
+
+4. **Using Cloud Build (Automated)**:
+   ```bash
+   # The cloudbuild.yaml file includes HTTP/2 configuration
+   gcloud builds submit --config cloudbuild.yaml
    ```
 
 ### Railway (Alternative - see railway-deployment branch)
@@ -223,6 +238,39 @@ docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
 - **File size limits**: 2GB max file size
 - **Processing time**: Usually 1-3x real-time speed
 
+## HTTP/2 Implementation
+
+### Overview
+The application uses HTTP/2 H2C (HTTP/2 cleartext) to bypass Google Cloud Run's 32MB HTTP/1 request limit, enabling uploads up to the configured 500MB limit.
+
+### Technical Details
+- **Server**: Hypercorn ASGI server with HTTP/2 support
+- **Protocol**: H2C (HTTP/2 over cleartext, no TLS required)
+- **Cloud Run**: Configured with `--http2` flag for end-to-end HTTP/2
+- **Port Configuration**: Named `h2c` port in service configuration
+
+### Key Files
+- `backend/server.py`: Hypercorn configuration with `config.h2 = True`
+- `main.py`: Alternative entry point with HTTP/2 support
+- `cloudbuild.yaml`: Cloud Run deployment with `--http2` flag
+- `service.yaml`: Knative service configuration with `h2c` port
+- `requirements.txt`: Includes `hypercorn>=0.16.0`
+
+### Benefits
+- **Large file support**: Files up to 500MB (vs 32MB HTTP/1 limit)
+- **Better performance**: HTTP/2 multiplexing and header compression
+- **Backward compatibility**: Works with existing HTTP/1 clients
+- **No code changes**: Existing upload logic unchanged
+
+### Testing HTTP/2 Support
+```bash
+# Test H2C locally
+curl -v --http2-prior-knowledge http://localhost:8080/health
+
+# Test production deployment
+curl -v --http2 https://your-app.run.app/health
+```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -230,6 +278,8 @@ docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
 - **Timeout errors**: Large files exceeding Cloud Run timeout (15 min max)
 - **Import errors**: Python path issues in containerized deployment
 - **CORS errors**: Check ENVIRONMENT variable and allowed origins
+- **413 errors**: Should be resolved with HTTP/2 implementation (files >32MB)
+- **HTTP/2 not working**: Verify `--http2` flag in deployment and Hypercorn configuration
 
 ### Debug Commands
 ```bash
