@@ -27,6 +27,9 @@ steps:
       - '1'
       - '--max-instances'
       - '10'
+      - '--port'
+      - '8080'
+      - '--http2'
       - '--set-env-vars'
       - 'GEMINI_API_KEY=${_GEMINI_API_KEY}'
 

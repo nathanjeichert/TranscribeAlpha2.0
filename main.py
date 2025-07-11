@@ -31,10 +31,21 @@ except ImportError as e:
         raise ImportError(f"Could not import app: {e}, {e2}")
 
 if __name__ == "__main__":
-    import uvicorn
-    
     # Cloud Run uses PORT environment variable, defaults to 8080
     port = int(os.getenv("PORT", 8080))
     host = os.getenv("HOST", "0.0.0.0")
     print(f"Starting server on {host}:{port}")
-    uvicorn.run(app, host=host, port=port)
+    
+    # Use Hypercorn for HTTP/2 support on Cloud Run
+    import hypercorn.asyncio
+    import hypercorn.config
+    import asyncio
+    
+    config = hypercorn.config.Config()
+    config.bind = [f"{host}:{port}"]
+    
+    # Enable HTTP/2 support
+    config.h2 = True
+    
+    # Run the server
+    asyncio.run(hypercorn.asyncio.serve(app, config))

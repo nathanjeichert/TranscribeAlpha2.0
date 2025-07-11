@@ -449,9 +449,22 @@ frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 if __name__ == "__main__":
-    import uvicorn
     # Cloud Run uses PORT environment variable, defaults to 8080
     port = int(os.getenv("PORT", 8080))
     host = os.getenv("HOST", "0.0.0.0")
-    uvicorn.run(app, host=host, port=port)
+    
+    # Use Hypercorn for HTTP/2 support on Cloud Run
+    import hypercorn.asyncio
+    import hypercorn.config
+    import asyncio
+    
+    config = hypercorn.config.Config()
+    config.bind = [f"{host}:{port}"]
+    config.application_path = "backend.server:app"
+    
+    # Enable HTTP/2 support
+    config.h2 = True
+    
+    # Run the server
+    asyncio.run(hypercorn.asyncio.serve(app, config))
 
