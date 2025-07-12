@@ -115,6 +115,18 @@ hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
 - **HTTP/2 support**: Bypasses Cloud Run's 32MB HTTP/1 request limit
 - **Auto-cleanup**: Daily cleanup of Cloud Storage files to manage costs
 
+### Cloud Storage & Caching
+- **Bucket**: `transcribealpha-uploads-1750110926` - Files >100MB stored here
+- **Auto-cleanup**: Deletes files >1 day old on startup and after large uploads
+- **Cache**: MD5 hash of (file + AI model + speakers) avoids re-transcribing
+- **Pipeline**: Upload → Size check → Cache check → Process → Generate outputs → Cleanup
+
+### API Endpoints
+- **`/api/transcribe`**: Main transcription (POST) - returns DOCX, SRT, WebVTT, OnCue XML
+- **`/api/upload-preview`**: Upload for preview without processing (POST)
+- **`/api/media/{file_id}`**: Stream media files (GET)
+- **`/health`**: Health check (GET)
+
 ### Cloud Run Optimizations
 - **Cross-platform compatibility**: Works on containerized Linux environments
 - **Environment variables**: `PORT` defaults to 8080, `HOST` to 0.0.0.0
@@ -229,37 +241,10 @@ docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
 - **Processing time**: Usually 1-3x real-time speed
 
 ## HTTP/2 Implementation
-
-### Overview
-The application uses HTTP/2 H2C (HTTP/2 cleartext) to bypass Google Cloud Run's 32MB HTTP/1 request limit, enabling uploads up to the configured 500MB limit.
-
-### Technical Details
-- **Server**: Hypercorn ASGI server with HTTP/2 support
-- **Protocol**: H2C (HTTP/2 over cleartext, no TLS required)
-- **Cloud Run**: Configured with `--http2` flag for end-to-end HTTP/2
-- **Port Configuration**: Named `h2c` port in service configuration
-
-### Key Files
-- `backend/server.py`: Hypercorn configuration with `config.h2 = True`
-- `main.py`: Alternative entry point with HTTP/2 support
-- `cloudbuild.yaml`: Cloud Run deployment with `--http2` flag
-- `service.yaml`: Knative service configuration with `h2c` port
-- `requirements.txt`: Includes `hypercorn>=0.16.0`
-
-### Benefits
-- **Large file support**: Files up to 500MB (vs 32MB HTTP/1 limit)
-- **Better performance**: HTTP/2 multiplexing and header compression
-- **Backward compatibility**: Works with existing HTTP/1 clients
-- **No code changes**: Existing upload logic unchanged
-
-### Testing HTTP/2 Support
-```bash
-# Test H2C locally
-curl -v --http2-prior-knowledge http://localhost:8080/health
-
-# Test production deployment
-curl -v --http2 https://your-app.run.app/health
-```
+- **Purpose**: Bypass Cloud Run's 32MB HTTP/1 limit for 2GB uploads
+- **Server**: Hypercorn ASGI with H2C (HTTP/2 cleartext)
+- **Key Files**: `main.py`, `cloudbuild.yaml` with `--http2` flag
+- **Test**: `curl -v --http2 https://your-app.run.app/health`
 
 ## Troubleshooting
 
@@ -283,3 +268,13 @@ python main.py
 # Container debug
 docker run -it --entrypoint=/bin/bash transcribealpha
 ```
+
+## Development Guidelines for AI Coding Agents
+- **File Storage**: Two-tier (memory <100MB, Cloud Storage >100MB)
+- **Import Pattern**: Multiple try/except blocks for different execution contexts
+- **Cache Logic**: MD5 of (file + model + speakers) - include all transcription parameters
+- **Error Handling**: Wrap Cloud Storage ops in try/catch, use HTTPException for API errors
+- **Key Dependencies**: google-cloud-storage (large files), hypercorn (HTTP/2), fastapi (web)
+- **Common Issues**: Check for duplicate functions/imports, ensure file cleanup
+- **Testing**: Verify both storage paths, file size limits, cache invalidation
+- **Debug**: Check `/health`, verify ffmpeg, Cloud Storage permissions, CORS config
