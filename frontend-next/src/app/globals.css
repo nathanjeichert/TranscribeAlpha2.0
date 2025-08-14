@@ -7,29 +7,29 @@
 @layer base {
   html,
   body {
-    @apply font-sans antialiased text-primary-900 bg-white;
+    @apply font-sans antialiased text-primary-900 bg-primary-50;
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply bg-primary-900 text-white px-6 py-3 rounded-lg font-medium hover:bg-primary-800 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply bg-primary-900 text-white px-6 py-3 rounded-lg font-medium hover:bg-primary-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl;
   }
   
   .btn-secondary {
-    @apply bg-white text-primary-900 border-2 border-primary-200 px-6 py-3 rounded-lg font-medium hover:border-primary-300 hover:bg-primary-50 transition-all duration-200;
+    @apply bg-white text-primary-900 border-2 border-primary-300 px-6 py-3 rounded-lg font-medium hover:border-primary-400 hover:bg-primary-100 transition-all duration-200 shadow-sm;
   }
   
   .input-field {
-    @apply w-full px-4 py-3 border border-primary-200 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-200 bg-white;
+    @apply w-full px-4 py-3 border border-primary-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-200 bg-white shadow-sm;
   }
   
   .card {
-    @apply bg-white border border-primary-100 rounded-xl shadow-sm;
+    @apply bg-white border border-primary-200 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-200;
   }
   
   .card-header {
-    @apply px-6 py-4 border-b border-primary-100;
+    @apply px-6 py-4 border-b border-primary-200 bg-primary-700 text-white rounded-t-xl;
   }
   
   .card-body {

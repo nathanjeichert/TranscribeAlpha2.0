@@ -43,8 +43,7 @@ export default function TranscribeForm() {
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<TranscriptResponse | null>(null)
   const [error, setError] = useState<string>('')
-  const [previewFileId, setPreviewFileId] = useState<string>('')
-  const [hasPreviewSubtitles, setHasPreviewSubtitles] = useState(false)
+  const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string>('')
   
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -58,105 +57,18 @@ export default function TranscribeForm() {
     }))
   }
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
     setSelectedFile(file)
     setError('')
     
-    // Upload for preview
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      
-      const response = await fetch('/api/upload-preview', {
-        method: 'POST',
-        body: formData
-      })
-      
-      if (!response.ok) {
-        throw new Error('Failed to upload file for preview')
-      }
-      
-      const data = await response.json()
-      setPreviewFileId(data.file_id)
-      
-      // Set up media preview
-      const fileUrl = `/api/media/${data.file_id}`
-      const isVideo = file.type.startsWith('video/')
-      
-      if (isVideo && videoRef.current) {
-        videoRef.current.src = fileUrl
-        videoRef.current.style.display = 'block'
-        if (audioRef.current) {
-          audioRef.current.style.display = 'none'
-        }
-      } else if (audioRef.current) {
-        audioRef.current.src = fileUrl
-        audioRef.current.style.display = 'block'
-        if (videoRef.current) {
-          videoRef.current.style.display = 'none'
-        }
-      }
-    } catch (err) {
-      console.error('Preview upload error:', err)
-      setError('Failed to upload file for preview')
-    }
+    // Create preview URL for the selected file
+    const previewUrl = URL.createObjectURL(file)
+    setMediaPreviewUrl(previewUrl)
   }
 
-  const generatePreviewTranscript = async () => {
-    if (!previewFileId) return
-    
-    setIsLoading(true)
-    setError('')
-    
-    try {
-      const submitFormData = new FormData()
-      submitFormData.append('file_id', previewFileId)
-      submitFormData.append('speaker_names', formData.speaker_names)
-      submitFormData.append('ai_model', formData.ai_model)
-      
-      const response = await fetch('/api/generate-subtitles', {
-        method: 'POST',
-        body: submitFormData
-      })
-      
-      if (!response.ok) {
-        throw new Error('Failed to generate preview transcript')
-      }
-      
-      const data = await response.json()
-      setHasPreviewSubtitles(data.has_subtitles)
-      
-      if (data.has_subtitles && data.webvtt_content) {
-        // Add subtitles to media player
-        const subtitleBlob = new Blob([data.webvtt_content], { type: 'text/vtt' })
-        const subtitleUrl = URL.createObjectURL(subtitleBlob)
-        
-        const isVideo = videoRef.current?.style.display !== 'none'
-        const mediaElement = isVideo ? videoRef.current : audioRef.current
-        
-        if (mediaElement) {
-          // Add subtitle track
-          const track = document.createElement('track')
-          track.kind = 'captions'
-          track.src = subtitleUrl
-          track.srclang = 'en'
-          track.label = 'English'
-          track.default = true
-          
-          mediaElement.appendChild(track)
-          mediaElement.load()
-        }
-      }
-    } catch (err) {
-      console.error('Preview transcript error:', err)
-      setError('Failed to generate preview transcript')
-    } finally {
-      setIsLoading(false)
-    }
-  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -255,27 +167,29 @@ export default function TranscribeForm() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen bg-primary-50">
       <div className="max-w-4xl mx-auto px-6 py-12">
         {/* Header */}
         <div className="text-center mb-12">
-          <h1 className="text-4xl font-light text-primary-900 mb-4">
-            TranscribeAlpha
-          </h1>
-          <p className="text-lg text-primary-600">
-            Professional Legal Transcript Generator
-          </p>
+          <div className="bg-gradient-to-r from-primary-900 to-primary-700 text-white rounded-2xl p-8 shadow-2xl">
+            <h1 className="text-4xl font-light mb-4">
+              TranscribeAlpha
+            </h1>
+            <p className="text-lg text-primary-100">
+              Professional Legal Transcript Generator
+            </p>
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-8">
           {/* File Upload */}
           <div className="card">
             <div className="card-header">
-              <h2 className="text-xl font-medium text-primary-900">Media Upload</h2>
+              <h2 className="text-xl font-medium">Media Upload</h2>
             </div>
             <div className="card-body">
               <div 
-                className="border-2 border-dashed border-primary-200 rounded-lg p-8 text-center hover:border-primary-300 transition-colors duration-200 cursor-pointer"
+                className="border-2 border-dashed border-primary-300 rounded-lg p-8 text-center hover:border-primary-500 hover:bg-primary-100 transition-all duration-200 cursor-pointer bg-primary-50"
                 onClick={() => fileInputRef.current?.click()}
               >
                 <input
@@ -307,53 +221,13 @@ export default function TranscribeForm() {
                 )}
               </div>
 
-              {/* Media Preview */}
-              {selectedFile && (
-                <div className="mt-6 space-y-4">
-                  <div className="bg-primary-50 rounded-lg p-4">
-                    <video
-                      ref={videoRef}
-                      controls
-                      className="w-full max-w-md mx-auto rounded hidden"
-                      style={{ display: 'none' }}
-                    >
-                      Your browser does not support video playback.
-                    </video>
-                    <audio
-                      ref={audioRef}
-                      controls
-                      className="w-full max-w-md mx-auto hidden"
-                      style={{ display: 'none' }}
-                    >
-                      Your browser does not support audio playback.
-                    </audio>
-                  </div>
-
-                  <div className="flex justify-center">
-                    <button
-                      type="button"
-                      onClick={generatePreviewTranscript}
-                      disabled={isLoading}
-                      className="btn-secondary"
-                    >
-                      {isLoading ? 'Generating Preview...' : 'Generate Preview Transcript'}
-                    </button>
-                  </div>
-
-                  {hasPreviewSubtitles && (
-                    <div className="text-center text-sm text-green-600">
-                      ✅ Preview transcript generated with subtitles
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </div>
 
           {/* Case Information */}
           <div className="card">
             <div className="card-header">
-              <h2 className="text-xl font-medium text-primary-900">Case Information</h2>
+              <h2 className="text-xl font-medium">Case Information</h2>
             </div>
             <div className="card-body">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -445,7 +319,7 @@ export default function TranscribeForm() {
           {/* Transcription Settings */}
           <div className="card">
             <div className="card-header">
-              <h2 className="text-xl font-medium text-primary-900">Transcription Settings</h2>
+              <h2 className="text-xl font-medium">Transcription Settings</h2>
             </div>
             <div className="card-body space-y-6">
               <div>
@@ -537,8 +411,8 @@ export default function TranscribeForm() {
 
           {/* Error Display */}
           {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-              <div className="text-red-800">{error}</div>
+            <div className="bg-red-50 border border-red-300 rounded-lg p-4 shadow-sm">
+              <div className="text-red-800 font-medium">{error}</div>
             </div>
           )}
 
@@ -555,9 +429,9 @@ export default function TranscribeForm() {
 
           {/* Progress Bar */}
           {isLoading && (
-            <div className="w-full bg-primary-200 rounded-full h-2">
+            <div className="w-full bg-primary-200 rounded-full h-3 shadow-inner">
               <div 
-                className="bg-primary-600 h-2 rounded-full transition-all duration-300"
+                className="bg-gradient-to-r from-primary-600 to-primary-500 h-3 rounded-full transition-all duration-300 shadow-sm"
                 style={{ width: `${progress}%` }}
               ></div>
             </div>
@@ -566,19 +440,56 @@ export default function TranscribeForm() {
 
         {/* Results */}
         {result && (
-          <div className="mt-12 card">
-            <div className="card-header">
-              <h2 className="text-xl font-medium text-primary-900">Generated Files</h2>
-            </div>
-            <div className="card-body">
-              <div className="space-y-4">
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="text-green-800 font-medium mb-2">✅ Transcription Complete!</div>
-                  <div className="text-sm text-green-700">
-                    Generated {result.transcript.split('\n\n').filter(line => line.trim()).length} transcript segments
-                    {result.has_subtitles ? ' with subtitles' : ''}
+          <div className="mt-12 space-y-6">
+            {/* Media Preview Section */}
+            {selectedFile && mediaPreviewUrl && (
+              <div className="card">
+                <div className="card-header">
+                  <h2 className="text-xl font-medium">Media Preview</h2>
+                </div>
+                <div className="card-body">
+                  <div className="bg-primary-900 rounded-lg p-4">
+                    {selectedFile.type.startsWith('video/') ? (
+                      <video
+                        ref={videoRef}
+                        src={mediaPreviewUrl}
+                        controls
+                        className="w-full max-w-2xl mx-auto rounded"
+                      >
+                        Your browser does not support video playback.
+                      </video>
+                    ) : (
+                      <audio
+                        ref={audioRef}
+                        src={mediaPreviewUrl}
+                        controls
+                        className="w-full max-w-2xl mx-auto"
+                      >
+                        Your browser does not support audio playback.
+                      </audio>
+                    )}
+                  </div>
+                  <div className="mt-4 text-center text-sm text-primary-600">
+                    <span className="font-medium">{selectedFile.name}</span> • {(selectedFile.size / (1024 * 1024)).toFixed(1)} MB
                   </div>
                 </div>
+              </div>
+            )}
+            
+            {/* Transcript Results */}
+            <div className="card">
+              <div className="card-header">
+                <h2 className="text-xl font-medium">Generated Files</h2>
+              </div>
+              <div className="card-body">
+                <div className="space-y-4">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="text-green-800 font-medium mb-2">✅ Transcription Complete!</div>
+                    <div className="text-sm text-green-700">
+                      Generated {result.transcript.split('\n\n').filter(line => line.trim()).length} transcript segments
+                      {result.has_subtitles ? ' with subtitles' : ''}
+                    </div>
+                  </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <button

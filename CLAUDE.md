@@ -69,26 +69,30 @@ gcloud run deploy transcribealpha \
 
 ### Frontend Structure (`frontend-next/`)
 - **Next.js 14**: React-based framework with TypeScript
-- **Tailwind CSS**: Professional black/white design system consistent with portfolio
+- **Tailwind CSS**: Professional dark/light design system with gradient headers and enhanced shadows
 - **`src/app/`**: App Router with layout.tsx and page.tsx
-- **`src/components/TranscribeForm.tsx`**: Main form component with all functionality
+- **`src/components/TranscribeForm.tsx`**: Main form component with integrated media preview and transcription
 - **Static export**: Built to `out/` directory for production serving
+- **Media Preview**: Client-side video/audio preview using HTML5 media elements with URL.createObjectURL
 
 ### Key Components
 
 **Transcription Pipeline**:
-1. File upload → temporary storage
+1. File upload → client-side preview + server processing
 2. Video files → audio conversion (ffmpeg)
 3. Audio → Google Gemini AI transcription with timestamps
 4. Raw transcript → legal formatting
 5. Template-based Word document generation
-6. Download response to user
+6. Media preview displayed above transcript results
+7. Download response to user (DOCX, SRT, OnCue XML)
 
 **Media Processing**:
 - Supports: mp4, avi, mov, mkv, wav, mp3, m4a, flac, ogg
 - Automatic video-to-audio conversion using ffmpeg
 - Audio duration calculation for processing estimates
 - Cross-platform ffmpeg path detection
+- Client-side media preview using URL.createObjectURL for immediate feedback
+- Media preview shown above transcript results after processing
 
 **AI Integration**:
 - Google Gemini 2.5 Pro Preview model
@@ -212,6 +216,7 @@ gcloud run deploy transcribealpha \
 - Template modifications: Edit files in `backend/templates/`
 - Frontend changes: Modify components in `frontend-next/src/components/`
 - UI styling: Update Tailwind classes or add custom CSS in `globals.css`
+- **UI Design**: Current design uses dark headers (primary-700), gradient backgrounds, enhanced shadows, and primary-50 page background for professional appearance
 
 ### Debugging
 - Check Cloud Run logs via Google Cloud Console
@@ -281,9 +286,28 @@ gcloud run logs read transcribealpha --region us-central1
 gcloud run services describe transcribealpha --region us-central1
 ```
 
+## UI/UX Design Details
+
+### Current Design System
+- **Color Palette**: Tailwind primary scale (slate-based) from primary-50 to primary-900
+- **Page Background**: primary-50 (light gray) for subtle contrast
+- **Card Headers**: primary-700 background with white text for strong visual hierarchy
+- **Buttons**: primary-900 with enhanced shadows and hover effects
+- **Main Header**: Gradient from primary-900 to primary-700 with shadow-2xl
+- **Input Fields**: Enhanced with shadows and stronger borders (primary-300)
+- **Media Preview**: Displays above transcript results with dark background (primary-900)
+
+### User Flow
+1. **File Upload**: Enhanced drag-and-drop area with hover effects
+2. **Immediate Preview**: Client-side media preview using URL.createObjectURL
+3. **Single Processing**: No separate preview flow - direct to transcription
+4. **Results Display**: Media preview above transcript results
+5. **Downloads**: DOCX, SRT, and OnCue XML with visual file type indicators
+
 ## Development Guidelines for AI Coding Agents
 - **File Storage**: Cloud Storage for all files (transcription + preview), 12-hour cleanup via health endpoint
 - **Frontend**: Next.js 14 + TypeScript + Tailwind CSS, static export for production
+- **Media Preview**: Use URL.createObjectURL for client-side preview, no server upload needed for preview
 - **Import Pattern**: Multiple try/except blocks for different execution contexts
 - **Cache Logic**: MD5 of (file + model + speakers) - include all transcription parameters
 - **Error Handling**: Wrap Cloud Storage ops in try/catch, use HTTPException for API errors
