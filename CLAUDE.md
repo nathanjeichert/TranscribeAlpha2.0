@@ -6,46 +6,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 TranscribeAlpha is a legal transcript generation web application that converts audio/video files into professionally formatted legal transcripts using Google Gemini AI.
 
-**Architecture**: FastAPI backend + static HTML frontend
+**Architecture**: FastAPI backend + Next.js frontend with Tailwind CSS
 **Purpose**: Audio/video → AI transcription → formatted Word document
-**Deployment**: Configured for Google Cloud Run
+**Deployment**: Configured for Google Cloud Run with multi-stage Docker build
 
 ## Development Commands
 
-### Setup & Installation
+### Deployment
+This application is designed for **Google Cloud Run deployment only**. No local setup required.
+
 ```bash
-# Backend setup
-cd backend
-pip install -r requirements.txt
-
-# Environment setup (required)
-export GEMINI_API_KEY="your_api_key_here"
-
-# System dependencies (Ubuntu/Debian)
-sudo apt update
-sudo apt install ffmpeg libsndfile1-dev
-```
-
-### Running the Application
-```bash
-# Method 1: Direct execution (recommended)
-cd TranscribeAlpha2.0
-python main.py
-# Server runs on http://0.0.0.0:8080 with HTTP/2 support
-
-# Method 2: Using uvicorn directly (local development only)
-uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload
-
-# Method 3: Using hypercorn with HTTP/2 (production-like)
-hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
-
-# Frontend is static - access at http://localhost:8080/
+# Deploy to Cloud Run (automatic build from repository)
+gcloud run deploy transcribealpha \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
+  --memory 2Gi \
+  --cpu 1 \
+  --max-instances 10 \
+  --port 8080 \
+  --http2
 ```
 
 ### Testing
 ```bash
-# No automated test suite currently exists
-# Manual testing: upload audio/video files via frontend form
+# Testing via deployed Cloud Run instance
+# Access the deployed URL and test file upload functionality
+# Check /health endpoint for system status
 ```
 
 ## Code Architecture
@@ -56,9 +45,12 @@ hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
 - **`requirements.txt`**: Python dependencies including Hypercorn for HTTP/2
 - **`templates/`**: Word document templates for transcript formatting
 
-### Frontend Structure (`frontend/`)
-- **`index.html`**: Professional HTML form for file upload and case metadata input
-- **Direct JavaScript**: Fetch integration with backend API
+### Frontend Structure (`frontend-next/`)
+- **Next.js 14**: React-based framework with TypeScript
+- **Tailwind CSS**: Professional black/white design system consistent with portfolio
+- **`src/app/`**: App Router with layout.tsx and page.tsx
+- **`src/components/TranscribeForm.tsx`**: Main form component with all functionality
+- **Static export**: Built to `out/` directory for production serving
 
 ### Key Components
 
@@ -196,13 +188,14 @@ hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
 ### Adding New Features
 - New audio formats: Update `ALLOWED_EXTENSIONS` in `server.py`
 - Template modifications: Edit files in `backend/templates/`
-- Frontend changes: Modify `frontend/index.html` and associated files
+- Frontend changes: Modify components in `frontend-next/src/components/`
+- UI styling: Update Tailwind classes or add custom CSS in `globals.css`
 
 ### Debugging
-- Backend logs print to console during development
-- Check ffmpeg installation if audio conversion fails
-- Verify Gemini API key if transcription requests fail
-- Use `/health` endpoint to verify API key configuration
+- Check Cloud Run logs via Google Cloud Console
+- Use `/health` endpoint to verify API key configuration and system status
+- Verify Cloud Storage permissions if file upload issues occur
+- Check ffmpeg availability in container environment
 
 ### Common Tasks
 - **Add new document template**: Place in `backend/templates/` and update template loading logic
@@ -210,14 +203,11 @@ hypercorn backend.server:app --bind 0.0.0.0:8080 --h2
 - **Change AI model**: Update model name in Gemini client initialization
 - **Adjust timestamp format**: Modify timestamp prompt and formatting logic
 
-### Local Development with Docker
-```bash
-# Build locally
-docker build -t transcribealpha .
-
-# Run locally
-docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
-```
+### Cloud Run Deployment Details
+The application uses a multi-stage Docker build:
+1. **Stage 1**: Node.js builds the Next.js frontend to static files
+2. **Stage 2**: Python backend serves API + static frontend files
+3. **Result**: Single container with everything bundled for Cloud Run
 
 ## Branch Structure
 
@@ -261,20 +251,20 @@ docker run -p 8080:8080 -e GEMINI_API_KEY=your_key transcribealpha
 # Check health endpoint
 curl https://your-app.run.app/health
 
-# Local debug
-export GEMINI_API_KEY=your_key
-python main.py
+# View Cloud Run logs
+gcloud run logs read transcribealpha --region us-central1
 
-# Container debug
-docker run -it --entrypoint=/bin/bash transcribealpha
+# Test deployment
+gcloud run services describe transcribealpha --region us-central1
 ```
 
 ## Development Guidelines for AI Coding Agents
-- **File Storage**: Two-tier (memory <100MB, Cloud Storage >100MB)
+- **File Storage**: Cloud Storage for all files (transcription + preview), 12-hour cleanup via health endpoint
+- **Frontend**: Next.js 14 + TypeScript + Tailwind CSS, static export for production
 - **Import Pattern**: Multiple try/except blocks for different execution contexts
 - **Cache Logic**: MD5 of (file + model + speakers) - include all transcription parameters
 - **Error Handling**: Wrap Cloud Storage ops in try/catch, use HTTPException for API errors
-- **Key Dependencies**: google-cloud-storage (large files), hypercorn (HTTP/2), fastapi (web)
-- **Common Issues**: Check for duplicate functions/imports, ensure file cleanup
-- **Testing**: Verify both storage paths, file size limits, cache invalidation
-- **Debug**: Check `/health`, verify ffmpeg, Cloud Storage permissions, CORS config
+- **Key Dependencies**: google-cloud-storage, hypercorn (HTTP/2), fastapi, next.js, tailwindcss
+- **Build Process**: Multi-stage Docker (Node.js frontend build → Python backend)
+- **Testing**: Verify both storage paths, frontend/backend integration, file size limits
+- **Debug**: Check `/health`, verify ffmpeg, Cloud Storage permissions, CORS config, frontend build

@@ -1,5 +1,15 @@
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+# Multi-stage build: Node.js for frontend, Python for backend
+FROM node:18-alpine AS frontend-builder
+
+# Build the Next.js frontend
+WORKDIR /app/frontend-next
+COPY frontend-next/package.json frontend-next/package-lock.json* ./
+RUN npm install
+COPY frontend-next/ .
+RUN npm run build
+
+# Python backend stage
+FROM python:3.11-slim AS backend
 
 # Set working directory
 WORKDIR /app
@@ -19,6 +29,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application code
 COPY . .
 
+# Copy the built frontend from the frontend-builder stage
+COPY --from=frontend-builder /app/frontend-next/out ./frontend
+
 # Expose the port that Cloud Run expects
 EXPOSE 8080
 
@@ -27,4 +40,4 @@ ENV PORT=8080
 ENV HOST=0.0.0.0
 
 # Run the application
-CMD ["python", "main.py"]# Updated Tue Jun 17 23:36:14 PDT 2025
+CMD ["python", "main.py"]
