@@ -112,14 +112,14 @@ export default function TranscribeForm() {
     setError('')
     
     try {
-      const formData = new FormData()
-      formData.append('file_id', previewFileId)
-      formData.append('speaker_names', formData.speaker_names)
-      formData.append('ai_model', formData.ai_model)
+      const submitFormData = new FormData()
+      submitFormData.append('file_id', previewFileId)
+      submitFormData.append('speaker_names', formData.speaker_names)
+      submitFormData.append('ai_model', formData.ai_model)
       
       const response = await fetch('/api/generate-subtitles', {
         method: 'POST',
-        body: formData
+        body: submitFormData
       })
       
       if (!response.ok) {

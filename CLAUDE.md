@@ -15,8 +15,27 @@ TranscribeAlpha is a legal transcript generation web application that converts a
 ### Deployment
 This application is designed for **Google Cloud Run deployment only**. No local setup required.
 
+#### Prerequisites
+1. **Create Artifact Registry repository**:
 ```bash
-# Deploy to Cloud Run (automatic build from repository)
+gcloud artifacts repositories create transcribealpha \
+  --repository-format=docker \
+  --location=us-central1
+```
+
+2. **Set up GitHub integration** in Google Cloud Console:
+   - Go to Cloud Build → Triggers
+   - Connect your GitHub repository
+   - Configure trigger to use `cloudbuild.yaml`
+   - Set substitution variable: `_GEMINI_API_KEY=your_actual_api_key`
+
+#### Manual Deployment (if needed)
+```bash
+# Deploy using Cloud Build
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_GEMINI_API_KEY=your_gemini_api_key
+
+# Or deploy directly from source
 gcloud run deploy transcribealpha \
   --source . \
   --platform managed \
@@ -29,6 +48,9 @@ gcloud run deploy transcribealpha \
   --port 8080 \
   --http2
 ```
+
+#### Image Name for CI/CD
+**Artifact Registry**: `us-central1-docker.pkg.dev/YOUR_PROJECT_ID/transcribealpha/app`
 
 ### Testing
 ```bash
@@ -204,10 +226,11 @@ gcloud run deploy transcribealpha \
 - **Adjust timestamp format**: Modify timestamp prompt and formatting logic
 
 ### Cloud Run Deployment Details
-The application uses a multi-stage Docker build:
-1. **Stage 1**: Node.js builds the Next.js frontend to static files
-2. **Stage 2**: Python backend serves API + static frontend files
-3. **Result**: Single container with everything bundled for Cloud Run
+The application uses automated deployment via `cloudbuild.yaml`:
+1. **Multi-stage Docker build**: Node.js builds frontend → Python backend setup
+2. **Artifact Registry**: Images stored in `us-central1-docker.pkg.dev`
+3. **Automated deployment**: GitHub push triggers Cloud Build → Cloud Run deployment
+4. **Configuration**: All Cloud Run settings defined in `cloudbuild.yaml`
 
 ## Branch Structure
 
