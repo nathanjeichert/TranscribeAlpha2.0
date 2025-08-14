@@ -54,6 +54,9 @@ storage_client = storage.Client()
 # Cache for transcription results
 temp_transcript_cache: Dict[str, dict] = {}
 
+# Track last cleanup time for periodic cleanup
+last_cleanup_time = datetime.now()
+
 def create_cache_key(file_bytes: bytes, speaker_list: Optional[List[str]], ai_model: str) -> str:
     """Create a cache key based on file content and transcription settings"""
     # Create hash of file content
@@ -512,11 +515,24 @@ async def serve_subtitles(file_id: str, format: str = "webvtt"):
 @app.get("/health")
 async def health_check():
     """Health check endpoint for deployment platforms"""
+    global last_cleanup_time
+    
+    # Run cleanup every 12 hours
+    current_time = datetime.now()
+    if current_time - last_cleanup_time > timedelta(hours=12):
+        try:
+            cleanup_old_files()
+            last_cleanup_time = current_time
+            logger.info("Periodic cleanup completed via health check")
+        except Exception as e:
+            logger.error(f"Periodic cleanup failed: {str(e)}")
+    
     api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
     return {
         "status": "healthy", 
         "service": "TranscribeAlpha",
-        "api_key_configured": api_key_configured
+        "api_key_configured": api_key_configured,
+        "last_cleanup": last_cleanup_time.isoformat()
     }
 
 # Mount static files LAST so API routes take precedence
