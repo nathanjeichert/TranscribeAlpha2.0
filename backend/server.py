@@ -51,9 +51,7 @@ ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
 BUCKET_NAME = "transcribealpha-uploads-1750110926"
 storage_client = storage.Client()
 
-# Temporary file storage for media preview (use Redis or database in production)
-temp_file_storage: Dict[str, bytes] = {}
-temp_subtitle_storage: Dict[str, str] = {}
+# Cache for transcription results
 temp_transcript_cache: Dict[str, dict] = {}
 
 def create_cache_key(file_bytes: bytes, speaker_list: Optional[List[str]], ai_model: str) -> str:
@@ -108,6 +106,67 @@ def download_from_cloud_storage(blob_name: str) -> bytes:
         return blob.download_as_bytes()
     except Exception as e:
         logger.error(f"Error downloading from Cloud Storage: {str(e)}")
+        raise
+
+def get_blob_metadata(blob_name: str) -> dict:
+    """Get metadata for a blob in Cloud Storage"""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        if not blob.exists():
+            return None
+        
+        # Parse metadata from blob name and custom metadata
+        metadata = blob.metadata or {}
+        return {
+            'filename': metadata.get('original_filename', blob_name.split('_')[-1]),
+            'content_type': blob.content_type or metadata.get('content_type', 'application/octet-stream'),
+            'size': blob.size,
+            'created': blob.time_created,
+            'srt_content': metadata.get('srt_content'),
+            'webvtt_content': metadata.get('webvtt_content')
+        }
+    except Exception as e:
+        logger.error(f"Error getting blob metadata: {str(e)}")
+        return None
+
+def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, content_type: str = None) -> str:
+    """Upload preview file to Cloud Storage with metadata"""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob_name = f"preview_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
+        blob = bucket.blob(blob_name)
+        
+        # Set metadata
+        blob.metadata = {
+            'original_filename': filename,
+            'content_type': content_type or 'application/octet-stream',
+            'file_type': 'preview'
+        }
+        
+        if content_type:
+            blob.content_type = content_type
+            
+        blob.upload_from_string(file_bytes)
+        logger.info(f"Uploaded preview file {filename} to Cloud Storage as {blob_name}")
+        return blob_name
+    except Exception as e:
+        logger.error(f"Error uploading preview file to Cloud Storage: {str(e)}")
+        raise
+
+def update_blob_metadata(blob_name: str, metadata_updates: dict):
+    """Update metadata for a blob in Cloud Storage"""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        if blob.exists():
+            current_metadata = blob.metadata or {}
+            current_metadata.update(metadata_updates)
+            blob.metadata = current_metadata
+            blob.patch()
+            logger.info(f"Updated metadata for {blob_name}")
+    except Exception as e:
+        logger.error(f"Error updating blob metadata: {str(e)}")
         raise
 
 app = FastAPI(
@@ -277,31 +336,27 @@ async def transcribe(
     
     return JSONResponse(response_data)
 
-# Store for temporary media files and subtitles (in production, use Redis or similar)
-temporary_files = {}
-
 @app.post("/api/upload-preview")
 async def upload_media_preview(file: UploadFile = File(...)):
     """Upload media file for preview purposes"""
     try:
-        # Generate unique file ID
-        file_id = str(uuid.uuid4())
         file_bytes = await file.read()
+        content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
         
-        # Store file temporarily (in memory for now, use persistent storage in production)
-        temporary_files[file_id] = {
-            'filename': file.filename,
-            'content': file_bytes,
-            'content_type': file.content_type or mimetypes.guess_type(file.filename)[0]
-        }
+        # Upload to Cloud Storage
+        blob_name = upload_preview_file_to_cloud_storage(
+            file_bytes, 
+            file.filename, 
+            content_type
+        )
         
         logger.info(f"Uploaded media file for preview: {file.filename} ({len(file_bytes)} bytes)")
         
         return JSONResponse({
-            "file_id": file_id,
+            "file_id": blob_name,
             "filename": file.filename,
             "size": len(file_bytes),
-            "content_type": file.content_type
+            "content_type": content_type
         })
         
     except Exception as e:
@@ -311,27 +366,31 @@ async def upload_media_preview(file: UploadFile = File(...)):
 @app.get("/api/media/{file_id}")
 async def serve_media_file(file_id: str):
     """Serve media file for preview"""
-    if file_id not in temporary_files:
-        raise HTTPException(status_code=404, detail="Media file not found")
-    
-    file_data = temporary_files[file_id]
-    
-    # Get content type
-    content_type = file_data['content_type'] or 'application/octet-stream'
-    
-    # Create streaming response for large files
-    def generate():
-        yield file_data['content']
-    
-    return StreamingResponse(
-        generate(),
-        media_type=content_type,
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(len(file_data['content'])),
-            "Cache-Control": "public, max-age=3600"
-        }
-    )
+    try:
+        # Get file metadata
+        metadata = get_blob_metadata(file_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail="Media file not found")
+        
+        # Download file from Cloud Storage
+        file_bytes = download_from_cloud_storage(file_id)
+        
+        # Create streaming response for large files
+        def generate():
+            yield file_bytes
+        
+        return StreamingResponse(
+            generate(),
+            media_type=metadata['content_type'],
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(len(file_bytes)),
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error serving media file {file_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error serving media file")
 
 @app.post("/api/generate-subtitles")
 async def generate_subtitles_preview(
@@ -340,34 +399,37 @@ async def generate_subtitles_preview(
     ai_model: str = Form("flash")
 ):
     """Generate subtitles for media preview"""
-    if file_id not in temporary_files:
-        raise HTTPException(status_code=404, detail="Media file not found")
-    
-    file_data = temporary_files[file_id]
-    
-    # Process speaker names
-    speaker_list: Optional[List[str]] = None
-    if speaker_names:
-        speaker_names = speaker_names.strip()
-        if speaker_names.startswith('[') and speaker_names.endswith(']'):
-            try:
-                speaker_list = json.loads(speaker_names)
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
-        else:
-            speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
-    
-    # Basic title data for subtitle generation
-    title_data = {
-        "FILE_NAME": file_data['filename'],
-        "FILE_DURATION": "Calculating...",
-    }
-    
     try:
+        # Get file metadata
+        metadata = get_blob_metadata(file_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail="Media file not found")
+        
+        # Download file from Cloud Storage
+        file_bytes = download_from_cloud_storage(file_id)
+        
+        # Process speaker names
+        speaker_list: Optional[List[str]] = None
+        if speaker_names:
+            speaker_names = speaker_names.strip()
+            if speaker_names.startswith('[') and speaker_names.endswith(']'):
+                try:
+                    speaker_list = json.loads(speaker_names)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
+            else:
+                speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
+        
+        # Basic title data for subtitle generation
+        title_data = {
+            "FILE_NAME": metadata['filename'],
+            "FILE_DURATION": "Calculating...",
+        }
+        
         # Process with timestamps enabled
         result = process_transcription(
-            file_data['content'], 
-            file_data['filename'], 
+            file_bytes, 
+            metadata['filename'], 
             speaker_list, 
             title_data, 
             include_timestamps=True,  # Always include timestamps for subtitles
@@ -397,9 +459,11 @@ async def generate_subtitles_preview(
             srt_content = generate_srt_from_transcript(turns)
             webvtt_content = srt_to_webvtt(srt_content)
         
-        # Store subtitles with the file
-        temporary_files[file_id]['srt_content'] = srt_content
-        temporary_files[file_id]['webvtt_content'] = webvtt_content
+        # Store subtitles in Cloud Storage metadata
+        update_blob_metadata(file_id, {
+            'srt_content': srt_content,
+            'webvtt_content': webvtt_content
+        })
         
         return JSONResponse({
             "file_id": file_id,
@@ -415,31 +479,35 @@ async def generate_subtitles_preview(
 @app.get("/api/subtitles/{file_id}")
 async def serve_subtitles(file_id: str, format: str = "webvtt"):
     """Serve subtitle file in requested format"""
-    if file_id not in temporary_files:
-        raise HTTPException(status_code=404, detail="Media file not found")
-    
-    file_data = temporary_files[file_id]
-    
-    if format.lower() == "srt":
-        content = file_data.get('srt_content')
-        media_type = "text/plain"
-        filename = f"{file_data['filename']}.srt"
-    else:  # webvtt
-        content = file_data.get('webvtt_content')
-        media_type = "text/vtt"
-        filename = f"{file_data['filename']}.vtt"
-    
-    if not content:
-        raise HTTPException(status_code=404, detail="Subtitles not found for this file")
-    
-    return Response(
-        content=content,
-        media_type=media_type,
-        headers={
-            "Content-Disposition": f"attachment; filename=\"{filename}\"",
-            "Cache-Control": "public, max-age=3600"
-        }
-    )
+    try:
+        # Get file metadata
+        metadata = get_blob_metadata(file_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail="Media file not found")
+        
+        if format.lower() == "srt":
+            content = metadata.get('srt_content')
+            media_type = "text/plain"
+            filename = f"{metadata['filename']}.srt"
+        else:  # webvtt
+            content = metadata.get('webvtt_content')
+            media_type = "text/vtt"
+            filename = f"{metadata['filename']}.vtt"
+        
+        if not content:
+            raise HTTPException(status_code=404, detail="Subtitles not found for this file")
+        
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{filename}\"",
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error serving subtitles for {file_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error serving subtitles")
 
 @app.get("/health")
 async def health_check():
