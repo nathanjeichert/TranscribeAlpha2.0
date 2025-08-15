@@ -541,6 +541,7 @@ export default function TranscribeForm() {
                     </pre>
                   </div>
                 </div>
+                </div>
               </div>
             </div>
           </div>
