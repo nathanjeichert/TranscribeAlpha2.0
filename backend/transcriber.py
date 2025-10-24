@@ -276,6 +276,14 @@ def replace_placeholder_text(element, placeholder: str, replacement: str) -> Non
 
 
 def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], include_timestamps: bool = False) -> bytes:
+    """
+    Create a DOCX transcript with line wrapping that matches the OnCue XML format.
+
+    Each turn is wrapped to match legal transcript page formatting:
+    - First line has speaker name with 1" first-line indent
+    - Continuation lines have no first-line indent (0" indent) to align left
+    - Line breaks match the XML format exactly for consistent page:line numbering
+    """
     doc = Document("transcript_template.docx")
     for key, value in title_data.items():
         placeholder = f"{{{{{key}}}}}"
@@ -288,44 +296,114 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], includ
             placeholder_paragraph = p
             break
 
+    # Line formatting constants - must match generate_oncue_xml()
+    SPEAKER_COLON = ":   "
+    MAX_TOTAL_LINE_WIDTH = 72
+    MAX_CONTINUATION_WIDTH = 62
+    CONTINUATION_SPACES = 5
+
     if placeholder_paragraph:
         p_element = placeholder_paragraph._element
         p_element.getparent().remove(p_element)
+
         for turn in transcript_turns:
+            speaker_name = turn.speaker.upper()
+            text = turn.text.strip()
+
+            # Calculate how much space the speaker prefix takes
+            # In the document, this will appear indented by first_line_indent
+            speaker_prefix = speaker_name + SPEAKER_COLON
+
+            # Calculate available space for text on first line
+            max_first_line_text = MAX_TOTAL_LINE_WIDTH - 15 - len(speaker_prefix)  # 15 is space indent
+
+            # Wrap text to match XML formatting
+            wrapped_lines = wrap_text_for_transcript(text, max_first_line_text)
+
+            if not wrapped_lines:
+                wrapped_lines = [""]
+
+            # First line with speaker name
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.0)
+            p.paragraph_format.first_line_indent = Inches(1.5)  # Simulates 15 char indent
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
-            
+
             # Include timestamp if available and requested
             if include_timestamps and turn.timestamp:
                 timestamp_text = f"{turn.timestamp} "
                 timestamp_run = p.add_run(timestamp_text)
                 timestamp_run.font.name = "Courier New"
-            
-            speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
+
+            speaker_run = p.add_run(f"{speaker_name}:   ")
             speaker_run.font.name = "Courier New"
-            text_run = p.add_run(turn.text)
+            text_run = p.add_run(wrapped_lines[0])
             text_run.font.name = "Courier New"
+
+            # Add continuation lines if text wrapped
+            max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
+            remaining_text = " ".join(wrapped_lines[1:])
+
+            if remaining_text:
+                continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
+
+                for continuation_text in continuation_wrapped:
+                    p = doc.add_paragraph()
+                    p.paragraph_format.left_indent = Inches(0.5)  # Simulates 5 char indent
+                    p.paragraph_format.first_line_indent = Inches(0.0)
+                    p.paragraph_format.line_spacing = 2.0
+                    p.paragraph_format.space_after = Pt(0)
+
+                    text_run = p.add_run(continuation_text)
+                    text_run.font.name = "Courier New"
     else:
+        # Fallback if no placeholder found
         for turn in transcript_turns:
+            speaker_name = turn.speaker.upper()
+            text = turn.text.strip()
+
+            speaker_prefix = speaker_name + SPEAKER_COLON
+            max_first_line_text = MAX_TOTAL_LINE_WIDTH - 15 - len(speaker_prefix)
+
+            wrapped_lines = wrap_text_for_transcript(text, max_first_line_text)
+
+            if not wrapped_lines:
+                wrapped_lines = [""]
+
+            # First line with speaker name
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.0)
+            p.paragraph_format.first_line_indent = Inches(1.5)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
-            
-            # Include timestamp if available and requested
+
             if include_timestamps and turn.timestamp:
                 timestamp_text = f"{turn.timestamp} "
                 timestamp_run = p.add_run(timestamp_text)
                 timestamp_run.font.name = "Courier New"
-            
-            speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
+
+            speaker_run = p.add_run(f"{speaker_name}:   ")
             speaker_run.font.name = "Courier New"
-            text_run = p.add_run(turn.text)
+            text_run = p.add_run(wrapped_lines[0])
             text_run.font.name = "Courier New"
+
+            # Add continuation lines
+            max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
+            remaining_text = " ".join(wrapped_lines[1:])
+
+            if remaining_text:
+                continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
+
+                for continuation_text in continuation_wrapped:
+                    p = doc.add_paragraph()
+                    p.paragraph_format.left_indent = Inches(0.5)
+                    p.paragraph_format.first_line_indent = Inches(0.0)
+                    p.paragraph_format.line_spacing = 2.0
+                    p.paragraph_format.space_after = Pt(0)
+
+                    text_run = p.add_run(continuation_text)
+                    text_run.font.name = "Courier New"
 
     buffer = io.BytesIO()
     doc.save(buffer)
