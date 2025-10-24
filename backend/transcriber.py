@@ -681,7 +681,7 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     CONTINUATION_SPACES = 0     # Leading spaces for continuation lines in XML (visual simulation)
     SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars)
     MAX_TOTAL_LINE_WIDTH = 64   # Maximum total characters per XML line for speaker lines 
-    MAX_CONTINUATION_WIDTH = 54 # Maximum total characters per XML line for continuation lines
+    MAX_CONTINUATION_WIDTH = 64 # Maximum total characters per XML line for continuation lines
 
     page = 1
     line_in_page = 1
