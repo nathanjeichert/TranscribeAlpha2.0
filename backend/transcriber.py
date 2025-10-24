@@ -676,14 +676,15 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     }
     depo_video = SubElement(deposition, "depoVideo", video_attrs)
 
-    # Line formatting constants based on Word's actual character wrapping behavior
-    # These MUST match exactly how Word wraps text with 1.0" first-line indent in Courier New
-    # Measurements: First line = 49 chars total, Continuation = 65 chars total
+    # Line formatting constants to match Word's wrapping behavior
+    # Word measures: First line = 49 chars content, Continuation = 65 chars content
+    # XML must add explicit spaces: 15 for speaker lines, 5 for continuation
+    # So XML limits: 49 + 15 + speaker + ":   " for first line, 65 for continuation
     SPEAKER_PREFIX_SPACES = 15  # Leading spaces before speaker name in XML (visual simulation)
     CONTINUATION_SPACES = 5     # Leading spaces for continuation lines in XML (visual simulation)
     SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars)
-    MAX_TOTAL_LINE_WIDTH = 49   # Maximum total characters per line for speaker lines (Word measured)
-    MAX_CONTINUATION_WIDTH = 65 # Maximum total characters per line for continuation lines (Word measured)
+    MAX_TOTAL_LINE_WIDTH = 72   # Maximum total characters per XML line for speaker lines (49 content + ~23 prefix)
+    MAX_CONTINUATION_WIDTH = 62 # Maximum total characters per XML line for continuation lines (57 content + 5 spaces)
 
     page = 1
     line_in_page = 1
