@@ -277,12 +277,10 @@ def replace_placeholder_text(element, placeholder: str, replacement: str) -> Non
 
 def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], include_timestamps: bool = False) -> bytes:
     """
-    Create a DOCX transcript with line wrapping that matches the OnCue XML format.
+    Create a DOCX transcript with simple one-paragraph-per-turn formatting.
 
-    Each turn is wrapped to match legal transcript page formatting:
-    - First line has speaker name with 1" first-line indent
-    - Continuation lines have no first-line indent (0" indent) to align left
-    - Line breaks match the XML format exactly for consistent page:line numbering
+    Word will automatically wrap lines based on the first-line indent (1.0").
+    The XML generation must match Word's natural line wrapping behavior.
     """
     doc = Document("transcript_template.docx")
     for key, value in title_data.items():
@@ -296,37 +294,13 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], includ
             placeholder_paragraph = p
             break
 
-    # Line formatting constants - must match generate_oncue_xml()
-    SPEAKER_COLON = ":   "
-    MAX_TOTAL_LINE_WIDTH = 72
-    MAX_CONTINUATION_WIDTH = 62
-    CONTINUATION_SPACES = 5
-
     if placeholder_paragraph:
         p_element = placeholder_paragraph._element
         p_element.getparent().remove(p_element)
-
         for turn in transcript_turns:
-            speaker_name = turn.speaker.upper()
-            text = turn.text.strip()
-
-            # Calculate how much space the speaker prefix takes
-            # In the document, this will appear indented by first_line_indent
-            speaker_prefix = speaker_name + SPEAKER_COLON
-
-            # Calculate available space for text on first line
-            max_first_line_text = MAX_TOTAL_LINE_WIDTH - 15 - len(speaker_prefix)  # 15 is space indent
-
-            # Wrap text to match XML formatting
-            wrapped_lines = wrap_text_for_transcript(text, max_first_line_text)
-
-            if not wrapped_lines:
-                wrapped_lines = [""]
-
-            # First line with speaker name
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.5)  # Simulates 15 char indent
+            p.paragraph_format.first_line_indent = Inches(1.0)  # Standard legal transcript indent
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
 
@@ -336,74 +310,28 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], includ
                 timestamp_run = p.add_run(timestamp_text)
                 timestamp_run.font.name = "Courier New"
 
-            speaker_run = p.add_run(f"{speaker_name}:   ")
+            speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
-            text_run = p.add_run(wrapped_lines[0])
+            text_run = p.add_run(turn.text)
             text_run.font.name = "Courier New"
-
-            # Add continuation lines if text wrapped
-            max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
-            remaining_text = " ".join(wrapped_lines[1:])
-
-            if remaining_text:
-                continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
-
-                for continuation_text in continuation_wrapped:
-                    p = doc.add_paragraph()
-                    p.paragraph_format.left_indent = Inches(0.5)  # Simulates 5 char indent
-                    p.paragraph_format.first_line_indent = Inches(0.0)
-                    p.paragraph_format.line_spacing = 2.0
-                    p.paragraph_format.space_after = Pt(0)
-
-                    text_run = p.add_run(continuation_text)
-                    text_run.font.name = "Courier New"
     else:
-        # Fallback if no placeholder found
         for turn in transcript_turns:
-            speaker_name = turn.speaker.upper()
-            text = turn.text.strip()
-
-            speaker_prefix = speaker_name + SPEAKER_COLON
-            max_first_line_text = MAX_TOTAL_LINE_WIDTH - 15 - len(speaker_prefix)
-
-            wrapped_lines = wrap_text_for_transcript(text, max_first_line_text)
-
-            if not wrapped_lines:
-                wrapped_lines = [""]
-
-            # First line with speaker name
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.5)
+            p.paragraph_format.first_line_indent = Inches(1.0)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
 
+            # Include timestamp if available and requested
             if include_timestamps and turn.timestamp:
                 timestamp_text = f"{turn.timestamp} "
                 timestamp_run = p.add_run(timestamp_text)
                 timestamp_run.font.name = "Courier New"
 
-            speaker_run = p.add_run(f"{speaker_name}:   ")
+            speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
-            text_run = p.add_run(wrapped_lines[0])
+            text_run = p.add_run(turn.text)
             text_run.font.name = "Courier New"
-
-            # Add continuation lines
-            max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
-            remaining_text = " ".join(wrapped_lines[1:])
-
-            if remaining_text:
-                continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
-
-                for continuation_text in continuation_wrapped:
-                    p = doc.add_paragraph()
-                    p.paragraph_format.left_indent = Inches(0.5)
-                    p.paragraph_format.first_line_indent = Inches(0.0)
-                    p.paragraph_format.line_spacing = 2.0
-                    p.paragraph_format.space_after = Pt(0)
-
-                    text_run = p.add_run(continuation_text)
-                    text_run.font.name = "Courier New"
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -748,13 +676,14 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     }
     depo_video = SubElement(deposition, "depoVideo", video_attrs)
 
-    # Line formatting constants based on Nielsen XML analysis
-    # Legal transcript pages have fixed width (~72 chars total for speaker lines, ~62 for continuation)
-    SPEAKER_PREFIX_SPACES = 15  # Leading spaces before speaker name
-    CONTINUATION_SPACES = 5     # Leading spaces for continuation lines
+    # Line formatting constants based on Word's actual character wrapping behavior
+    # These MUST match exactly how Word wraps text with 1.0" first-line indent in Courier New
+    # Measurements: First line = 49 chars total, Continuation = 65 chars total
+    SPEAKER_PREFIX_SPACES = 15  # Leading spaces before speaker name in XML (visual simulation)
+    CONTINUATION_SPACES = 5     # Leading spaces for continuation lines in XML (visual simulation)
     SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars)
-    MAX_TOTAL_LINE_WIDTH = 72   # Maximum total characters per line for speaker lines
-    MAX_CONTINUATION_WIDTH = 62 # Maximum total characters per line for continuation lines
+    MAX_TOTAL_LINE_WIDTH = 49   # Maximum total characters per line for speaker lines (Word measured)
+    MAX_CONTINUATION_WIDTH = 65 # Maximum total characters per line for continuation lines (Word measured)
 
     page = 1
     line_in_page = 1
