@@ -688,7 +688,7 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     last_pgln = 101
 
     for turn_idx, turn in enumerate(transcript_turns):
-        # Calculate timestamps
+        # Calculate timestamps for this speaker turn
         start_sec = timestamp_to_seconds(turn.timestamp)
         if turn_idx < len(transcript_turns) - 1:
             stop_sec = timestamp_to_seconds(transcript_turns[turn_idx + 1].timestamp)
@@ -711,8 +711,25 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
         if not wrapped_lines:
             wrapped_lines = [""]
 
+        # Calculate continuation lines to determine total line count
+        max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
+        remaining_text = " ".join(wrapped_lines[1:])
+        continuation_wrapped = []
+        if remaining_text:
+            continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
+
+        # Total lines = 1 (first line) + continuation lines
+        total_lines = 1 + len(continuation_wrapped)
+
+        # Interpolate timestamps evenly across all lines
+        # This ensures each wrapped line gets a unique timestamp for viewer highlighting
+        turn_duration = stop_sec - start_sec
+        time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
+
         # Create first line with speaker
         first_line_text = speaker_prefix + wrapped_lines[0]
+        first_line_start = start_sec
+        first_line_stop = start_sec + time_per_line
 
         pgln = page * 100 + line_in_page
         last_pgln = pgln
@@ -727,8 +744,8 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
                 "line": str(line_in_page),
                 "pgLN": str(pgln),
                 "videoID": "1",
-                "videoStart": f"{start_sec:.2f}",
-                "videoStop": f"{stop_sec:.2f}",
+                "videoStart": f"{first_line_start:.2f}",
+                "videoStop": f"{first_line_stop:.2f}",
                 "isEdited": "no",
                 "isSynched": "yes",
                 "isRedacted": "no",
@@ -741,43 +758,44 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
             page += 1
             line_in_page = 1
 
-        # Add continuation lines if text wrapped to multiple lines
-        # Continuation lines can use more space since no speaker prefix
-        max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
+        # Add continuation lines with interpolated timestamps
+        for cont_idx, continuation_text in enumerate(continuation_wrapped):
+            # Calculate interpolated timestamps for this continuation line
+            line_start = start_sec + time_per_line * (cont_idx + 1)
+            line_stop = start_sec + time_per_line * (cont_idx + 2)
 
-        remaining_text = " ".join(wrapped_lines[1:])
-        if remaining_text:
-            continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
+            # Ensure last line ends exactly at turn's stop time
+            if cont_idx == len(continuation_wrapped) - 1:
+                line_stop = stop_sec
 
-            for continuation_text in continuation_wrapped:
-                # Continuation lines: no leading spaces + text
-                continuation_line_text = " " * CONTINUATION_SPACES + continuation_text
+            # Continuation lines: no leading spaces + text
+            continuation_line_text = " " * CONTINUATION_SPACES + continuation_text
 
-                pgln = page * 100 + line_in_page
-                last_pgln = pgln
+            pgln = page * 100 + line_in_page
+            last_pgln = pgln
 
-                SubElement(
-                    depo_video,
-                    "depoLine",
-                    {
-                        "prefix": "",
-                        "text": continuation_line_text,
-                        "page": str(page),
-                        "line": str(line_in_page),
-                        "pgLN": str(pgln),
-                        "videoID": "1",
-                        "videoStart": f"{start_sec:.2f}",
-                        "videoStop": f"{stop_sec:.2f}",
-                        "isEdited": "no",
-                        "isSynched": "yes",
-                        "isRedacted": "no",
-                    },
-                )
+            SubElement(
+                depo_video,
+                "depoLine",
+                {
+                    "prefix": "",
+                    "text": continuation_line_text,
+                    "page": str(page),
+                    "line": str(line_in_page),
+                    "pgLN": str(pgln),
+                    "videoID": "1",
+                    "videoStart": f"{line_start:.2f}",
+                    "videoStop": f"{line_stop:.2f}",
+                    "isEdited": "no",
+                    "isSynched": "yes",
+                    "isRedacted": "no",
+                },
+            )
 
-                line_in_page += 1
-                if line_in_page > lines_per_page:
-                    page += 1
-                    line_in_page = 1
+            line_in_page += 1
+            if line_in_page > lines_per_page:
+                page += 1
+                line_in_page = 1
 
     depo_video.set("lastPGLN", str(last_pgln))
 

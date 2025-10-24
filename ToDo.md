@@ -7,6 +7,7 @@ This file provides a list, sorted by category and not in any particular order, o
 - Clean up codebase
 - Fix errors with large video files
 - Speed up functions that turn .json into docx/XML? SRT appears to be faster?
+- **URGENT**: Replace temporary even-distribution timestamp interpolation strategy with more robust solution (currently using simple linear interpolation for wrapped transcript lines - should use AI-based word-level timestamps or forced alignment for accurate per-line timing)
 
 ### Additional Features/Capabilities, Generally
 - Devise internal transcription benchmark using a human-generated transcript and audio file
