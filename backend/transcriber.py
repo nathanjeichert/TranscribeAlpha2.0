@@ -677,8 +677,8 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     depo_video = SubElement(deposition, "depoVideo", video_attrs)
 
     # Line formatting constants to match Word's wrapping behavior
-    SPEAKER_PREFIX_SPACES = 15  # Leading spaces before speaker name in XML (visual simulation)
-    CONTINUATION_SPACES = 5     # Leading spaces for continuation lines in XML (visual simulation)
+    SPEAKER_PREFIX_SPACES = 10  # Leading spaces before speaker name in XML (visual simulation)
+    CONTINUATION_SPACES = 0     # Leading spaces for continuation lines in XML (visual simulation)
     SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars)
     MAX_TOTAL_LINE_WIDTH = 64   # Maximum total characters per XML line for speaker lines 
     MAX_CONTINUATION_WIDTH = 54 # Maximum total characters per XML line for continuation lines
@@ -698,7 +698,7 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
         speaker_name = turn.speaker.upper()
         text = turn.text.strip()
 
-        # Format speaker line: "               SPEAKER:   " + text
+        # Format speaker line: "          SPEAKER:   " + text
         speaker_prefix = " " * SPEAKER_PREFIX_SPACES + speaker_name + SPEAKER_COLON
 
         # Calculate available space for text on first line
@@ -750,7 +750,7 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
             continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
 
             for continuation_text in continuation_wrapped:
-                # Continuation lines: 5 spaces + text
+                # Continuation lines: no leading spaces + text
                 continuation_line_text = " " * CONTINUATION_SPACES + continuation_text
 
                 pgln = page * 100 + line_in_page
