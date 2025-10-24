@@ -585,8 +585,59 @@ def timestamp_to_seconds(timestamp: Optional[str]) -> float:
         return 0.0
 
 
+def wrap_text_for_transcript(text: str, max_width: int) -> List[str]:
+    """
+    Wrap text to fit within max_width characters, preserving word boundaries.
+
+    Args:
+        text: The text to wrap
+        max_width: Maximum characters per line of text content
+
+    Returns:
+        List of wrapped lines
+    """
+    if not text:
+        return [""]
+
+    if max_width <= 0:
+        return [text]
+
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+
+    for word in words:
+        word_length = len(word)
+        # +1 for space before word (except first word)
+        space_needed = word_length + (1 if current_line else 0)
+
+        if current_length + space_needed <= max_width:
+            current_line.append(word)
+            current_length += space_needed
+        else:
+            # Start new line
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+            current_length = word_length
+
+    # Add remaining words
+    if current_line:
+        lines.append(" ".join(current_line))
+
+    return lines if lines else [""]
+
+
 def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, audio_duration: float, lines_per_page: int = 25) -> str:
-    """Generate OnCue-compatible XML from transcript turns."""
+    """
+    Generate OnCue-compatible XML from transcript turns.
+
+    This function breaks long utterances into multiple lines to match the DOCX formatting:
+    - First line: 15 spaces + "SPEAKER:" (padded to ~21 chars) + text (max ~48 chars)
+    - Continuation lines: 5 spaces + text (max ~57 chars)
+    - Total line length: ~71 chars for speaker lines, ~62 chars for continuation lines
+    """
     from xml.etree.ElementTree import Element, SubElement, tostring
 
     root = Element(
@@ -619,27 +670,56 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     }
     depo_video = SubElement(deposition, "depoVideo", video_attrs)
 
-    last_pgln = 101
-    for idx, turn in enumerate(transcript_turns):
-        page = idx // lines_per_page + 1
-        line = idx % lines_per_page + 1
-        pgln = page * 100 + line
-        last_pgln = pgln
+    # Line formatting constants based on Nielsen XML analysis
+    # Legal transcript pages have fixed width (~72 chars total for speaker lines, ~62 for continuation)
+    SPEAKER_PREFIX_SPACES = 15  # Leading spaces before speaker name
+    CONTINUATION_SPACES = 5     # Leading spaces for continuation lines
+    SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars)
+    MAX_TOTAL_LINE_WIDTH = 72   # Maximum total characters per line for speaker lines
+    MAX_CONTINUATION_WIDTH = 62 # Maximum total characters per line for continuation lines
 
+    page = 1
+    line_in_page = 1
+    last_pgln = 101
+
+    for turn_idx, turn in enumerate(transcript_turns):
+        # Calculate timestamps
         start_sec = timestamp_to_seconds(turn.timestamp)
-        if idx < len(transcript_turns) - 1:
-            stop_sec = timestamp_to_seconds(transcript_turns[idx + 1].timestamp)
+        if turn_idx < len(transcript_turns) - 1:
+            stop_sec = timestamp_to_seconds(transcript_turns[turn_idx + 1].timestamp)
         else:
             stop_sec = audio_duration
+
+        speaker_name = turn.speaker.upper()
+        text = turn.text.strip()
+
+        # Format speaker line: "               SPEAKER:   " + text
+        speaker_prefix = " " * SPEAKER_PREFIX_SPACES + speaker_name + SPEAKER_COLON
+
+        # Calculate available space for text on first line
+        # Max line width - prefix length = available for text
+        max_first_line_text = MAX_TOTAL_LINE_WIDTH - len(speaker_prefix)
+
+        # Wrap text to fit line limits
+        wrapped_lines = wrap_text_for_transcript(text, max_first_line_text)
+
+        if not wrapped_lines:
+            wrapped_lines = [""]
+
+        # Create first line with speaker
+        first_line_text = speaker_prefix + wrapped_lines[0]
+
+        pgln = page * 100 + line_in_page
+        last_pgln = pgln
 
         SubElement(
             depo_video,
             "depoLine",
             {
                 "prefix": "",
-                "text": f"{turn.speaker.upper()}: {turn.text}",
+                "text": first_line_text,
                 "page": str(page),
-                "line": str(line),
+                "line": str(line_in_page),
                 "pgLN": str(pgln),
                 "videoID": "1",
                 "videoStart": f"{start_sec:.2f}",
@@ -649,6 +729,50 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
                 "isRedacted": "no",
             },
         )
+
+        # Advance line counter
+        line_in_page += 1
+        if line_in_page > lines_per_page:
+            page += 1
+            line_in_page = 1
+
+        # Add continuation lines if text wrapped to multiple lines
+        # Continuation lines can use more space since no speaker prefix
+        max_continuation_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
+
+        remaining_text = " ".join(wrapped_lines[1:])
+        if remaining_text:
+            continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
+
+            for continuation_text in continuation_wrapped:
+                # Continuation lines: 5 spaces + text
+                continuation_line_text = " " * CONTINUATION_SPACES + continuation_text
+
+                pgln = page * 100 + line_in_page
+                last_pgln = pgln
+
+                SubElement(
+                    depo_video,
+                    "depoLine",
+                    {
+                        "prefix": "",
+                        "text": continuation_line_text,
+                        "page": str(page),
+                        "line": str(line_in_page),
+                        "pgLN": str(pgln),
+                        "videoID": "1",
+                        "videoStart": f"{start_sec:.2f}",
+                        "videoStop": f"{stop_sec:.2f}",
+                        "isEdited": "no",
+                        "isSynched": "yes",
+                        "isRedacted": "no",
+                    },
+                )
+
+                line_in_page += 1
+                if line_in_page > lines_per_page:
+                    page += 1
+                    line_in_page = 1
 
     depo_video.set("lastPGLN", str(last_pgln))
 
