@@ -11,8 +11,6 @@ interface FormData {
   location: string
   speaker_names: string
   include_timestamps: boolean
-  ai_model: string
-  transcription_engine: string
 }
 
 interface TranscriptResponse {
@@ -30,9 +28,7 @@ export default function TranscribeForm() {
     input_time: '',
     location: '',
     speaker_names: '',
-    include_timestamps: false,
-    ai_model: 'flash',
-    transcription_engine: 'assemblyai'
+    include_timestamps: false
   })
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -336,83 +332,11 @@ export default function TranscribeForm() {
                 </p>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-primary-700 mb-3">
-                  Transcription Engine
-                </label>
-                <div className="space-y-2">
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="transcription_engine"
-                      value="assemblyai"
-                      checked={formData.transcription_engine === 'assemblyai'}
-                      onChange={handleInputChange}
-                      className="mr-3"
-                    />
-                    <div>
-                      <div className="font-medium">AssemblyAI (Default)</div>
-                      <div className="text-sm text-primary-600">Word-level timestamps for precise highlighting</div>
-                    </div>
-                  </label>
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="transcription_engine"
-                      value="gemini"
-                      checked={formData.transcription_engine === 'gemini'}
-                      onChange={handleInputChange}
-                      className="mr-3"
-                    />
-                    <div>
-                      <div className="font-medium">Google Gemini</div>
-                      <div className="text-sm text-primary-600">Faster turnaround, linear timestamp interpolation</div>
-                    </div>
-                  </label>
+              <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
+                <div className="text-sm text-primary-700">
+                  Transcriptions are processed with <span className="font-medium">AssemblyAI</span> to provide
+                  millisecond-accurate word-level timestamps for OnCue synchronization.
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-primary-700 mb-3">
-                  AI Model
-                </label>
-                <div className="space-y-2">
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="ai_model"
-                      value="flash"
-                      checked={formData.ai_model === 'flash'}
-                      onChange={handleInputChange}
-                      disabled={formData.transcription_engine !== 'gemini'}
-                      className="mr-3"
-                    />
-                    <div>
-                      <div className="font-medium">Gemini Flash (Recommended)</div>
-                      <div className="text-sm text-primary-600">Faster processing, good accuracy</div>
-                    </div>
-                  </label>
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="ai_model"
-                      value="pro"
-                      checked={formData.ai_model === 'pro'}
-                      onChange={handleInputChange}
-                      disabled={formData.transcription_engine !== 'gemini'}
-                      className="mr-3"
-                    />
-                    <div>
-                      <div className="font-medium">Gemini Pro</div>
-                      <div className="text-sm text-primary-600">Higher accuracy, slower processing</div>
-                    </div>
-                  </label>
-                </div>
-                {formData.transcription_engine !== 'gemini' && (
-                  <p className="text-xs text-primary-600 mt-2">
-                    Gemini model selection is disabled when using AssemblyAI.
-                  </p>
-                )}
               </div>
 
               <div>

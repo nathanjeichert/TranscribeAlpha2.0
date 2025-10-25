@@ -3,7 +3,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'TranscribeAlpha - Legal Transcript Generator',
-  description: 'Professional legal transcript generation using Google Gemini AI',
+  description: 'Professional legal transcript generation using AssemblyAI',
 }
 
 export default function RootLayout({

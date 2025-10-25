@@ -9,9 +9,8 @@ This file provides a list, sorted by category and not in any particular order, o
 - Speed up functions that turn .json into DOCX/XML (optimize formatting pipeline)
 - ~~**URGENT**: Replace temporary even-distribution timestamp interpolation strategy with more robust solution~~
   - **COMPLETED**: Implemented AssemblyAI integration with word-level timestamps
-  - Linear interpolation still used for Gemini (backward compatibility)
-  - AssemblyAI provides accurate per-line timing using word-level data
-  - See `transcription_engine` parameter in API documentation
+  - AssemblyAI now provides accurate per-line timing using word-level data
+  - Gemini integration has been removed from the codebase
 
 ### Additional Features/Capabilities, Generally
 - Devise internal transcription benchmark using a human-generated transcript and audio file
@@ -22,10 +21,7 @@ This file provides a list, sorted by category and not in any particular order, o
 - Optional AI Summary
 
 ### Changes to Core Transcribing Functionality
-- ~~A/B test current Gemini-only transcription against AssemblyAI~~
-  - **COMPLETED**: Both engines now available via `transcription_engine` parameter
-  - Next: Conduct quality comparison testing with real legal transcripts
-  - Consider: Cost analysis, accuracy metrics, processing time comparison
+- Remove need for Gemini vs AssemblyAI comparison (AssemblyAI is the sole engine)
 - Improve OnCue transcript formatting
 - ~~Delete option to enter number of lines per page~~
   - **COMPLETED**: Backend uses fixed 25 lines per page for OnCue XML

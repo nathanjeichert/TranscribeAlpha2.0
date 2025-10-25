@@ -31,7 +31,7 @@ steps:
       - '8080'
       - '--http2'
       - '--set-env-vars'
-      - 'GEMINI_API_KEY=${_GEMINI_API_KEY},ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY}'
+      - 'ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY}'
 
 # Store images in Google Artifact Registry
 images:
@@ -39,7 +39,6 @@ images:
 
 # Substitution variables (set these in Cloud Build trigger)
 substitutions:
-  _GEMINI_API_KEY: 'your-api-key-here'
   _ASSEMBLYAI_API_KEY: 'your-assemblyai-key-here'
 
 # Build options

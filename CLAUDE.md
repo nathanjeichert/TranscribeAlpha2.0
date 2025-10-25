@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TranscribeAlpha is a legal transcript generation web application that converts audio/video files into professionally formatted legal transcripts using AssemblyAI (default) or Google Gemini AI.
+TranscribeAlpha is a legal transcript generation web application that converts audio/video files into professionally formatted legal transcripts using AssemblyAI.
 
 **Architecture**: FastAPI backend + Next.js frontend with Tailwind CSS
 **Purpose**: Audio/video → AI transcription → formatted Word document
@@ -27,13 +27,13 @@ gcloud artifacts repositories create transcribealpha \
    - Go to Cloud Build → Triggers
    - Connect your GitHub repository
    - Configure trigger to use `cloudbuild.yaml`
-   - Set substitution variables: `_GEMINI_API_KEY=your_actual_api_key` and `_ASSEMBLYAI_API_KEY=your_actual_api_key`
+   - Set substitution variable: `_ASSEMBLYAI_API_KEY=your_actual_api_key`
 
 #### Manual Deployment (if needed)
 ```bash
 # Deploy using Cloud Build
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_GEMINI_API_KEY=your_gemini_api_key,_ASSEMBLYAI_API_KEY=your_assemblyai_api_key
+  --substitutions=_ASSEMBLYAI_API_KEY=your_assemblyai_api_key
 
 # Or deploy directly from source
 gcloud run deploy transcribealpha \
@@ -41,7 +41,7 @@ gcloud run deploy transcribealpha \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars GEMINI_API_KEY=your_gemini_api_key,ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
+  --set-env-vars ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
   --memory 2Gi \
   --cpu 1 \
   --max-instances 10 \
@@ -63,7 +63,7 @@ gcloud run deploy transcribealpha \
 
 ### Backend Structure (`backend/`)
 - **`server.py`**: FastAPI application with `/api/transcribe` endpoint, HTTP/2 H2C support via Hypercorn
-- **`transcriber.py`**: Core transcription logic using Google Gemini 2.5 Pro
+- **`transcriber.py`**: Core transcription logic using AssemblyAI word-level timestamps
 - **`requirements.txt`**: Python dependencies including Hypercorn for HTTP/2
 - **`templates/`**: Word document templates for transcript formatting
 
@@ -80,7 +80,7 @@ gcloud run deploy transcribealpha \
 **Transcription Pipeline**:
 1. File upload → client-side preview + server processing
 2. Video files → audio conversion (ffmpeg)
-3. Audio → Google Gemini AI transcription with timestamps
+3. Audio → AssemblyAI transcription with word-level timestamps
 4. Raw transcript → legal formatting
 5. Template-based Word document generation
 6. Media preview displayed above transcript results
@@ -95,32 +95,15 @@ gcloud run deploy transcribealpha \
 - Media preview shown above transcript results after processing
 
 **AI Integration**:
-- Google Gemini 2.5 Pro Preview model
-- Structured JSON output for speaker identification
-- Speaker diarization (automatic detection or manual assignment)
-- Native timestamp generation support
-- Retry logic for API failures
+- AssemblyAI synchronous transcription with optional speaker name mapping
+- Structured utterance and word metadata for speaker identification
+- Automatic speaker diarization (or manual assignment when names provided)
+- Word-level timestamp generation for precise OnCue synchronization
+- Retry-friendly error handling around external API calls
 
-### Transcription Engine Options
+### Transcription Engine
 
-**Dual-Engine Support**: The backend can transcribe with either AssemblyAI or Google Gemini.
-
-1. **AssemblyAI** (default)
-   - Word-level timestamps with millisecond precision
-   - Automatic speaker diarization with label-to-name mapping
-   - API Key: `ASSEMBLYAI_API_KEY`
-   - Recommended when line-by-line video highlighting must stay perfectly in sync
-
-2. **Google Gemini**
-   - Models: Gemini 2.5 Flash or Pro
-   - Provides speaker-level timestamps with linear interpolation for wrapped lines
-   - API Key: `GEMINI_API_KEY`
-   - Useful when AssemblyAI is unavailable or for comparison testing
-
-**Switching Engines**:
-- Default engine is AssemblyAI; set `transcription_engine=gemini` in `/api/transcribe` to use Gemini.
-- Both engines return identical DOCX and OnCue XML output structures.
-- AssemblyAI enables precise timing in the viewer by attaching word-level metadata to each turn.
+AssemblyAI provides millisecond-accurate word-level timestamps, automatic speaker diarization, and reliable legal-domain transcription quality. The `ASSEMBLYAI_API_KEY` environment variable must be set for the service to accept requests.
 
 **Document Generation**:
 - Professional legal transcript formatting (double-spaced, Courier New)
@@ -131,9 +114,7 @@ gcloud run deploy transcribealpha \
 ## Important Implementation Details
 
 ### Environment Requirements
-- **Transcription Engine API Keys** (at least one required):
-  - `GEMINI_API_KEY` – Google Gemini transcription
-  - `ASSEMBLYAI_API_KEY` – AssemblyAI transcription with word-level timestamps
+- `ASSEMBLYAI_API_KEY` – Required for AssemblyAI transcription with word-level timestamps
 - System ffmpeg installation required for media processing
 - Python 3.x with specific package versions in requirements.txt
 
@@ -209,12 +190,12 @@ gcloud run deploy transcribealpha \
    gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/transcribealpha
    
    # Deploy from container with HTTP/2 support
-   gcloud run deploy transcribealpha \
-     --image gcr.io/YOUR_PROJECT_ID/transcribealpha \
-     --platform managed \
-     --region us-central1 \
-     --allow-unauthenticated \
-     --set-env-vars GEMINI_API_KEY=your_gemini_api_key,ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
+gcloud run deploy transcribealpha \
+  --image gcr.io/YOUR_PROJECT_ID/transcribealpha \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
      --port 8080 \
      --http2
    ```
@@ -227,8 +208,7 @@ gcloud run deploy transcribealpha \
 
 
 ### Environment Variables for Production
-- `GEMINI_API_KEY`: Required for Gemini transcription (optional if only using AssemblyAI)
-- `ASSEMBLYAI_API_KEY`: Required for AssemblyAI transcription (default engine)
+- `ASSEMBLYAI_API_KEY`: Required for AssemblyAI transcription
 - `PORT`: Optional - Defaults to 8080 (Cloud Run standard)
 - `HOST`: Optional - Defaults to 0.0.0.0
 - `ENVIRONMENT`: Set to "production" for CORS restrictions
@@ -251,7 +231,6 @@ gcloud run deploy transcribealpha \
 ### Common Tasks
 - **Add new document template**: Place in `backend/templates/` and update template loading logic
 - **Modify transcript formatting**: Edit the formatting section in `transcriber.py`
-- **Change AI model**: Update model name in Gemini client initialization
 - **Adjust timestamp format**: Modify timestamp prompt and formatting logic
 
 ### Cloud Run Deployment Details
@@ -276,11 +255,6 @@ The application uses automated deployment via `cloudbuild.yaml`:
 - **CPU/Memory**: Pay per 100ms of CPU time and memory usage
 - **Typically**: $0.10-$0.50 per transcription for average files
 - **Large files**: May cost more due to processing time
-
-### Gemini API Pricing
-- **Audio Input**: ~$0.125 per minute of audio
-- **File size limits**: 2GB max file size
-- **Processing time**: Usually 1-3x real-time speed
 
 ### AssemblyAI Pricing
 - **Standard transcription**: ~$0.00025 per second (~$0.015 per minute) for core speech-to-text

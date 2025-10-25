@@ -63,15 +63,13 @@ last_cleanup_time = datetime.now()
 def create_cache_key(
     file_bytes: bytes,
     speaker_list: Optional[List[str]],
-    ai_model: str,
-    transcription_engine: str = "gemini"
 ) -> str:
     """Create a cache key based on file content and transcription settings"""
     # Create hash of file content
     file_hash = hashlib.md5(file_bytes).hexdigest()
     
     # Create hash of settings
-    settings_str = f"{transcription_engine}_{ai_model}_{speaker_list or []}"
+    settings_str = f"{speaker_list or []}"
     settings_hash = hashlib.md5(settings_str.encode()).hexdigest()
     
     return f"{file_hash}_{settings_hash}"
@@ -165,7 +163,7 @@ def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, conte
 
 app = FastAPI(
     title="TranscribeAlpha API",
-    description="Professional Legal Transcript Generator using Google Gemini AI",
+    description="Professional Legal Transcript Generator using AssemblyAI",
     version="2.0.0"
 )
 
@@ -195,30 +193,14 @@ async def transcribe(
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
     include_timestamps: Optional[str] = Form(None),
-    ai_model: str = Form("flash"),
-    transcription_engine: str = Form("assemblyai"),
 ):
     logger.info(f"Received transcription request for file: {file.filename}")
     
-    # Check API key based on selected transcription engine
-    if transcription_engine == "assemblyai":
-        if not os.getenv("ASSEMBLYAI_API_KEY"):
-            logger.error("ASSEMBLYAI_API_KEY environment variable not set")
-            raise HTTPException(
-                status_code=500,
-                detail="Server configuration error: AssemblyAI API key not configured"
-            )
-    elif transcription_engine == "gemini":
-        if not os.getenv("GEMINI_API_KEY"):
-            logger.error("GEMINI_API_KEY environment variable not set")
-            raise HTTPException(
-                status_code=500,
-                detail="Server configuration error: Gemini API key not configured"
-            )
-    else:
+    if not os.getenv("ASSEMBLYAI_API_KEY"):
+        logger.error("ASSEMBLYAI_API_KEY environment variable not set")
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid transcription engine: {transcription_engine}. Must be 'gemini' or 'assemblyai'"
+            status_code=500,
+            detail="Server configuration error: AssemblyAI API key not configured"
         )
     
     # Check file size and handle large files with Cloud Storage
@@ -270,10 +252,10 @@ async def transcribe(
     timestamps_enabled = include_timestamps == "on"
     
     # Check cache first
-    cache_key = create_cache_key(file_bytes, speaker_list, ai_model, transcription_engine)
-    
+    cache_key = create_cache_key(file_bytes, speaker_list)
+
     if cache_key in temp_transcript_cache:
-        logger.info(f"Using cached transcription for engine {transcription_engine} and model {ai_model}")
+        logger.info("Using cached AssemblyAI transcription")
         cached_result = temp_transcript_cache[cache_key]
         turns = cached_result["turns"]
         duration_seconds = cached_result.get("duration")
@@ -292,7 +274,7 @@ async def transcribe(
         logger.info(f"Used cached transcription with {len(turns)} turns.")
     else:
         # Generate new transcription
-        logger.info(f"Starting new transcription process with model: {ai_model} and engine: {transcription_engine}...")
+        logger.info("Starting new AssemblyAI transcription process...")
         try:
             turns, docx_bytes, duration_seconds = process_transcription(
                 file_bytes,
@@ -300,9 +282,6 @@ async def transcribe(
                 speaker_list,
                 title_data,
                 timestamps_enabled,
-                ai_model,
-                force_timestamps_for_subtitles=True,
-                transcription_engine=transcription_engine
             )
 
             # Cache the transcript results (not the docx, as that depends on timestamp setting)
@@ -406,18 +385,10 @@ async def health_check():
         except Exception as e:
             logger.error(f"Periodic cleanup failed: {str(e)}")
     
-    gemini_api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
-    assemblyai_api_key_configured = bool(os.getenv("ASSEMBLYAI_API_KEY"))
-
     return {
         "status": "healthy",
         "service": "TranscribeAlpha",
-        "gemini_api_key_configured": gemini_api_key_configured,
-        "assemblyai_api_key_configured": assemblyai_api_key_configured,
-        "transcription_engines_available": {
-            "gemini": gemini_api_key_configured,
-            "assemblyai": assemblyai_api_key_configured
-        },
+        "assemblyai_api_key_configured": bool(os.getenv("ASSEMBLYAI_API_KEY")),
         "last_cleanup": last_cleanup_time.isoformat()
     }
 

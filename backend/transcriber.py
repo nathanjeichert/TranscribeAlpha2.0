@@ -15,15 +15,11 @@ else:
     from typing import Tuple as typing_Tuple
     Tuple = typing_Tuple
 
-from google import genai
-from google.genai import types
-from google.api_core import exceptions as google_exceptions
 from docx import Document
 from docx.shared import Inches, Pt
 import ffmpeg
 from pydub import AudioSegment
-from pydub.utils import which
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 # AssemblyAI integration
 try:
@@ -107,27 +103,11 @@ if ffmpeg_executable_path:
 else:
     print("WARNING: Could not find ffmpeg executable!")
 
-# Model configurations
-MODELS = {
-    "flash": "gemini-2.5-flash-preview-05-20",
-    "pro": "gemini-2.5-pro-preview-06-05"
-}
-
-def get_model_name(ai_model: str = "flash") -> str:
-    """Get the model name based on user selection"""
-    return MODELS.get(ai_model, MODELS["flash"])
 SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
 SUPPORTED_AUDIO_TYPES = ["mp3", "wav", "m4a", "flac", "ogg", "aac", "aiff"]
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    print("WARNING: GEMINI_API_KEY environment variable not set")
-    client = None
-else:
-    client = genai.Client(api_key=API_KEY)
 
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 if ASSEMBLYAI_API_KEY and ASSEMBLYAI_AVAILABLE:
@@ -196,97 +176,6 @@ def get_audio_mime_type(ext: str) -> Optional[str]:
         "flac": "audio/flac",
     }
     return mime_map.get(ext.lower())
-
-
-def upload_to_gemini(file_path: str) -> Optional[types.File]:
-    if not client:
-        logger.error("Gemini client not initialized - API key not set")
-        return None
-    try:
-        gemini_file = client.files.upload(file=file_path)
-        file_state = "PROCESSING"
-        retries = 15
-        sleep_time = 8
-        max_sleep = 45
-        while file_state == "PROCESSING" and retries > 0:
-            time.sleep(sleep_time)
-            file_info = client.files.get(name=gemini_file.name)
-            file_state = file_info.state.name
-            retries -= 1
-            sleep_time = min(sleep_time * 1.5, max_sleep)
-        if file_state != "ACTIVE":
-            try:
-                client.files.delete(name=gemini_file.name)
-            except Exception:
-                pass
-            return None
-        return gemini_file
-    except Exception as e:
-        logger.error("upload failed: %s", e)
-        return None
-
-
-def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[List[str]] = None, include_timestamps: bool = False, ai_model: str = "flash") -> Optional[List[TranscriptTurn]]:
-    safety_settings = [
-        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-    ]
-
-    if speaker_name_list:
-        speaker_prompt_part = f"The speakers are identified as: {', '.join(speaker_name_list)}."
-        num_speakers_part = f"There are {len(speaker_name_list)} speakers."
-    else:
-        speaker_prompt_part = "Speaker identifiers are not provided; use generic identifiers like SPEAKER 1, SPEAKER 2, etc., IN ALL CAPS."
-        num_speakers_part = "Determine the number of speakers from the audio."
-
-    if include_timestamps:
-        timestamp_prompt_part = "Include precise timestamps in format [MM:SS] for each speaker turn. Each object MUST contain a 'timestamp' field with the start time of that speaker turn."
-        required_fields = "BOTH a 'speaker' field, a 'text' field containing ALL consecutive speech from that speaker before the speaker changes, AND a 'timestamp' field"
-    else:
-        timestamp_prompt_part = ""
-        required_fields = "BOTH a 'speaker' field and a 'text' field containing ALL consecutive speech from that speaker before the speaker changes"
-
-    prompt = (
-        f"Generate an exact, word-for-word, deposition-style transcript of the speech in this audio file. Pay close attention to the speaker names, the number of speakers, and the changes between speakers. {num_speakers_part} {speaker_prompt_part} "
-        f"{timestamp_prompt_part} "
-        "Structure the output STRICTLY as a JSON list of objects. "
-        f"Each object represents a continuous block of speech from a single speaker and MUST contain {required_fields}."
-    )
-
-    contents = [prompt, gemini_file]
-    try:
-        model_name = get_model_name(ai_model)
-        logger.info(f"Using model: {model_name}")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                safety_settings=safety_settings,
-                response_mime_type="application/json",
-                response_schema=list[TranscriptTurn],
-            ),
-        )
-        transcript_data = json.loads(response.text)
-        validated_turns = []
-        for turn_data in transcript_data:
-            if 'speaker' not in turn_data:
-                continue
-            if 'text' not in turn_data:
-                turn_data['text'] = ""
-            # Ensure timestamp field exists if timestamps were requested
-            if include_timestamps and 'timestamp' not in turn_data:
-                turn_data['timestamp'] = None
-            try:
-                validated_turns.append(TranscriptTurn(**turn_data))
-            except ValidationError:
-                continue
-        return validated_turns
-    except Exception as e:
-        logger.error("generate_transcript failed: %s", e)
-        return None
 
 
 def transcribe_with_assemblyai(
@@ -593,9 +482,6 @@ def process_transcription(
     speaker_names: Optional[List[str]],
     title_data: dict,
     include_timestamps: bool = False,
-    ai_model: str = "flash",
-    force_timestamps_for_subtitles: bool = False,
-    transcription_engine: str = "gemini"
 ):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
@@ -649,40 +535,20 @@ def process_transcription(
         title_data["FILE_DURATION"] = file_duration_str
 
         # ------------------------------------------------------------------
-        # Proceed with upload & transcription
+        # Proceed with upload & transcription (AssemblyAI only)
         # ------------------------------------------------------------------
-        need_timestamps = include_timestamps or force_timestamps_for_subtitles
+        logger.info("Using AssemblyAI transcription engine")
 
-        if transcription_engine == "assemblyai":
-            logger.info("Using AssemblyAI transcription engine")
+        if not ASSEMBLYAI_AVAILABLE:
+            raise RuntimeError("AssemblyAI SDK not installed. Run: pip install assemblyai")
 
-            if not ASSEMBLYAI_AVAILABLE:
-                raise RuntimeError("AssemblyAI SDK not installed. Run: pip install assemblyai")
+        if not ASSEMBLYAI_API_KEY:
+            raise RuntimeError("ASSEMBLYAI_API_KEY environment variable not set")
 
-            if not ASSEMBLYAI_API_KEY:
-                raise RuntimeError("ASSEMBLYAI_API_KEY environment variable not set")
+        turns = transcribe_with_assemblyai(audio_path, speaker_names, include_timestamps)
 
-            turns = transcribe_with_assemblyai(audio_path, speaker_names, need_timestamps)
-
-            if not turns:
-                raise RuntimeError("AssemblyAI transcription failed")
-        elif transcription_engine == "gemini":
-            logger.info("Using Gemini transcription engine")
-
-            if not client:
-                raise RuntimeError("Gemini client not initialized - GEMINI_API_KEY not set")
-
-            gemini_file = upload_to_gemini(audio_path)
-            if not gemini_file:
-                raise RuntimeError("Failed to upload file to Gemini")
-
-            turns = generate_transcript(gemini_file, speaker_names, need_timestamps, ai_model)
-            client.files.delete(name=gemini_file.name)
-
-            if not turns:
-                raise RuntimeError("Failed to generate transcript")
-        else:
-            raise ValueError(f"Unknown transcription engine: {transcription_engine}. Must be 'gemini' or 'assemblyai'")
+        if not turns:
+            raise RuntimeError("AssemblyAI transcription failed")
 
         docx_bytes = create_docx(title_data, turns, include_timestamps)
 
@@ -837,8 +703,8 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
         total_lines = 1 + len(continuation_wrapped)
 
         # Calculate timestamps based on available data
-        # If word-level timestamps are available (AssemblyAI), use them for accuracy
-        # Otherwise, fall back to interpolation (Gemini)
+        # If word-level timestamps are available, use them for accuracy
+        # Otherwise, fall back to interpolation
         if turn.words:
             word_offset = 0
             use_word_data = True
