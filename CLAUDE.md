@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-TranscribeAlpha is a legal transcript generation web application that converts audio/video files into professionally formatted legal transcripts using Google Gemini AI.
+TranscribeAlpha is a legal transcript generation web application that converts audio/video files into professionally formatted legal transcripts using AssemblyAI (default) or Google Gemini AI.
 
 **Architecture**: FastAPI backend + Next.js frontend with Tailwind CSS
 **Purpose**: Audio/video → AI transcription → formatted Word document
@@ -27,13 +27,13 @@ gcloud artifacts repositories create transcribealpha \
    - Go to Cloud Build → Triggers
    - Connect your GitHub repository
    - Configure trigger to use `cloudbuild.yaml`
-   - Set substitution variable: `_GEMINI_API_KEY=your_actual_api_key`
+   - Set substitution variables: `_GEMINI_API_KEY=your_actual_api_key` and `_ASSEMBLYAI_API_KEY=your_actual_api_key`
 
 #### Manual Deployment (if needed)
 ```bash
 # Deploy using Cloud Build
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_GEMINI_API_KEY=your_gemini_api_key
+  --substitutions=_GEMINI_API_KEY=your_gemini_api_key,_ASSEMBLYAI_API_KEY=your_assemblyai_api_key
 
 # Or deploy directly from source
 gcloud run deploy transcribealpha \
@@ -41,7 +41,7 @@ gcloud run deploy transcribealpha \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
+  --set-env-vars GEMINI_API_KEY=your_gemini_api_key,ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
   --memory 2Gi \
   --cpu 1 \
   --max-instances 10 \
@@ -84,7 +84,7 @@ gcloud run deploy transcribealpha \
 4. Raw transcript → legal formatting
 5. Template-based Word document generation
 6. Media preview displayed above transcript results
-7. Download response to user (DOCX, SRT, OnCue XML)
+7. Download response to user (DOCX, OnCue XML)
 
 **Media Processing**:
 - Supports: mp4, avi, mov, mkv, wav, mp3, m4a, flac, ogg
@@ -101,6 +101,27 @@ gcloud run deploy transcribealpha \
 - Native timestamp generation support
 - Retry logic for API failures
 
+### Transcription Engine Options
+
+**Dual-Engine Support**: The backend can transcribe with either AssemblyAI or Google Gemini.
+
+1. **AssemblyAI** (default)
+   - Word-level timestamps with millisecond precision
+   - Automatic speaker diarization with label-to-name mapping
+   - API Key: `ASSEMBLYAI_API_KEY`
+   - Recommended when line-by-line video highlighting must stay perfectly in sync
+
+2. **Google Gemini**
+   - Models: Gemini 2.5 Flash or Pro
+   - Provides speaker-level timestamps with linear interpolation for wrapped lines
+   - API Key: `GEMINI_API_KEY`
+   - Useful when AssemblyAI is unavailable or for comparison testing
+
+**Switching Engines**:
+- Default engine is AssemblyAI; set `transcription_engine=gemini` in `/api/transcribe` to use Gemini.
+- Both engines return identical DOCX and OnCue XML output structures.
+- AssemblyAI enables precise timing in the viewer by attaching word-level metadata to each turn.
+
 **Document Generation**:
 - Professional legal transcript formatting (double-spaced, Courier New)
 - Template placeholder replacement system
@@ -110,7 +131,9 @@ gcloud run deploy transcribealpha \
 ## Important Implementation Details
 
 ### Environment Requirements
-- `GEMINI_API_KEY` environment variable is mandatory
+- **Transcription Engine API Keys** (at least one required):
+  - `GEMINI_API_KEY` – Google Gemini transcription
+  - `ASSEMBLYAI_API_KEY` – AssemblyAI transcription with word-level timestamps
 - System ffmpeg installation required for media processing
 - Python 3.x with specific package versions in requirements.txt
 
@@ -140,7 +163,7 @@ gcloud run deploy transcribealpha \
 - **Pipeline**: Upload → Size check → Cache check → Process → Generate outputs → Cleanup
 
 ### API Endpoints
-- **`/api/transcribe`**: Main transcription (POST) - returns DOCX, SRT, WebVTT, OnCue XML
+- **`/api/transcribe`**: Main transcription (POST) - returns transcript text, DOCX, and OnCue XML
 - **`/api/upload-preview`**: Upload for preview without processing (POST)
 - **`/api/media/{file_id}`**: Stream media files (GET)
 - **`/health`**: Health check (GET)
@@ -172,7 +195,7 @@ gcloud run deploy transcribealpha \
      --platform managed \
      --region us-central1 \
      --allow-unauthenticated \
-     --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
+     --set-env-vars GEMINI_API_KEY=your_gemini_api_key,ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
      --memory 2Gi \
      --cpu 1 \
      --max-instances 10 \
@@ -191,7 +214,7 @@ gcloud run deploy transcribealpha \
      --platform managed \
      --region us-central1 \
      --allow-unauthenticated \
-     --set-env-vars GEMINI_API_KEY=your_gemini_api_key \
+     --set-env-vars GEMINI_API_KEY=your_gemini_api_key,ASSEMBLYAI_API_KEY=your_assemblyai_api_key \
      --port 8080 \
      --http2
    ```
@@ -204,7 +227,8 @@ gcloud run deploy transcribealpha \
 
 
 ### Environment Variables for Production
-- `GEMINI_API_KEY`: Required - Your Google Gemini API key
+- `GEMINI_API_KEY`: Required for Gemini transcription (optional if only using AssemblyAI)
+- `ASSEMBLYAI_API_KEY`: Required for AssemblyAI transcription (default engine)
 - `PORT`: Optional - Defaults to 8080 (Cloud Run standard)
 - `HOST`: Optional - Defaults to 0.0.0.0
 - `ENVIRONMENT`: Set to "production" for CORS restrictions
@@ -258,6 +282,11 @@ The application uses automated deployment via `cloudbuild.yaml`:
 - **File size limits**: 2GB max file size
 - **Processing time**: Usually 1-3x real-time speed
 
+### AssemblyAI Pricing
+- **Standard transcription**: ~$0.00025 per second (~$0.015 per minute) for core speech-to-text
+- **Advanced add-ons**: Features like sentiment analysis or summarization are billed separately
+- **Reference**: https://www.assemblyai.com/pricing for the latest pricing tiers and add-ons
+
 ## HTTP/2 Implementation
 - **Purpose**: Bypass Cloud Run's 32MB HTTP/1 limit for 2GB uploads
 - **Server**: Hypercorn ASGI with H2C (HTTP/2 cleartext)
@@ -302,7 +331,7 @@ gcloud run services describe transcribealpha --region us-central1
 2. **Immediate Preview**: Client-side media preview using URL.createObjectURL
 3. **Single Processing**: No separate preview flow - direct to transcription
 4. **Results Display**: Media preview above transcript results
-5. **Downloads**: DOCX, SRT, and OnCue XML with visual file type indicators
+5. **Downloads**: DOCX and OnCue XML with visual file type indicators
 
 ## Development Guidelines for AI Coding Agents
 - **File Storage**: Cloud Storage for all files (transcription + preview), 12-hour cleanup via health endpoint

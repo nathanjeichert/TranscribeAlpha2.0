@@ -6,6 +6,14 @@ import tempfile
 import logging
 import shutil
 from typing import List, Optional
+import sys
+
+# Python 3.9+ type hint compatibility
+if sys.version_info >= (3, 9):
+    from typing import Tuple
+else:
+    from typing import Tuple as typing_Tuple
+    Tuple = typing_Tuple
 
 from google import genai
 from google.genai import types
@@ -16,6 +24,14 @@ import ffmpeg
 from pydub import AudioSegment
 from pydub.utils import which
 from pydantic import BaseModel, ValidationError
+
+# AssemblyAI integration
+try:
+    import assemblyai as aai
+    ASSEMBLYAI_AVAILABLE = True
+except ImportError:
+    ASSEMBLYAI_AVAILABLE = False
+    logging.getLogger(__name__).warning("AssemblyAI SDK not installed. Run: pip install assemblyai")
 
 # Configure both ffmpeg libraries to find ffmpeg
 import subprocess
@@ -113,10 +129,26 @@ if not API_KEY:
 else:
     client = genai.Client(api_key=API_KEY)
 
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+if ASSEMBLYAI_API_KEY and ASSEMBLYAI_AVAILABLE:
+    aai.settings.api_key = ASSEMBLYAI_API_KEY
+    logger.info("AssemblyAI client initialized successfully")
+elif ASSEMBLYAI_AVAILABLE:
+    logger.warning("ASSEMBLYAI_API_KEY environment variable not set")
+
+class WordTimestamp(BaseModel):
+    """Represents a single word with precise timing information"""
+    text: str
+    start: float  # Start time in milliseconds
+    end: float    # End time in milliseconds
+    confidence: Optional[float] = None
+    speaker: Optional[str] = None
+
 class TranscriptTurn(BaseModel):
     speaker: str
     text: str
     timestamp: Optional[str] = None
+    words: Optional[List[WordTimestamp]] = None  # Word-level timestamps for accurate line timing
 
 def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3") -> Optional[str]:
     try:
@@ -257,6 +289,192 @@ def generate_transcript(gemini_file: types.File, speaker_name_list: Optional[Lis
         return None
 
 
+def transcribe_with_assemblyai(
+    audio_path: str,
+    speaker_name_list: Optional[List[str]] = None,
+    include_timestamps: bool = True
+) -> Optional[List[TranscriptTurn]]:
+    """
+    Transcribe audio using AssemblyAI with speaker diarization and word-level timestamps.
+
+    Args:
+        audio_path: Path to audio file (local file path)
+        speaker_name_list: Optional list of speaker names to map to AssemblyAI's labels
+        include_timestamps: Whether to include timestamps in output
+
+    Returns:
+        List of TranscriptTurn objects with word-level timing data, or None on failure
+
+    Note:
+        AssemblyAI labels speakers as "A", "B", "C", etc. This function maps them to
+        provided speaker names or generates generic identifiers like "SPEAKER A".
+    """
+    if not ASSEMBLYAI_AVAILABLE:
+        logger.error("AssemblyAI SDK not available")
+        return None
+
+    if not ASSEMBLYAI_API_KEY:
+        logger.error("ASSEMBLYAI_API_KEY not configured")
+        return None
+
+    try:
+        # Configure transcription with speaker diarization
+        config = aai.TranscriptionConfig(
+            speaker_labels=True,
+            speakers_expected=len(speaker_name_list) if speaker_name_list else None
+        )
+
+        logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
+        logger.info(
+            "Speaker diarization enabled, expected speakers: %s",
+            len(speaker_name_list) if speaker_name_list else "auto-detect",
+        )
+
+        # Transcribe audio file
+        transcriber = aai.Transcriber()
+        transcript = transcriber.transcribe(audio_path, config=config)
+
+        # Check for errors
+        if transcript.status == aai.TranscriptStatus.error:
+            logger.error("AssemblyAI transcription failed: %s", transcript.error)
+            return None
+
+        logger.info("AssemblyAI transcription completed successfully")
+        logger.info(
+            "Found %s speaker turns",
+            len(transcript.utterances) if transcript.utterances else 0,
+        )
+
+        # Convert AssemblyAI utterances to TranscriptTurn format
+        turns: List[TranscriptTurn] = []
+
+        for utterance in transcript.utterances or []:
+            # Map AssemblyAI speaker labels (A, B, C...) to provided names
+            speaker_label = utterance.speaker  # e.g., "A", "B", "C"
+
+            if speaker_name_list and speaker_label:
+                try:
+                    speaker_idx = ord(speaker_label) - ord("A")
+                    if 0 <= speaker_idx < len(speaker_name_list):
+                        speaker_name = speaker_name_list[speaker_idx]
+                    else:
+                        speaker_name = f"SPEAKER {speaker_label}"
+                except (TypeError, ValueError):
+                    speaker_name = f"SPEAKER {speaker_label}"
+            else:
+                speaker_name = f"SPEAKER {speaker_label}" if speaker_label else "SPEAKER 1"
+
+            # Convert timestamp from milliseconds to [MM:SS] format for consistency
+            timestamp_str = None
+            if include_timestamps and getattr(utterance, "start", None) is not None:
+                start_ms = utterance.start
+                start_seconds = start_ms / 1000.0
+                minutes = int(start_seconds // 60)
+                seconds = int(start_seconds % 60)
+                timestamp_str = f"[{minutes:02d}:{seconds:02d}]"
+
+            # Extract word-level timestamps from utterance
+            word_timestamps: List[WordTimestamp] = []
+            if hasattr(utterance, "words") and utterance.words:
+                for word in utterance.words:
+                    word_timestamps.append(
+                        WordTimestamp(
+                            text=word.text,
+                            start=float(word.start),
+                            end=float(word.end),
+                            confidence=float(word.confidence)
+                            if hasattr(word, "confidence") and word.confidence is not None
+                            else None,
+                            speaker=speaker_name,
+                        )
+                    )
+
+            turns.append(
+                TranscriptTurn(
+                    speaker=speaker_name,
+                    text=utterance.text,
+                    timestamp=timestamp_str,
+                    words=word_timestamps if word_timestamps else None,
+                )
+            )
+
+        logger.info("Converted %s utterances to TranscriptTurn format", len(turns))
+        return turns
+
+    except Exception as e:
+        logger.error("AssemblyAI transcription error: %s", str(e))
+        import traceback
+
+        logger.error(traceback.format_exc())
+        return None
+
+
+def calculate_line_timestamps_from_words(
+    text_line: str,
+    all_words: List[WordTimestamp],
+    start_offset: int = 0
+) -> Tuple[float, float, int]:
+    """
+    Calculate accurate start/stop timestamps for a wrapped line using word-level data.
+
+    This function matches words in the text line to their precise timestamps from
+    AssemblyAI's word-level data, eliminating the need for linear interpolation.
+
+    Args:
+        text_line: The text content of the line (without speaker prefix)
+        all_words: List of WordTimestamp objects for the entire speaker turn
+        start_offset: Index in all_words to start searching from (for continuation lines)
+
+    Returns:
+        Tuple of (start_seconds, stop_seconds, words_consumed)
+        - start_seconds: Start time of first word in line (seconds, float)
+        - stop_seconds: End time of last word in line (seconds, float)
+        - words_consumed: Number of words from all_words that were used
+    """
+    if not all_words or not text_line.strip():
+        return (0.0, 0.0, 0)
+
+    line_text_clean = text_line.strip().lower()
+    if not line_text_clean:
+        return (0.0, 0.0, 0)
+
+    line_words = line_text_clean.split()
+    if not line_words:
+        return (0.0, 0.0, 0)
+
+    matched_word_indices: List[int] = []
+    word_search_idx = start_offset
+    line_word_idx = 0
+
+    while line_word_idx < len(line_words) and word_search_idx < len(all_words):
+        word_obj = all_words[word_search_idx]
+        word_clean = word_obj.text.lower().strip(".,!?;:")
+        line_word_clean = line_words[line_word_idx].strip(".,!?;:")
+
+        if word_clean == line_word_clean:
+            matched_word_indices.append(word_search_idx)
+            line_word_idx += 1
+            word_search_idx += 1
+        else:
+            word_search_idx += 1
+
+    if not matched_word_indices:
+        logger.warning("No word matches found for line: '%s...'", text_line[:50])
+        if start_offset < len(all_words):
+            word = all_words[start_offset]
+            return (word.start / 1000.0, word.end / 1000.0, 1)
+        return (0.0, 0.0, 0)
+
+    first_word = all_words[matched_word_indices[0]]
+    last_word = all_words[matched_word_indices[-1]]
+
+    start_seconds = first_word.start / 1000.0
+    stop_seconds = last_word.end / 1000.0
+    words_consumed = len(matched_word_indices)
+
+    return (start_seconds, stop_seconds, words_consumed)
+
+
 def replace_placeholder_text(element, placeholder: str, replacement: str) -> None:
     if hasattr(element, 'paragraphs'):
         for p in element.paragraphs:
@@ -369,14 +587,16 @@ def get_media_duration(file_path: str) -> Optional[float]:
         print(f"ffprobe duration extraction failed: {e}")
     return None
 
-def srt_to_webvtt(srt_content: str) -> str:
-    """Convert SRT content to WebVTT format for HTML5 video"""
-    webvtt = "WEBVTT\n\n"
-    # Replace comma with period for milliseconds (WebVTT format)
-    webvtt += srt_content.replace(',', '.')
-    return webvtt
-
-def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optional[List[str]], title_data: dict, include_timestamps: bool = False, ai_model: str = "flash", force_timestamps_for_subtitles: bool = False):
+def process_transcription(
+    file_bytes: bytes,
+    filename: str,
+    speaker_names: Optional[List[str]],
+    title_data: dict,
+    include_timestamps: bool = False,
+    ai_model: str = "flash",
+    force_timestamps_for_subtitles: bool = False,
+    transcription_engine: str = "gemini"
+):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
         with open(input_path, "wb") as f:
@@ -431,147 +651,42 @@ def process_transcription(file_bytes: bytes, filename: str, speaker_names: Optio
         # ------------------------------------------------------------------
         # Proceed with upload & transcription
         # ------------------------------------------------------------------
-        # Determine if we need timestamps (either requested by user or forced for subtitles)
         need_timestamps = include_timestamps or force_timestamps_for_subtitles
-        
-        gemini_file = upload_to_gemini(audio_path)
-        if not gemini_file:
-            raise RuntimeError("Failed to upload file to Gemini")
-        turns = generate_transcript(gemini_file, speaker_names, need_timestamps, ai_model)
-        client.files.delete(name=gemini_file.name)
-        if not turns:
-            raise RuntimeError("Failed to generate transcript")
-        
-        # Create docx with or without timestamps based on user preference
+
+        if transcription_engine == "assemblyai":
+            logger.info("Using AssemblyAI transcription engine")
+
+            if not ASSEMBLYAI_AVAILABLE:
+                raise RuntimeError("AssemblyAI SDK not installed. Run: pip install assemblyai")
+
+            if not ASSEMBLYAI_API_KEY:
+                raise RuntimeError("ASSEMBLYAI_API_KEY environment variable not set")
+
+            turns = transcribe_with_assemblyai(audio_path, speaker_names, need_timestamps)
+
+            if not turns:
+                raise RuntimeError("AssemblyAI transcription failed")
+        elif transcription_engine == "gemini":
+            logger.info("Using Gemini transcription engine")
+
+            if not client:
+                raise RuntimeError("Gemini client not initialized - GEMINI_API_KEY not set")
+
+            gemini_file = upload_to_gemini(audio_path)
+            if not gemini_file:
+                raise RuntimeError("Failed to upload file to Gemini")
+
+            turns = generate_transcript(gemini_file, speaker_names, need_timestamps, ai_model)
+            client.files.delete(name=gemini_file.name)
+
+            if not turns:
+                raise RuntimeError("Failed to generate transcript")
+        else:
+            raise ValueError(f"Unknown transcription engine: {transcription_engine}. Must be 'gemini' or 'assemblyai'")
+
         docx_bytes = create_docx(title_data, turns, include_timestamps)
-        
-        # Generate subtitles if we have timestamps
-        srt_content = None
-        webvtt_content = None
-        if need_timestamps and turns:
-            srt_content = generate_srt_from_transcript(turns)
-            webvtt_content = srt_to_webvtt(srt_content)
-        
-        return turns, docx_bytes, srt_content, webvtt_content, duration_seconds
 
-
-def format_timestamp_for_srt(timestamp_str: str) -> str:
-    """Convert timestamp from [MM:SS] format to SRT format (HH:MM:SS,mmm)"""
-    try:
-        if not timestamp_str or timestamp_str.strip() == "":
-            return "00:00:00,000"
-        
-        # Remove brackets and strip whitespace
-        clean_timestamp = timestamp_str.strip("[]").strip()
-        
-        # Handle different input formats
-        if ":" in clean_timestamp:
-            parts = clean_timestamp.split(":")
-            if len(parts) == 2:  # MM:SS format
-                minutes, seconds = parts
-                hours = "00"
-            elif len(parts) == 3:  # HH:MM:SS format
-                hours, minutes, seconds = parts
-            else:
-                return "00:00:00,000"
-        else:
-            # Assume it's just seconds
-            total_seconds = float(clean_timestamp)
-            hours = int(total_seconds // 3600)
-            minutes = int((total_seconds % 3600) // 60)
-            seconds = total_seconds % 60
-            return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{int((seconds % 1) * 1000):03d}"
-        
-        # Convert to proper format
-        h = int(hours) if hours.isdigit() else 0
-        m = int(minutes) if minutes.isdigit() else 0
-        s = float(seconds) if seconds.replace('.', '').isdigit() else 0.0
-        
-        # Format as HH:MM:SS,mmm
-        return f"{h:02d}:{m:02d}:{int(s):02d},{int((s % 1) * 1000):03d}"
-    except Exception:
-        return "00:00:00,000"
-
-
-def generate_srt_from_transcript(turns: List[TranscriptTurn]) -> str:
-    """Generate SRT subtitle format from transcript turns"""
-    srt_content = []
-    
-    for i, turn in enumerate(turns, 1):
-        if not turn.text.strip():
-            continue
-            
-        # Calculate start and end times
-        start_time = format_timestamp_for_srt(turn.timestamp) if turn.timestamp else f"00:00:{i*3:02d},000"
-        
-        # Estimate end time (start of next turn or +3 seconds)
-        if i < len(turns) and turns[i].timestamp:
-            end_time = format_timestamp_for_srt(turns[i].timestamp)
-        else:
-            # Add 3 seconds to start time as default duration
-            try:
-                parts = start_time.split(':')
-                h, m, s_ms = int(parts[0]), int(parts[1]), parts[2].split(',')
-                s, ms = int(s_ms[0]), int(s_ms[1])
-                
-                total_ms = (h * 3600 + m * 60 + s) * 1000 + ms + 3000
-                
-                end_h = total_ms // 3600000
-                end_m = (total_ms % 3600000) // 60000
-                end_s = (total_ms % 60000) // 1000
-                end_ms = total_ms % 1000
-                
-                end_time = f"{end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms:03d}"
-            except:
-                end_time = f"00:00:{i*3+3:02d},000"
-        
-        # Format SRT entry
-        srt_entry = f"{i}\n{start_time} --> {end_time}\n{turn.speaker.upper()}: {turn.text}\n"
-        srt_content.append(srt_entry)
-    
-    return "\n".join(srt_content)
-
-
-def srt_to_webvtt(srt_content: str) -> str:
-    """Convert SRT format to WebVTT format for HTML5 video"""
-    lines = srt_content.strip().split('\n')
-    webvtt_lines = ["WEBVTT", ""]
-    
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # Skip empty lines
-        if not line:
-            i += 1
-            continue
-            
-        # Skip subtitle numbers (SRT format)
-        if line.isdigit():
-            i += 1
-            continue
-            
-        # Process timestamp lines
-        if " --> " in line:
-            # Convert SRT timestamps to WebVTT (replace comma with period)
-            webvtt_timestamp = line.replace(',', '.')
-            webvtt_lines.append(webvtt_timestamp)
-            i += 1
-            
-            # Add subtitle text lines
-            subtitle_lines = []
-            while i < len(lines) and lines[i].strip() and not lines[i].strip().isdigit():
-                subtitle_lines.append(lines[i].strip())
-                i += 1
-            
-            webvtt_lines.extend(subtitle_lines)
-            webvtt_lines.append("")  # Empty line between subtitles
-        else:
-            i += 1
-    
-    return "\n".join(webvtt_lines)
-
-
+        return turns, docx_bytes, duration_seconds
 def timestamp_to_seconds(timestamp: Optional[str]) -> float:
     """Convert timestamp like '[MM:SS]' or 'MM:SS' to seconds."""
     if not timestamp:
@@ -721,15 +836,66 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
         # Total lines = 1 (first line) + continuation lines
         total_lines = 1 + len(continuation_wrapped)
 
-        # Interpolate timestamps evenly across all lines
-        # This ensures each wrapped line gets a unique timestamp for viewer highlighting
-        turn_duration = stop_sec - start_sec
-        time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
+        # Calculate timestamps based on available data
+        # If word-level timestamps are available (AssemblyAI), use them for accuracy
+        # Otherwise, fall back to interpolation (Gemini)
+        if turn.words:
+            word_offset = 0
+            use_word_data = True
+
+            first_line_start, first_line_stop, words_used = calculate_line_timestamps_from_words(
+                wrapped_lines[0],
+                turn.words,
+                word_offset,
+            )
+            if words_used == 0:
+                use_word_data = False
+            else:
+                word_offset += words_used
+
+            continuation_timings: List[Tuple[float, float]] = []
+            if use_word_data:
+                for cont_line in continuation_wrapped:
+                    line_start, line_stop, words_used = calculate_line_timestamps_from_words(
+                        cont_line,
+                        turn.words,
+                        word_offset,
+                    )
+                    if words_used == 0:
+                        use_word_data = False
+                        break
+                    continuation_timings.append((line_start, line_stop))
+                    word_offset += words_used
+
+            if not use_word_data:
+                turn_duration = stop_sec - start_sec
+                time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
+                first_line_start = start_sec
+                first_line_stop = start_sec + time_per_line
+                continuation_timings = []
+                for cont_idx in range(len(continuation_wrapped)):
+                    line_start = start_sec + time_per_line * (cont_idx + 1)
+                    line_stop = start_sec + time_per_line * (cont_idx + 2)
+                    if cont_idx == len(continuation_wrapped) - 1:
+                        line_stop = stop_sec
+                    continuation_timings.append((line_start, line_stop))
+        else:
+            turn_duration = stop_sec - start_sec
+            time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
+
+            first_line_start = start_sec
+            first_line_stop = start_sec + time_per_line
+
+            continuation_timings = []
+            for cont_idx in range(len(continuation_wrapped)):
+                line_start = start_sec + time_per_line * (cont_idx + 1)
+                line_stop = start_sec + time_per_line * (cont_idx + 2)
+                if cont_idx == len(continuation_wrapped) - 1:
+                    line_stop = stop_sec
+                continuation_timings.append((line_start, line_stop))
 
         # Create first line with speaker
         first_line_text = speaker_prefix + wrapped_lines[0]
-        first_line_start = start_sec
-        first_line_stop = start_sec + time_per_line
 
         pgln = page * 100 + line_in_page
         last_pgln = pgln
@@ -758,15 +924,10 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
             page += 1
             line_in_page = 1
 
-        # Add continuation lines with interpolated timestamps
+        # Add continuation lines with calculated timestamps
         for cont_idx, continuation_text in enumerate(continuation_wrapped):
-            # Calculate interpolated timestamps for this continuation line
-            line_start = start_sec + time_per_line * (cont_idx + 1)
-            line_stop = start_sec + time_per_line * (cont_idx + 2)
-
-            # Ensure last line ends exactly at turn's stop time
-            if cont_idx == len(continuation_wrapped) - 1:
-                line_stop = stop_sec
+            # Get pre-calculated timestamps for this continuation line
+            line_start, line_stop = continuation_timings[cont_idx]
 
             # Continuation lines: no leading spaces + text
             continuation_line_text = " " * CONTINUATION_SPACES + continuation_text

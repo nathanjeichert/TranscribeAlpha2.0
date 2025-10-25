@@ -1,6 +1,6 @@
 # TranscribeAlpha
 
-A simple transcript generator using Google's Gemini models. The original Streamlit prototype has been replaced with a small FastAPI backend and a static HTML front-end.
+A simple transcript generator using AssemblyAI (default) or Google's Gemini models. The original Streamlit prototype has been replaced with a small FastAPI backend and a static HTML front-end.
 
 ## Running Locally
 
@@ -11,10 +11,12 @@ A simple transcript generator using Google's Gemini models. The original Streaml
 pip install -r requirements.txt
 ```
 
-3. Export your Gemini API key:
+3. Export your transcription API keys:
 
 ```bash
-export GEMINI_API_KEY="YOUR_KEY_HERE"
+export ASSEMBLYAI_API_KEY="YOUR_ASSEMBLYAI_KEY_HERE"
+# Optional: enable Gemini engine as well
+export GEMINI_API_KEY="YOUR_GEMINI_KEY_HERE"
 ```
 
 4. Start the server:
@@ -27,4 +29,4 @@ uvicorn backend.server:app --reload
 
 ## Notes
 
-The backend relies on the [Google Gen AI Python SDK](https://googleapis.github.io/python-genai/) for Gemini access.
+The backend relies on the [AssemblyAI Python SDK](https://github.com/AssemblyAI/assemblyai-python-sdk) for default transcription and the [Google Gen AI Python SDK](https://googleapis.github.io/python-genai/) for Gemini access.

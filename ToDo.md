@@ -6,8 +6,12 @@ This file provides a list, sorted by category and not in any particular order, o
 - Fix thing where it gives you cached transcript automatically for files that aren't the same
 - Clean up codebase
 - Fix errors with large video files
-- Speed up functions that turn .json into docx/XML? SRT appears to be faster?
-- **URGENT**: Replace temporary even-distribution timestamp interpolation strategy with more robust solution (currently using simple linear interpolation for wrapped transcript lines - should use AI-based word-level timestamps or forced alignment for accurate per-line timing)
+- Speed up functions that turn .json into DOCX/XML (optimize formatting pipeline)
+- ~~**URGENT**: Replace temporary even-distribution timestamp interpolation strategy with more robust solution~~
+  - **COMPLETED**: Implemented AssemblyAI integration with word-level timestamps
+  - Linear interpolation still used for Gemini (backward compatibility)
+  - AssemblyAI provides accurate per-line timing using word-level data
+  - See `transcription_engine` parameter in API documentation
 
 ### Additional Features/Capabilities, Generally
 - Devise internal transcription benchmark using a human-generated transcript and audio file
@@ -18,9 +22,14 @@ This file provides a list, sorted by category and not in any particular order, o
 - Optional AI Summary
 
 ### Changes to Core Transcribing Functionality
-- A/B test current Gemini-only transcription against AssemblyAI or similar, AssemblyAI + Gemini, etc.
+- ~~A/B test current Gemini-only transcription against AssemblyAI~~
+  - **COMPLETED**: Both engines now available via `transcription_engine` parameter
+  - Next: Conduct quality comparison testing with real legal transcripts
+  - Consider: Cost analysis, accuracy metrics, processing time comparison
 - Improve OnCue transcript formatting
-- Delete option to enter number of lines per page
+- ~~Delete option to enter number of lines per page~~
+  - **COMPLETED**: Backend uses fixed 25 lines per page for OnCue XML
+  - Frontend control removed to avoid user confusion
 ### Logistics, Deployment, Etc.
 - Setup login system w/api key management, etc. 
 - Figure out cost tracking
@@ -39,4 +48,3 @@ This file provides a list, sorted by category and not in any particular order, o
     - 'when X said Y'
     - Highlight/select interface
  - Convert between formats, mute audio/separate, compress/reduce size 
-

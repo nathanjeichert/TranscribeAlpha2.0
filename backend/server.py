@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import mimetypes
 
@@ -54,16 +54,24 @@ storage_client = storage.Client()
 # Cache for transcription results
 temp_transcript_cache: Dict[str, dict] = {}
 
+# Default transcript layout configuration
+DEFAULT_LINES_PER_PAGE = 25
+
 # Track last cleanup time for periodic cleanup
 last_cleanup_time = datetime.now()
 
-def create_cache_key(file_bytes: bytes, speaker_list: Optional[List[str]], ai_model: str) -> str:
+def create_cache_key(
+    file_bytes: bytes,
+    speaker_list: Optional[List[str]],
+    ai_model: str,
+    transcription_engine: str = "gemini"
+) -> str:
     """Create a cache key based on file content and transcription settings"""
     # Create hash of file content
     file_hash = hashlib.md5(file_bytes).hexdigest()
     
     # Create hash of settings
-    settings_str = f"{ai_model}_{speaker_list or []}"
+    settings_str = f"{transcription_engine}_{ai_model}_{speaker_list or []}"
     settings_hash = hashlib.md5(settings_str.encode()).hexdigest()
     
     return f"{file_hash}_{settings_hash}"
@@ -126,8 +134,6 @@ def get_blob_metadata(blob_name: str) -> dict:
             'content_type': blob.content_type or metadata.get('content_type', 'application/octet-stream'),
             'size': blob.size,
             'created': blob.time_created,
-            'srt_content': metadata.get('srt_content'),
-            'webvtt_content': metadata.get('webvtt_content')
         }
     except Exception as e:
         logger.error(f"Error getting blob metadata: {str(e)}")
@@ -155,21 +161,6 @@ def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, conte
         return blob_name
     except Exception as e:
         logger.error(f"Error uploading preview file to Cloud Storage: {str(e)}")
-        raise
-
-def update_blob_metadata(blob_name: str, metadata_updates: dict):
-    """Update metadata for a blob in Cloud Storage"""
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-        if blob.exists():
-            current_metadata = blob.metadata or {}
-            current_metadata.update(metadata_updates)
-            blob.metadata = current_metadata
-            blob.patch()
-            logger.info(f"Updated metadata for {blob_name}")
-    except Exception as e:
-        logger.error(f"Error updating blob metadata: {str(e)}")
         raise
 
 app = FastAPI(
@@ -205,14 +196,30 @@ async def transcribe(
     speaker_names: Optional[str] = Form(None),
     include_timestamps: Optional[str] = Form(None),
     ai_model: str = Form("flash"),
-    lines_per_page: int = Form(25),
+    transcription_engine: str = Form("assemblyai"),
 ):
     logger.info(f"Received transcription request for file: {file.filename}")
     
-    # Check if GEMINI_API_KEY is set
-    if not os.getenv("GEMINI_API_KEY"):
-        logger.error("GEMINI_API_KEY environment variable not set")
-        raise HTTPException(status_code=500, detail="Server configuration error: API key not configured")
+    # Check API key based on selected transcription engine
+    if transcription_engine == "assemblyai":
+        if not os.getenv("ASSEMBLYAI_API_KEY"):
+            logger.error("ASSEMBLYAI_API_KEY environment variable not set")
+            raise HTTPException(
+                status_code=500,
+                detail="Server configuration error: AssemblyAI API key not configured"
+            )
+    elif transcription_engine == "gemini":
+        if not os.getenv("GEMINI_API_KEY"):
+            logger.error("GEMINI_API_KEY environment variable not set")
+            raise HTTPException(
+                status_code=500,
+                detail="Server configuration error: Gemini API key not configured"
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid transcription engine: {transcription_engine}. Must be 'gemini' or 'assemblyai'"
+        )
     
     # Check file size and handle large files with Cloud Storage
     file_size = len(await file.read())
@@ -263,14 +270,12 @@ async def transcribe(
     timestamps_enabled = include_timestamps == "on"
     
     # Check cache first
-    cache_key = create_cache_key(file_bytes, speaker_list, ai_model)
+    cache_key = create_cache_key(file_bytes, speaker_list, ai_model, transcription_engine)
     
     if cache_key in temp_transcript_cache:
-        logger.info(f"Using cached transcription for model: {ai_model}")
+        logger.info(f"Using cached transcription for engine {transcription_engine} and model {ai_model}")
         cached_result = temp_transcript_cache[cache_key]
         turns = cached_result["turns"]
-        srt_content = cached_result["srt_content"]
-        webvtt_content = cached_result["webvtt_content"]
         duration_seconds = cached_result.get("duration")
         
         # Re-generate docx with current timestamp setting
@@ -287,25 +292,22 @@ async def transcribe(
         logger.info(f"Used cached transcription with {len(turns)} turns.")
     else:
         # Generate new transcription
-        logger.info(f"Starting new transcription process with model: {ai_model}...")
+        logger.info(f"Starting new transcription process with model: {ai_model} and engine: {transcription_engine}...")
         try:
-            result = process_transcription(file_bytes, file.filename, speaker_list, title_data, timestamps_enabled, ai_model, force_timestamps_for_subtitles=True)
-            if len(result) == 5:
-                turns, docx_bytes, srt_content, webvtt_content, duration_seconds = result
-            elif len(result) == 4:
-                turns, docx_bytes, srt_content, webvtt_content = result
-                duration_seconds = None
-            else:
-                # Backward compatibility for old version
-                turns, docx_bytes = result
-                srt_content, webvtt_content = None, None
-                duration_seconds = None
-                
+            turns, docx_bytes, duration_seconds = process_transcription(
+                file_bytes,
+                file.filename,
+                speaker_list,
+                title_data,
+                timestamps_enabled,
+                ai_model,
+                force_timestamps_for_subtitles=True,
+                transcription_engine=transcription_engine
+            )
+
             # Cache the transcript results (not the docx, as that depends on timestamp setting)
             temp_transcript_cache[cache_key] = {
                 "turns": turns,
-                "srt_content": srt_content,
-                "webvtt_content": webvtt_content,
                 "duration": duration_seconds,
             }
             logger.info(f"Transcription completed and cached. Generated {len(turns)} turns.")
@@ -322,21 +324,15 @@ async def transcribe(
         transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
     encoded = base64.b64encode(docx_bytes).decode()
 
-    oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds or 0, lines_per_page)
+    oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds or 0, DEFAULT_LINES_PER_PAGE)
     oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
     response_data = {
         "transcript": transcript_text,
         "docx_base64": encoded,
         "oncue_xml_base64": oncue_b64,
-        "has_subtitles": srt_content is not None,
     }
-    
-    # Include subtitles if available
-    if srt_content:
-        response_data["srt_content"] = srt_content
-        response_data["webvtt_content"] = webvtt_content
-    
+
     return JSONResponse(response_data)
 
 @app.post("/api/upload-preview")
@@ -395,123 +391,6 @@ async def serve_media_file(file_id: str):
         logger.error(f"Error serving media file {file_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Error serving media file")
 
-@app.post("/api/generate-subtitles")
-async def generate_subtitles_preview(
-    file_id: str = Form(...),
-    speaker_names: Optional[str] = Form(None),
-    ai_model: str = Form("flash")
-):
-    """Generate subtitles for media preview"""
-    try:
-        # Get file metadata
-        metadata = get_blob_metadata(file_id)
-        if not metadata:
-            raise HTTPException(status_code=404, detail="Media file not found")
-        
-        # Download file from Cloud Storage
-        file_bytes = download_from_cloud_storage(file_id)
-        
-        # Process speaker names
-        speaker_list: Optional[List[str]] = None
-        if speaker_names:
-            speaker_names = speaker_names.strip()
-            if speaker_names.startswith('[') and speaker_names.endswith(']'):
-                try:
-                    speaker_list = json.loads(speaker_names)
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
-            else:
-                speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
-        
-        # Basic title data for subtitle generation
-        title_data = {
-            "FILE_NAME": metadata['filename'],
-            "FILE_DURATION": "Calculating...",
-        }
-        
-        # Process with timestamps enabled
-        result = process_transcription(
-            file_bytes, 
-            metadata['filename'], 
-            speaker_list, 
-            title_data, 
-            include_timestamps=True,  # Always include timestamps for subtitles
-            ai_model=ai_model
-        )
-        
-        if len(result) == 5:
-            turns, _, srt_content, webvtt_content, _ = result
-        elif len(result) == 4:
-            turns, _, srt_content, webvtt_content = result
-        else:
-            # Fallback if subtitles not generated
-            turns, _ = result
-            srt_content, webvtt_content = None, None
-        
-        if not srt_content:
-            # Generate subtitles from turns if not already generated
-            try:
-                from .transcriber import generate_srt_from_transcript, srt_to_webvtt
-            except ImportError:
-                try:
-                    from transcriber import generate_srt_from_transcript, srt_to_webvtt
-                except ImportError:
-                    import transcriber
-                    generate_srt_from_transcript = transcriber.generate_srt_from_transcript
-                    srt_to_webvtt = transcriber.srt_to_webvtt
-            srt_content = generate_srt_from_transcript(turns)
-            webvtt_content = srt_to_webvtt(srt_content)
-        
-        # Store subtitles in Cloud Storage metadata
-        update_blob_metadata(file_id, {
-            'srt_content': srt_content,
-            'webvtt_content': webvtt_content
-        })
-        
-        return JSONResponse({
-            "file_id": file_id,
-            "has_subtitles": bool(srt_content),
-            "subtitle_count": len([t for t in turns if t.timestamp]),
-            "webvtt_content": webvtt_content
-        })
-        
-    except Exception as e:
-        logger.error(f"Subtitle generation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Subtitle generation failed: {str(e)}")
-
-@app.get("/api/subtitles/{file_id}")
-async def serve_subtitles(file_id: str, format: str = "webvtt"):
-    """Serve subtitle file in requested format"""
-    try:
-        # Get file metadata
-        metadata = get_blob_metadata(file_id)
-        if not metadata:
-            raise HTTPException(status_code=404, detail="Media file not found")
-        
-        if format.lower() == "srt":
-            content = metadata.get('srt_content')
-            media_type = "text/plain"
-            filename = f"{metadata['filename']}.srt"
-        else:  # webvtt
-            content = metadata.get('webvtt_content')
-            media_type = "text/vtt"
-            filename = f"{metadata['filename']}.vtt"
-        
-        if not content:
-            raise HTTPException(status_code=404, detail="Subtitles not found for this file")
-        
-        return Response(
-            content=content,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename=\"{filename}\"",
-                "Cache-Control": "public, max-age=3600"
-            }
-        )
-    except Exception as e:
-        logger.error(f"Error serving subtitles for {file_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error serving subtitles")
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint for deployment platforms"""
@@ -527,11 +406,18 @@ async def health_check():
         except Exception as e:
             logger.error(f"Periodic cleanup failed: {str(e)}")
     
-    api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
+    gemini_api_key_configured = bool(os.getenv("GEMINI_API_KEY"))
+    assemblyai_api_key_configured = bool(os.getenv("ASSEMBLYAI_API_KEY"))
+
     return {
-        "status": "healthy", 
+        "status": "healthy",
         "service": "TranscribeAlpha",
-        "api_key_configured": api_key_configured,
+        "gemini_api_key_configured": gemini_api_key_configured,
+        "assemblyai_api_key_configured": assemblyai_api_key_configured,
+        "transcription_engines_available": {
+            "gemini": gemini_api_key_configured,
+            "assemblyai": assemblyai_api_key_configured
+        },
         "last_cleanup": last_cleanup_time.isoformat()
     }
 
@@ -558,4 +444,3 @@ if __name__ == "__main__":
     
     # Run the server
     asyncio.run(hypercorn.asyncio.serve(app, config))
-

@@ -12,16 +12,13 @@ interface FormData {
   speaker_names: string
   include_timestamps: boolean
   ai_model: string
-  lines_per_page: number
+  transcription_engine: string
 }
 
 interface TranscriptResponse {
   transcript: string
   docx_base64: string
   oncue_xml_base64: string
-  has_subtitles: boolean
-  srt_content?: string
-  webvtt_content?: string
 }
 
 export default function TranscribeForm() {
@@ -35,7 +32,7 @@ export default function TranscribeForm() {
     speaker_names: '',
     include_timestamps: false,
     ai_model: 'flash',
-    lines_per_page: 25
+    transcription_engine: 'assemblyai'
   })
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -341,6 +338,42 @@ export default function TranscribeForm() {
 
               <div>
                 <label className="block text-sm font-medium text-primary-700 mb-3">
+                  Transcription Engine
+                </label>
+                <div className="space-y-2">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="transcription_engine"
+                      value="assemblyai"
+                      checked={formData.transcription_engine === 'assemblyai'}
+                      onChange={handleInputChange}
+                      className="mr-3"
+                    />
+                    <div>
+                      <div className="font-medium">AssemblyAI (Default)</div>
+                      <div className="text-sm text-primary-600">Word-level timestamps for precise highlighting</div>
+                    </div>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="transcription_engine"
+                      value="gemini"
+                      checked={formData.transcription_engine === 'gemini'}
+                      onChange={handleInputChange}
+                      className="mr-3"
+                    />
+                    <div>
+                      <div className="font-medium">Google Gemini</div>
+                      <div className="text-sm text-primary-600">Faster turnaround, linear timestamp interpolation</div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-primary-700 mb-3">
                   AI Model
                 </label>
                 <div className="space-y-2">
@@ -351,6 +384,7 @@ export default function TranscribeForm() {
                       value="flash"
                       checked={formData.ai_model === 'flash'}
                       onChange={handleInputChange}
+                      disabled={formData.transcription_engine !== 'gemini'}
                       className="mr-3"
                     />
                     <div>
@@ -365,6 +399,7 @@ export default function TranscribeForm() {
                       value="pro"
                       checked={formData.ai_model === 'pro'}
                       onChange={handleInputChange}
+                      disabled={formData.transcription_engine !== 'gemini'}
                       className="mr-3"
                     />
                     <div>
@@ -373,38 +408,26 @@ export default function TranscribeForm() {
                     </div>
                   </label>
                 </div>
+                {formData.transcription_engine !== 'gemini' && (
+                  <p className="text-xs text-primary-600 mt-2">
+                    Gemini model selection is disabled when using AssemblyAI.
+                  </p>
+                )}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <label className="flex items-center">
-                    <input
-                      type="checkbox"
-                      name="include_timestamps"
-                      checked={formData.include_timestamps}
-                      onChange={handleInputChange}
-                      className="mr-3"
-                    />
-                    <span className="text-sm font-medium text-primary-700">
-                      Include timestamps in transcript
-                    </span>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-primary-700 mb-2">
-                    Lines per page (OnCue XML)
-                  </label>
+              <div>
+                <label className="flex items-center">
                   <input
-                    type="number"
-                    name="lines_per_page"
-                    value={formData.lines_per_page}
+                    type="checkbox"
+                    name="include_timestamps"
+                    checked={formData.include_timestamps}
                     onChange={handleInputChange}
-                    className="input-field"
-                    min="20"
-                    max="35"
+                    className="mr-3"
                   />
-                </div>
+                  <span className="text-sm font-medium text-primary-700">
+                    Include timestamps in transcript
+                  </span>
+                </label>
               </div>
             </div>
           </div>
@@ -487,11 +510,10 @@ export default function TranscribeForm() {
                     <div className="text-green-800 font-medium mb-2">✅ Transcription Complete!</div>
                     <div className="text-sm text-green-700">
                       Generated {result.transcript.split('\n\n').filter(line => line.trim()).length} transcript segments
-                      {result.has_subtitles ? ' with subtitles' : ''}
                     </div>
                   </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <button
                     onClick={() => downloadFile(
                       result.docx_base64, 
@@ -513,22 +535,6 @@ export default function TranscribeForm() {
                   >
                     📋 Download OnCue XML
                   </button>
-
-                  {result.has_subtitles && result.srt_content && (
-                    <button
-                      onClick={() => {
-                        const blob = new Blob([result.srt_content!], { type: 'text/plain' })
-                        const link = document.createElement('a')
-                        link.href = URL.createObjectURL(blob)
-                        link.download = generateFilename('subtitles', '.srt')
-                        link.click()
-                        URL.revokeObjectURL(link.href)
-                      }}
-                      className="btn-primary text-center py-3"
-                    >
-                      📺 Download SRT
-                    </button>
-                  )}
                 </div>
 
                 {/* Preview transcript text */}
