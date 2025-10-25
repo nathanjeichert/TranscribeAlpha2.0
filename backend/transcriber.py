@@ -209,8 +209,8 @@ def transcribe_with_assemblyai(
     try:
         # Configure transcription with speaker diarization
         raw_config = aai.RawTranscriptionConfig(
-            language_model="slam-1",
-            acoustic_model="slam-1",
+            language_model="slam_1",
+            acoustic_model="slam_1",
         )
 
         config = aai.TranscriptionConfig(
