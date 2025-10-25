@@ -29,7 +29,7 @@ steps:
       - '10'
       - '--port'
       - '8080'
-      - '--http2'
+      - '--use-http2'
       - '--set-env-vars'
       - 'ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY}'
 
