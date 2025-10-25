@@ -28,3 +28,4 @@ uvicorn backend.server:app --reload
 ## Notes
 
 The backend relies on the [AssemblyAI Python SDK](https://github.com/AssemblyAI/assemblyai-python-sdk) for transcription and formatting.
+- Transcriptions run on AssemblyAI's `slam-1` model to take advantage of its speaker-and-language-aware accuracy.

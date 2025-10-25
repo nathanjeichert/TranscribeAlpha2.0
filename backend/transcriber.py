@@ -210,7 +210,8 @@ def transcribe_with_assemblyai(
         # Configure transcription with speaker diarization
         config = aai.TranscriptionConfig(
             speaker_labels=True,
-            speakers_expected=len(speaker_name_list) if speaker_name_list else None
+            speakers_expected=len(speaker_name_list) if speaker_name_list else None,
+            raw_transcription_config=aai.RawTranscriptionConfig(model="slam-1"),
         )
 
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")

@@ -95,7 +95,7 @@ gcloud run deploy transcribealpha \
 - Media preview shown above transcript results after processing
 
 **AI Integration**:
-- AssemblyAI synchronous transcription with optional speaker name mapping
+- AssemblyAI synchronous transcription with optional speaker name mapping (slam-1 model)
 - Structured utterance and word metadata for speaker identification
 - Automatic speaker diarization (or manual assignment when names provided)
 - Word-level timestamp generation for precise OnCue synchronization
