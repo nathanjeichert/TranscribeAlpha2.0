@@ -6,7 +6,8 @@ import uuid
 import tempfile
 import hashlib
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple, Any
+import xml.etree.ElementTree as ET
 from google.cloud import storage
 
 # Configure logging
@@ -118,6 +119,7 @@ def save_editor_session(session_id: str, session_data: dict) -> None:
             "session_id": session_id,
             "created_at": session_data["created_at"],
             "expires_at": session_data["expires_at"],
+            "updated_at": session_data.get("updated_at", session_data["created_at"]),
         }
         blob.upload_from_string(json.dumps(session_data), content_type="application/json")
         logger.info("Saved editor session %s", session_id)
@@ -196,6 +198,321 @@ def cleanup_expired_editor_sessions():
             logger.info("Cleanup removed %s expired editor sessions", deleted)
     except Exception as e:
         logger.error("Error during editor session cleanup: %s", e)
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+
+def format_transcript_text(turns: List[TranscriptTurn], include_timestamps: bool) -> str:
+    if include_timestamps:
+        return "\n\n".join(
+            [
+                f"{turn.timestamp + ' ' if (turn.timestamp and include_timestamps) else ''}{turn.speaker.upper()}:\t\t{turn.text}"
+                for turn in turns
+            ]
+        )
+    return "\n\n".join([f"{turn.speaker.upper()}:\t\t{turn.text}" for turn in turns])
+
+
+def serialize_line_entries(line_entries: List[dict]) -> List[dict]:
+    serialized = []
+    for entry in line_entries:
+        serialized.append(
+            {
+                "id": entry["id"],
+                "speaker": entry["speaker"],
+                "text": entry["text"],
+                "start": float(entry["start"]),
+                "end": float(entry["end"]),
+                "page": entry.get("page"),
+                "line": entry.get("line"),
+                "pgln": entry.get("pgln"),
+                "is_continuation": entry.get("is_continuation", False),
+            }
+        )
+    return serialized
+
+
+def build_session_artifacts(
+    turns: List[TranscriptTurn],
+    title_data: dict,
+    duration_seconds: float,
+    include_timestamps: bool,
+    lines_per_page: int,
+):
+    docx_bytes = create_docx(title_data, turns, include_timestamps)
+    oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds, lines_per_page)
+    line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
+    transcript_text = format_transcript_text(turns, include_timestamps)
+    return docx_bytes, oncue_xml, transcript_text, serialize_line_entries(line_entries)
+
+
+def build_session_response(session_data: dict) -> dict:
+    return {
+        "session_id": session_data.get("session_id"),
+        "title_data": session_data.get("title_data", {}),
+        "audio_duration": session_data.get("audio_duration", 0.0),
+        "lines_per_page": session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
+        "include_timestamps": session_data.get("include_timestamps", False),
+        "lines": session_data.get("lines", []),
+        "created_at": session_data.get("created_at"),
+        "updated_at": session_data.get("updated_at"),
+        "expires_at": session_data.get("expires_at"),
+        "docx_base64": session_data.get("docx_base64"),
+        "oncue_xml_base64": session_data.get("oncue_xml_base64"),
+        "transcript": session_data.get("transcript_text"),
+        "media_blob_name": session_data.get("media_blob_name"),
+        "media_content_type": session_data.get("media_content_type"),
+    }
+
+
+def normalize_line_payloads(
+    lines_payload: List[dict],
+    duration_seconds: float,
+) -> Tuple[List[dict], float]:
+    normalized_lines = []
+    max_end = duration_seconds
+
+    for idx, line in enumerate(lines_payload):
+        try:
+            start_val = float(line.get("start", 0.0))
+            end_val = float(line.get("end", start_val))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Invalid start/end for line index {idx}")
+
+        if end_val < start_val:
+            end_val = start_val
+
+        if duration_seconds > 0:
+            start_val = max(0.0, min(start_val, duration_seconds))
+            end_val = max(0.0, min(end_val, duration_seconds))
+        else:
+            start_val = max(0.0, start_val)
+            end_val = max(start_val, end_val)
+
+        speaker_name = str(line.get("speaker", "")).strip() or "SPEAKER"
+        text_value = str(line.get("text", "")).strip()
+
+        normalized_lines.append(
+            {
+                "id": line.get("id") or f"{idx}",
+                "speaker": speaker_name.upper(),
+                "text": text_value,
+                "start": start_val,
+                "end": end_val,
+                "is_continuation": bool(line.get("is_continuation", False)),
+            }
+        )
+
+        max_end = max(max_end, end_val)
+
+    if duration_seconds == 0 and max_end > 0:
+        duration_seconds = max_end
+    elif max_end > duration_seconds:
+        duration_seconds = max_end
+
+    normalized_lines = sorted(
+        enumerate(normalized_lines),
+        key=lambda item: (item[1]["start"], item[0]),
+    )
+
+    return [item[1] for item in normalized_lines], duration_seconds
+
+
+def construct_turns_from_lines(
+    normalized_lines: List[dict],
+    include_timestamps: bool,
+) -> List[TranscriptTurn]:
+    turns: List[TranscriptTurn] = []
+    current_speaker: Optional[str] = None
+    current_text_parts: List[str] = []
+    current_words: List[WordTimestamp] = []
+    current_start: Optional[float] = None
+
+    def flush_turn():
+        nonlocal current_speaker, current_text_parts, current_words, current_start
+        if current_speaker is None:
+            return
+        full_text = " ".join([part for part in current_text_parts if part]).strip()
+        timestamp_str = seconds_to_timestamp(current_start) if (current_start is not None and include_timestamps) else None
+        turns.append(
+            TranscriptTurn(
+                speaker=current_speaker,
+                text=full_text,
+                timestamp=timestamp_str,
+                words=current_words if current_words else None,
+            )
+        )
+        current_speaker = None
+        current_text_parts = []
+        current_words = []
+        current_start = None
+
+    for line in normalized_lines:
+        speaker = line["speaker"]
+        start_val = line["start"]
+        end_val = line["end"]
+        text_val = line["text"]
+
+        should_start_new = False
+        if current_speaker is None:
+            should_start_new = True
+        elif line.get("is_continuation", False) is False:
+            should_start_new = True
+        elif speaker != current_speaker:
+            should_start_new = True
+
+        if should_start_new:
+            flush_turn()
+            current_speaker = speaker
+            current_start = start_val
+
+        current_text_parts.append(text_val)
+
+        tokens = [tok for tok in text_val.split() if tok]
+        line_duration = max(end_val - start_val, 0.01)
+        word_count = len(tokens) or 1
+        for word_idx, token in enumerate(tokens or [""]):
+            token_start = start_val + (line_duration * word_idx / word_count)
+            if word_idx == word_count - 1:
+                token_end = end_val
+            else:
+                token_end = start_val + (line_duration * (word_idx + 1) / word_count)
+            current_words.append(
+                WordTimestamp(
+                    text=token or "",
+                    start=token_start * 1000.0,
+                    end=max(token_end * 1000.0, token_start * 1000.0),
+                    confidence=None,
+                    speaker=speaker,
+                )
+            )
+
+    flush_turn()
+    return turns
+
+
+def load_latest_editor_session() -> Optional[dict]:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        latest_session = None
+        latest_ts = None
+        for blob in bucket.list_blobs(prefix=EDITOR_SESSION_PREFIX):
+            try:
+                raw = blob.download_as_text()
+                session_data = json.loads(raw)
+            except Exception:
+                continue
+
+            if session_is_expired(session_data):
+                try:
+                    blob.delete()
+                except Exception:
+                    pass
+                continue
+
+            updated_at_str = session_data.get("updated_at") or session_data.get("created_at")
+            updated_at = parse_iso_datetime(updated_at_str)
+            if not updated_at:
+                continue
+
+            if latest_ts is None or updated_at > latest_ts:
+                latest_ts = updated_at
+                latest_session = session_data
+
+        return latest_session
+    except Exception as e:
+        logger.error("Failed to load latest editor session: %s", e)
+        return None
+
+
+def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid OnCue XML: {exc}")
+
+    deposition = root.find(".//deposition")
+    title_data = {
+        "CASE_NAME": "",
+        "CASE_NUMBER": "",
+        "FIRM_OR_ORGANIZATION_NAME": "",
+        "DATE": deposition.get("date") if deposition is not None else "",
+        "TIME": "",
+        "LOCATION": "",
+        "FILE_NAME": deposition.get("filename") if deposition is not None else "imported.xml",
+        "FILE_DURATION": "",
+    }
+
+    lines: List[dict] = []
+    current_speaker: Optional[str] = None
+    max_end = 0.0
+
+    for line_idx, line_elem in enumerate(root.findall(".//depoLine")):
+        raw_text = line_elem.attrib.get("text", "")
+        video_start = float(line_elem.attrib.get("videoStart", "0") or 0)
+        video_stop = float(line_elem.attrib.get("videoStop", "0") or video_start)
+        page = line_elem.attrib.get("page")
+        line_number = line_elem.attrib.get("line")
+        pgln = line_elem.attrib.get("pgLN")
+
+        trimmed = raw_text.lstrip()
+        speaker = current_speaker
+        text_content = trimmed
+        is_continuation = True
+
+        if trimmed:
+            if ":   " in trimmed:
+                potential_speaker, remainder = trimmed.split(":   ", 1)
+                if potential_speaker.strip():
+                    speaker = potential_speaker.strip().upper()
+                    text_content = remainder.strip()
+                    is_continuation = False
+            elif current_speaker is None:
+                speaker = "SPEAKER"
+                text_content = trimmed.strip()
+                is_continuation = False
+        else:
+            text_content = ""
+
+        if speaker is None:
+            speaker = "SPEAKER"
+
+        current_speaker = speaker
+        max_end = max(max_end, video_stop)
+
+        lines.append(
+            {
+                "id": line_elem.attrib.get("pgLN", f"{line_idx}"),
+                "speaker": speaker,
+                "text": text_content,
+                "start": video_start,
+                "end": video_stop,
+                "page": int(page) if page and page.isdigit() else None,
+                "line": int(line_number) if line_number and line_number.isdigit() else None,
+                "pgln": int(pgln) if pgln and pgln.isdigit() else None,
+                "is_continuation": is_continuation,
+            }
+        )
+
+    duration_seconds = max_end
+    hours, rem = divmod(duration_seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+    return {
+        "lines": lines,
+        "title_data": title_data,
+        "audio_duration": duration_seconds,
+    }
 
 def create_cache_key(
     file_bytes: bytes,
@@ -389,6 +706,20 @@ async def transcribe(
     # Convert checkbox value to boolean
     timestamps_enabled = include_timestamps == "on"
     
+    # Upload media for editor playback
+    media_blob_name = None
+    media_content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+    try:
+        media_blob_name = upload_preview_file_to_cloud_storage(
+            file_bytes,
+            file.filename,
+            media_content_type,
+        )
+    except Exception as e:
+        logger.warning("Failed to store media preview for editor session: %s", e)
+        media_blob_name = None
+        media_content_type = None
+
     # Check cache first
     cache_key = create_cache_key(file_bytes, speaker_list)
 
@@ -397,9 +728,6 @@ async def transcribe(
         cached_result = temp_transcript_cache[cache_key]
         turns = cached_result["turns"]
         duration_seconds = cached_result.get("duration")
-        
-        # Re-generate docx with current timestamp setting
-        docx_bytes = create_docx(title_data, turns, timestamps_enabled)
         logger.info(f"Used cached transcription with {len(turns)} turns.")
     else:
         # Generate new transcription
@@ -425,17 +753,16 @@ async def transcribe(
             logger.error(f"Transcription error: {error_detail}")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
-    # Format transcript text based on user's timestamp preference
-    if timestamps_enabled:
-        transcript_text = "\n\n".join([f"{t.timestamp + ' ' if t.timestamp else ''}{t.speaker.upper()}:\t\t{t.text}" for t in turns])
-    else:
-        transcript_text = "\n\n".join([f"{t.speaker.upper()}:\t\t{t.text}" for t in turns])
-    encoded = base64.b64encode(docx_bytes).decode()
-
-    oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds or 0, DEFAULT_LINES_PER_PAGE)
+    docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+        turns,
+        title_data,
+        duration_seconds or 0,
+        timestamps_enabled,
+        DEFAULT_LINES_PER_PAGE,
+    )
+    docx_b64 = base64.b64encode(docx_bytes).decode()
     oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
-    line_entries, _ = compute_transcript_line_entries(turns, duration_seconds or 0, DEFAULT_LINES_PER_PAGE)
     session_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc)
     expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
@@ -449,20 +776,13 @@ async def transcribe(
         "lines_per_page": DEFAULT_LINES_PER_PAGE,
         "include_timestamps": timestamps_enabled,
         "turns": serialize_transcript_turns(turns),
-        "lines": [
-            {
-                "id": entry["id"],
-                "speaker": entry["speaker"],
-                "text": entry["text"],
-                "start": float(entry["start"]),
-                "end": float(entry["end"]),
-                "page": entry["page"],
-                "line": entry["line"],
-                "pgln": entry["pgln"],
-                "is_continuation": entry["is_continuation"],
-            }
-            for entry in line_entries
-        ],
+        "lines": line_payloads,
+        "docx_base64": docx_b64,
+        "oncue_xml_base64": oncue_b64,
+        "transcript_text": transcript_text,
+        "media_blob_name": media_blob_name,
+        "media_content_type": media_content_type,
+        "updated_at": created_at.isoformat(),
     }
 
     try:
@@ -474,10 +794,12 @@ async def transcribe(
 
     response_data = {
         "transcript": transcript_text,
-        "docx_base64": encoded,
+        "docx_base64": docx_b64,
         "oncue_xml_base64": oncue_b64,
         "editor_session_id": session_id,
         "include_timestamps": timestamps_enabled,
+        "media_blob_name": media_blob_name,
+        "media_content_type": media_content_type,
     }
 
     return JSONResponse(response_data)
@@ -492,17 +814,15 @@ async def get_editor_session(session_id: str):
         delete_editor_session(session_id)
         raise HTTPException(status_code=404, detail="Editor session expired")
 
-    payload = {
-        "session_id": session_id,
-        "title_data": session_data.get("title_data", {}),
-        "audio_duration": session_data.get("audio_duration", 0.0),
-        "lines_per_page": session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
-        "include_timestamps": session_data.get("include_timestamps", False),
-        "lines": session_data.get("lines", []),
-        "created_at": session_data.get("created_at"),
-        "expires_at": session_data.get("expires_at"),
-    }
-    return JSONResponse(payload)
+    return JSONResponse(build_session_response(session_data))
+
+
+@app.get("/api/transcripts/latest")
+async def get_latest_editor_session():
+    session_data = load_latest_editor_session()
+    if not session_data:
+        raise HTTPException(status_code=404, detail="No editor sessions available")
+    return JSONResponse(build_session_response(session_data))
 
 
 @app.put("/api/transcripts/{session_id}")
@@ -527,173 +847,159 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
     duration_seconds = float(session_data.get("audio_duration") or 0)
     lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
 
-    normalized_lines = []
-    max_end = duration_seconds
-    for idx, line in enumerate(lines_payload):
-        try:
-            start_val = float(line.get("start", 0.0))
-            end_val = float(line.get("end", start_val))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"Invalid start/end for line index {idx}")
-        if end_val < start_val:
-            end_val = start_val
-        if duration_seconds > 0:
-            start_val = max(0.0, min(start_val, duration_seconds))
-            end_val = max(0.0, min(end_val, duration_seconds))
-        speaker_name = str(line.get("speaker", "")).strip() or "SPEAKER"
-        text_value = str(line.get("text", "")).strip()
-        max_end = max(max_end, end_val)
-        normalized_lines.append(
-            {
-                "id": line.get("id") or f"{idx}",
-                "speaker": speaker_name.upper(),
-                "text": text_value,
-                "start": start_val,
-                "end": end_val,
-                "is_continuation": bool(line.get("is_continuation", False)),
-            }
-        )
-
-    if duration_seconds == 0 and max_end > 0:
-        duration_seconds = max_end
-    elif max_end > duration_seconds:
-        duration_seconds = max_end
-
-    normalized_lines = sorted(
-        enumerate(normalized_lines),
-        key=lambda item: (item[1]["start"], item[0]),
-    )
-
-    turns: List[TranscriptTurn] = []
-    current_speaker: Optional[str] = None
-    current_text_parts: List[str] = []
-    current_words: List[WordTimestamp] = []
-    current_start: Optional[float] = None
-
-    def flush_turn():
-        nonlocal current_speaker, current_text_parts, current_words, current_start
-        if current_speaker is None:
-            return
-        full_text = " ".join([part for part in current_text_parts if part is not None]).strip()
-        timestamp_str = seconds_to_timestamp(current_start) if (current_start is not None and include_timestamps) else None
-        turns.append(
-            TranscriptTurn(
-                speaker=current_speaker,
-                text=full_text,
-                timestamp=timestamp_str,
-                words=current_words if current_words else None,
-            )
-        )
-        current_speaker = None
-        current_text_parts = []
-        current_words = []
-        current_start = None
-
-    for _, line in normalized_lines:
-        speaker = line["speaker"]
-        start_val = line["start"]
-        end_val = line["end"]
-        text_val = line["text"]
-        if current_speaker is None:
-            current_speaker = speaker
-            current_start = start_val
-        elif speaker != current_speaker:
-            flush_turn()
-            current_speaker = speaker
-            current_start = start_val
-
-        current_text_parts.append(text_val)
-
-        tokens = [tok for tok in text_val.split() if tok]
-        line_duration = max(end_val - start_val, 0.01)
-        word_count = len(tokens)
-        for word_idx, token in enumerate(tokens):
-            token_start = start_val + (line_duration * word_idx / max(word_count, 1))
-            if word_idx == word_count - 1:
-                token_end = end_val
-            else:
-                token_end = start_val + (line_duration * (word_idx + 1) / max(word_count, 1))
-            current_words.append(
-                WordTimestamp(
-                    text=token,
-                    start=token_start * 1000.0,
-                    end=max(token_end * 1000.0, token_start * 1000.0),
-                    confidence=None,
-                    speaker=speaker,
-                )
-            )
-
-    flush_turn()
+    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
+    turns = construct_turns_from_lines(normalized_lines, include_timestamps)
 
     if not turns:
         raise HTTPException(status_code=400, detail="No valid turns could be constructed from lines")
 
-    try:
-        docx_bytes = create_docx(current_title, turns, include_timestamps)
-    except Exception as e:
-        logger.error("Failed to create DOCX for session %s: %s", session_id, str(e))
-        raise HTTPException(status_code=500, detail="Failed to build DOCX output")
+    docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
+        turns,
+        current_title,
+        duration_seconds,
+        include_timestamps,
+        lines_per_page,
+    )
 
-    try:
-        oncue_xml = generate_oncue_xml(turns, current_title, duration_seconds, lines_per_page)
-    except Exception as e:
-        logger.error("Failed to create OnCue XML for session %s: %s", session_id, str(e))
-        raise HTTPException(status_code=500, detail="Failed to build OnCue XML output")
-
-    updated_line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
-    updated_lines_payload = [
-        {
-            "id": entry["id"],
-            "speaker": entry["speaker"],
-            "text": entry["text"],
-            "start": float(entry["start"]),
-            "end": float(entry["end"]),
-            "page": entry["page"],
-            "line": entry["line"],
-            "pgln": entry["pgln"],
-            "is_continuation": entry["is_continuation"],
-        }
-        for entry in updated_line_entries
-    ]
+    docx_b64 = base64.b64encode(docx_bytes).decode()
+    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
     hours, rem = divmod(duration_seconds, 3600)
     minutes, seconds = divmod(rem, 60)
     current_title["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+    media_blob_name = payload.get("media_blob_name", session_data.get("media_blob_name"))
+    media_content_type = payload.get("media_content_type", session_data.get("media_content_type"))
+
+    updated_at = datetime.now(timezone.utc)
 
     session_data["turns"] = serialize_transcript_turns(turns)
     session_data["lines"] = updated_lines_payload
     session_data["title_data"] = current_title
     session_data["audio_duration"] = duration_seconds
     session_data["include_timestamps"] = include_timestamps
-    session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    session_data["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
+    session_data["docx_base64"] = docx_b64
+    session_data["oncue_xml_base64"] = oncue_b64
+    session_data["transcript_text"] = transcript_text
+    session_data["media_blob_name"] = media_blob_name
+    session_data["media_content_type"] = media_content_type
+    session_data["updated_at"] = updated_at.isoformat()
+    session_data["expires_at"] = (updated_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
 
     save_editor_session(session_id, session_data)
-
-    transcript_text = (
-        "\n\n".join(
-            [
-                f"{turn.timestamp + ' ' if (turn.timestamp and include_timestamps) else ''}{turn.speaker.upper()}:\t\t{turn.text}"
-                for turn in turns
-            ]
-        )
-        if include_timestamps
-        else "\n\n".join([f"{turn.speaker.upper()}:\t\t{turn.text}" for turn in turns])
-    )
 
     response_payload = {
         "session_id": session_id,
         "lines": updated_lines_payload,
-        "docx_base64": base64.b64encode(docx_bytes).decode(),
-        "oncue_xml_base64": base64.b64encode(oncue_xml.encode("utf-8")).decode(),
+        "docx_base64": docx_b64,
+        "oncue_xml_base64": oncue_b64,
         "transcript": transcript_text,
         "title_data": current_title,
         "include_timestamps": include_timestamps,
         "audio_duration": duration_seconds,
         "updated_at": session_data["updated_at"],
         "expires_at": session_data["expires_at"],
+        "media_blob_name": media_blob_name,
+        "media_content_type": media_content_type,
     }
 
+    return JSONResponse(response_payload)
+
+
+@app.post("/api/transcripts/import")
+async def import_oncue_transcript(
+    xml_file: UploadFile = File(...),
+    media_file: Optional[UploadFile] = File(None),
+    case_name: str = Form(""),
+    case_number: str = Form(""),
+    firm_name: str = Form(""),
+    input_date: str = Form(""),
+    input_time: str = Form(""),
+    location: str = Form(""),
+    include_timestamps: Optional[str] = Form(None),
+):
+    xml_bytes = await xml_file.read()
+    if not xml_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded XML file is empty")
+
+    xml_text = xml_bytes.decode("utf-8", errors="replace")
+    parsed = parse_oncue_xml(xml_text)
+
+    title_data = parsed["title_data"]
+    overrides = {
+        "CASE_NAME": case_name or title_data.get("CASE_NAME", ""),
+        "CASE_NUMBER": case_number or title_data.get("CASE_NUMBER", ""),
+        "FIRM_OR_ORGANIZATION_NAME": firm_name or title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
+        "DATE": input_date or title_data.get("DATE", ""),
+        "TIME": input_time or title_data.get("TIME", ""),
+        "LOCATION": location or title_data.get("LOCATION", ""),
+        "FILE_NAME": title_data.get("FILE_NAME") or xml_file.filename or "imported.xml",
+    }
+    title_data.update(overrides)
+
+    duration_seconds = float(parsed["audio_duration"] or 0)
+    lines_payload = parsed["lines"]
+    include_ts = include_timestamps == "on" if include_timestamps is not None else True
+
+    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
+    turns = construct_turns_from_lines(normalized_lines, include_ts)
+    if not turns:
+        raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
+
+    docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+        turns,
+        title_data,
+        duration_seconds,
+        include_ts,
+        DEFAULT_LINES_PER_PAGE,
+    )
+
+    docx_b64 = base64.b64encode(docx_bytes).decode()
+    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+
+    media_blob_name = None
+    media_content_type = None
+    if media_file:
+        media_bytes = await media_file.read()
+        if media_bytes:
+            media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename)[0]
+            try:
+                media_blob_name = upload_preview_file_to_cloud_storage(
+                    media_bytes,
+                    media_file.filename,
+                    media_content_type,
+                )
+            except Exception as e:
+                logger.error("Failed to store media during import: %s", e)
+                media_blob_name = None
+                media_content_type = None
+
+    session_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc)
+    expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
+
+    session_payload = {
+        "session_id": session_id,
+        "created_at": created_at.isoformat(),
+        "updated_at": created_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "title_data": title_data,
+        "audio_duration": duration_seconds,
+        "lines_per_page": DEFAULT_LINES_PER_PAGE,
+        "include_timestamps": include_ts,
+        "turns": serialize_transcript_turns(turns),
+        "lines": line_payloads,
+        "docx_base64": docx_b64,
+        "oncue_xml_base64": oncue_b64,
+        "transcript_text": transcript_text,
+        "media_blob_name": media_blob_name,
+        "media_content_type": media_content_type,
+        "source": "import",
+    }
+
+    save_editor_session(session_id, session_payload)
+
+    response_payload = build_session_response(session_payload)
     return JSONResponse(response_payload)
 
 @app.post("/api/upload-preview")

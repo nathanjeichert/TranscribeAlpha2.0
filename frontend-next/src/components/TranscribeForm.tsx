@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import TranscriptEditor, { EditorSaveResponse } from '@/components/TranscriptEditor'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import TranscriptEditor, { EditorSaveResponse, EditorSessionResponse } from '@/components/TranscriptEditor'
 
 interface FormData {
   case_name: string
@@ -20,6 +20,8 @@ interface TranscriptResponse {
   oncue_xml_base64: string
   editor_session_id?: string
   include_timestamps?: boolean
+  media_blob_name?: string | null
+  media_content_type?: string | null
 }
 
 type AppTab = 'transcribe' | 'editor'
@@ -45,16 +47,94 @@ export default function TranscribeForm() {
   const [result, setResult] = useState<TranscriptResponse | null>(null)
   const [error, setError] = useState<string>('')
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string>('')
+  const [mediaContentType, setMediaContentType] = useState<string | undefined>(undefined)
+  const [mediaIsLocal, setMediaIsLocal] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const syncEditorSession = useCallback(
+    (raw: {
+      session_id?: string | null
+      editor_session_id?: string | null
+      docx_base64?: string | null
+      oncue_xml_base64?: string | null
+      transcript?: string | null
+      include_timestamps?: boolean
+      media_blob_name?: string | null
+      media_content_type?: string | null
+    }) => {
+      const sessionIdValue = raw.session_id ?? raw.editor_session_id ?? null
+      const includeTimestampsValue = raw.include_timestamps ?? false
+
+      setEditorSessionId(sessionIdValue)
+      setEditorIncludeTimestamps(includeTimestampsValue)
+      setResult((prev) => ({
+        transcript: raw.transcript ?? prev?.transcript ?? '',
+        docx_base64: raw.docx_base64 ?? prev?.docx_base64 ?? '',
+        oncue_xml_base64: raw.oncue_xml_base64 ?? prev?.oncue_xml_base64 ?? '',
+        editor_session_id: sessionIdValue ?? undefined,
+        include_timestamps: includeTimestampsValue,
+        media_blob_name: raw.media_blob_name ?? prev?.media_blob_name,
+        media_content_type: raw.media_content_type ?? prev?.media_content_type,
+      }))
+
+      if (raw.media_blob_name) {
+        if (mediaPreviewUrl && mediaIsLocal) {
+          URL.revokeObjectURL(mediaPreviewUrl)
+        }
+        setMediaPreviewUrl(`/api/media/${raw.media_blob_name}`)
+        setMediaContentType(raw.media_content_type ?? undefined)
+        setMediaIsLocal(false)
+      }
+
+      if (sessionIdValue) {
+        setActiveTab('editor')
+      }
+    },
+    [mediaIsLocal, mediaPreviewUrl],
+  )
+
   useEffect(() => {
     return () => {
-      if (mediaPreviewUrl) {
+      if (mediaPreviewUrl && mediaIsLocal) {
         URL.revokeObjectURL(mediaPreviewUrl)
       }
     }
-  }, [mediaPreviewUrl])
+  }, [mediaPreviewUrl, mediaIsLocal])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadLatestSession = async () => {
+      try {
+        const response = await fetch('/api/transcripts/latest')
+        if (!response.ok) {
+          return
+        }
+        const data: EditorSessionResponse = await response.json()
+        if (cancelled) return
+        if (data.session_id) {
+          syncEditorSession({
+            session_id: data.session_id,
+            docx_base64: data.docx_base64 ?? undefined,
+            oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
+            transcript: data.transcript ?? undefined,
+            include_timestamps: data.include_timestamps ?? undefined,
+            media_blob_name: data.media_blob_name ?? undefined,
+            media_content_type: data.media_content_type ?? undefined,
+          })
+        }
+      } catch (err) {
+        console.warn('Failed to load latest transcript session', err)
+      }
+    }
+
+    loadLatestSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [syncEditorSession])
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = event.target
@@ -68,7 +148,7 @@ export default function TranscribeForm() {
     const file = event.target.files?.[0]
     if (!file) return
 
-    if (mediaPreviewUrl) {
+    if (mediaPreviewUrl && mediaIsLocal) {
       URL.revokeObjectURL(mediaPreviewUrl)
     }
 
@@ -81,6 +161,8 @@ export default function TranscribeForm() {
 
     const previewUrl = URL.createObjectURL(file)
     setMediaPreviewUrl(previewUrl)
+    setMediaContentType(file.type)
+    setMediaIsLocal(true)
   }
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -126,13 +208,20 @@ export default function TranscribeForm() {
       }
 
       const data: TranscriptResponse = await response.json()
-      setResult(data)
-      setEditorSessionId(data.editor_session_id ?? null)
-      setEditorIncludeTimestamps(
-        data.include_timestamps ?? formData.include_timestamps ?? false,
-      )
+      syncEditorSession({
+        session_id: data.editor_session_id ?? null,
+        docx_base64: data.docx_base64,
+        oncue_xml_base64: data.oncue_xml_base64,
+        transcript: data.transcript,
+        include_timestamps: data.include_timestamps,
+        media_blob_name: data.media_blob_name ?? undefined,
+        media_content_type: data.media_content_type ?? undefined,
+      })
+      if (data.media_blob_name) {
+        setMediaIsLocal(false)
+        setMediaContentType(data.media_content_type ?? undefined)
+      }
       setProgress(100)
-      setActiveTab(data.editor_session_id ? 'editor' : 'transcribe')
     } catch (err: any) {
       console.error('Transcription error:', err)
       setError(err.message || 'Transcription failed')
@@ -186,14 +275,14 @@ export default function TranscribeForm() {
   }
 
   const handleEditorSave = (data: EditorSaveResponse) => {
-    setEditorSessionId(data.session_id)
-    setEditorIncludeTimestamps(data.include_timestamps)
-    setResult({
-      transcript: data.transcript,
-      docx_base64: data.docx_base64,
-      oncue_xml_base64: data.oncue_xml_base64,
-      editor_session_id: data.session_id,
-      include_timestamps: data.include_timestamps,
+    syncEditorSession({
+      session_id: data.session_id,
+      docx_base64: data.docx_base64 ?? undefined,
+      oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
+      transcript: data.transcript ?? undefined,
+      include_timestamps: data.include_timestamps ?? undefined,
+      media_blob_name: data.media_blob_name ?? undefined,
+      media_content_type: data.media_content_type ?? undefined,
     })
   }
 
@@ -206,6 +295,9 @@ export default function TranscribeForm() {
 
   const transcriptSegments =
     result?.transcript.split('\n\n').filter((segment) => segment.trim()).length ?? 0
+
+  const previewContentType = mediaContentType ?? selectedFile?.type ?? ''
+  const isVideoPreview = previewContentType.startsWith('video/')
 
   return (
     <div className="min-h-screen bg-primary-50">
@@ -221,11 +313,7 @@ export default function TranscribeForm() {
           <button className={tabClasses('transcribe')} onClick={() => setActiveTab('transcribe')}>
             Transcription
           </button>
-          <button
-            className={`${tabClasses('editor')} ${editorSessionId ? '' : 'opacity-60 cursor-not-allowed'}`}
-            onClick={() => editorSessionId && setActiveTab('editor')}
-            disabled={!editorSessionId}
-          >
+          <button className={tabClasses('editor')} onClick={() => setActiveTab('editor')}>
             Editor
           </button>
         </div>
@@ -423,14 +511,14 @@ export default function TranscribeForm() {
 
             {result && (
               <div className="space-y-6">
-                {selectedFile && mediaPreviewUrl && (
+                {mediaPreviewUrl && (
                   <div className="card">
                     <div className="card-header">
                       <h2 className="text-xl font-medium">Media Preview</h2>
                     </div>
                     <div className="card-body">
                       <div className="bg-primary-900 rounded-lg p-4">
-                        {selectedFile.type.startsWith('video/') ? (
+                        {isVideoPreview ? (
                           <video src={mediaPreviewUrl} controls className="w-full max-w-2xl mx-auto rounded">
                             Your browser does not support video playback.
                           </video>
@@ -441,8 +529,17 @@ export default function TranscribeForm() {
                         )}
                       </div>
                       <div className="mt-4 text-center text-sm text-primary-600">
-                        <span className="font-medium">{selectedFile.name}</span> •{' '}
-                        {(selectedFile.size / (1024 * 1024)).toFixed(1)} MB
+                        {selectedFile ? (
+                          <>
+                            <span className="font-medium">{selectedFile.name}</span> •{' '}
+                            {(selectedFile.size / (1024 * 1024)).toFixed(1)} MB
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-medium">Session media</span>{' '}
+                            {previewContentType && <>• {previewContentType}</>}
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -509,31 +606,21 @@ export default function TranscribeForm() {
         )}
 
         {activeTab === 'editor' && (
-          <div>
-            {editorSessionId ? (
-              <TranscriptEditor
-                sessionId={editorSessionId}
-                mediaUrl={mediaPreviewUrl}
-                mediaType={selectedFile?.type}
-                includeTimestamps={editorIncludeTimestamps}
-                docxBase64={result?.docx_base64}
-                xmlBase64={result?.oncue_xml_base64}
-                onDownload={downloadFile}
-                buildFilename={generateFilename}
-                onSaveComplete={handleEditorSave}
-                onIncludeTimestampsChange={setEditorIncludeTimestamps}
-              />
-            ) : (
-              <div className="card">
-                <div className="card-body text-primary-700">
-                  Generate a transcript first to unlock manual editing.
-                </div>
-              </div>
-            )}
-          </div>
+          <TranscriptEditor
+            sessionId={editorSessionId}
+            mediaUrl={mediaPreviewUrl || undefined}
+            mediaType={mediaContentType ?? selectedFile?.type}
+            includeTimestamps={editorIncludeTimestamps}
+            docxBase64={result?.docx_base64}
+            xmlBase64={result?.oncue_xml_base64}
+            onDownload={downloadFile}
+            buildFilename={generateFilename}
+            onSessionChange={syncEditorSession}
+            onSaveComplete={handleEditorSave}
+            onIncludeTimestampsChange={setEditorIncludeTimestamps}
+          />
         )}
       </div>
     </div>
   )
 }
-
