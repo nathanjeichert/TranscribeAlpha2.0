@@ -98,18 +98,21 @@ export default function TranscriptEditor({
   const [importIncludeTimestamps, setImportIncludeTimestamps] = useState(true)
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
+  const [localMediaPreviewUrl, setLocalMediaPreviewUrl] = useState<string | null>(null)
+  const [localMediaType, setLocalMediaType] = useState<string | undefined>(undefined)
 
   const effectiveMediaUrl = useMemo(() => {
+    if (localMediaPreviewUrl) return localMediaPreviewUrl
     if (mediaUrl) return mediaUrl
     if (sessionMeta?.media_blob_name) {
       return `/api/media/${sessionMeta.media_blob_name}`
     }
     return undefined
-  }, [mediaUrl, sessionMeta])
+  }, [localMediaPreviewUrl, mediaUrl, sessionMeta])
 
   const effectiveMediaType = useMemo(
-    () => mediaType ?? sessionMeta?.media_content_type ?? undefined,
-    [mediaType, sessionMeta],
+    () => localMediaType ?? mediaType ?? sessionMeta?.media_content_type ?? undefined,
+    [localMediaType, mediaType, sessionMeta],
   )
 
   const isVideo = useMemo(
@@ -284,6 +287,14 @@ export default function TranscriptEditor({
     [effectiveMediaUrl, isVideo],
   )
 
+  useEffect(() => {
+    return () => {
+      if (localMediaPreviewUrl) {
+        URL.revokeObjectURL(localMediaPreviewUrl)
+      }
+    }
+  }, [localMediaPreviewUrl])
+
   const beginEdit = useCallback((line: EditorLine, field: 'speaker' | 'text') => {
     setEditingField({
       lineId: line.id,
@@ -382,6 +393,11 @@ export default function TranscriptEditor({
         setSelectedLineId(null)
         setEditingField(null)
         activeLineMarker.current = null
+        if (localMediaPreviewUrl) {
+          URL.revokeObjectURL(localMediaPreviewUrl)
+          setLocalMediaPreviewUrl(null)
+          setLocalMediaType(undefined)
+        }
         if (data.session_id) {
           setActiveSessionId(data.session_id)
         }
@@ -395,7 +411,7 @@ export default function TranscriptEditor({
         setImporting(false)
       }
     },
-    [importXmlFile, importMediaFile, importIncludeTimestamps, onIncludeTimestampsChange, onSessionChange],
+    [importXmlFile, importMediaFile, importIncludeTimestamps, localMediaPreviewUrl, onIncludeTimestampsChange, onSessionChange],
   )
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
@@ -447,7 +463,7 @@ export default function TranscriptEditor({
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
             <div className="space-y-4">
               <div className="rounded-lg border border-primary-200 bg-primary-50 p-4 text-sm text-primary-700 space-y-2">
                 <div className="flex justify-between">
@@ -484,13 +500,25 @@ export default function TranscriptEditor({
                 </p>
               </div>
 
-              {mediaUrl ? (
+              {effectiveMediaUrl ? (
                 <div className="space-y-2">
                   <p className="text-sm font-medium text-primary-900">Media Preview</p>
                   {isVideo ? (
-                    <video ref={videoRef} controls className="w-full rounded-lg border border-primary-200 shadow" src={mediaUrl} />
+                    <video
+                      key={effectiveMediaUrl}
+                      ref={videoRef}
+                      controls
+                      className="w-full rounded-lg border border-primary-200 shadow"
+                      src={effectiveMediaUrl}
+                    />
                   ) : (
-                    <audio ref={audioRef} controls className="w-full" src={mediaUrl} />
+                    <audio
+                      key={effectiveMediaUrl}
+                      ref={audioRef}
+                      controls
+                      className="w-full"
+                      src={effectiveMediaUrl}
+                    />
                   )}
                 </div>
               ) : (
@@ -519,7 +547,21 @@ export default function TranscriptEditor({
                     <input
                       type="file"
                       accept="audio/*,video/*"
-                      onChange={(event) => setImportMediaFile(event.target.files?.[0] ?? null)}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] ?? null
+                        setImportMediaFile(file)
+                        if (localMediaPreviewUrl) {
+                          URL.revokeObjectURL(localMediaPreviewUrl)
+                        }
+                        if (file) {
+                          const url = URL.createObjectURL(file)
+                          setLocalMediaPreviewUrl(url)
+                          setLocalMediaType(file.type)
+                        } else {
+                          setLocalMediaPreviewUrl(null)
+                          setLocalMediaType(undefined)
+                        }
+                      }}
                       className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
                     />
                   </div>
@@ -581,7 +623,7 @@ export default function TranscriptEditor({
 
             <div>
               <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
-                <div className="grid grid-cols-[90px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
+                <div className="grid grid-cols-[70px_150px_minmax(0,1fr)_200px] border-b border-primary-200 bg-primary-100 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
                   <div>Pg:Ln</div>
                   <div>Speaker</div>
                   <div>Utterance</div>
@@ -597,7 +639,7 @@ export default function TranscriptEditor({
                       const isActive = activeLineId === line.id
                       const isSelected = selectedLineId === line.id
                       const rowClasses = [
-                        'grid grid-cols-[90px_170px_minmax(0,1fr)_220px] items-center gap-3 border-b border-primary-100 px-4 py-2 text-sm',
+                        'grid grid-cols-[70px_150px_minmax(0,1fr)_200px] items-center gap-3 border-b border-primary-100 px-4 py-2 text-sm',
                         isActive ? 'bg-yellow-100' : 'bg-white hover:bg-primary-50',
                         isSelected ? 'ring-2 ring-primary-300' : '',
                       ]
