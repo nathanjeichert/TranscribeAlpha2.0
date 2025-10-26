@@ -393,11 +393,6 @@ export default function TranscriptEditor({
         setSelectedLineId(null)
         setEditingField(null)
         activeLineMarker.current = null
-        if (localMediaPreviewUrl) {
-          URL.revokeObjectURL(localMediaPreviewUrl)
-          setLocalMediaPreviewUrl(null)
-          setLocalMediaType(undefined)
-        }
         if (data.session_id) {
           setActiveSessionId(data.session_id)
         }
@@ -411,7 +406,7 @@ export default function TranscriptEditor({
         setImporting(false)
       }
     },
-    [importXmlFile, importMediaFile, importIncludeTimestamps, localMediaPreviewUrl, onIncludeTimestampsChange, onSessionChange],
+    [importXmlFile, importMediaFile, importIncludeTimestamps, onIncludeTimestampsChange, onSessionChange],
   )
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
@@ -623,7 +618,7 @@ export default function TranscriptEditor({
 
             <div>
               <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
-                <div className="grid grid-cols-[70px_150px_minmax(0,1fr)_200px] border-b border-primary-200 bg-primary-100 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
+                <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
                   <div>Pg:Ln</div>
                   <div>Speaker</div>
                   <div>Utterance</div>
@@ -639,7 +634,7 @@ export default function TranscriptEditor({
                       const isActive = activeLineId === line.id
                       const isSelected = selectedLineId === line.id
                       const rowClasses = [
-                        'grid grid-cols-[70px_150px_minmax(0,1fr)_200px] items-center gap-3 border-b border-primary-100 px-4 py-2 text-sm',
+                        'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm',
                         isActive ? 'bg-yellow-100' : 'bg-white hover:bg-primary-50',
                         isSelected ? 'ring-2 ring-primary-300' : '',
                       ]
@@ -656,7 +651,7 @@ export default function TranscriptEditor({
                             {line.page ?? '—'}:{line.line ?? '—'}
                           </div>
                           <div
-                            className="min-w-0 cursor-pointer truncate text-primary-900"
+                            className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
                             onDoubleClick={() => beginEdit(line, 'speaker')}
                           >
                             {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
@@ -685,7 +680,7 @@ export default function TranscriptEditor({
                             )}
                           </div>
                           <div
-                            className="min-w-0 cursor-text whitespace-pre-wrap text-primary-800"
+                            className="min-w-0 cursor-text whitespace-pre-wrap text-primary-800 pr-6"
                             onDoubleClick={() => beginEdit(line, 'text')}
                           >
                             {editingField && editingField.lineId === line.id && editingField.field === 'text' ? (
@@ -712,7 +707,7 @@ export default function TranscriptEditor({
                               <span>{line.text || '—'}</span>
                             )}
                           </div>
-                          <div className="flex items-center justify-end gap-4 text-xs text-primary-600">
+                          <div className="flex items-center justify-end gap-5 text-xs text-primary-600">
                             <div className="flex flex-col items-end gap-1 text-[11px] text-primary-500">
                               <span className="uppercase tracking-wide text-[10px] text-primary-400">Start</span>
                               <input
