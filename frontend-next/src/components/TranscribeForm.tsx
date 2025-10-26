@@ -301,7 +301,7 @@ export default function TranscribeForm() {
 
   return (
     <div className="min-h-screen bg-primary-50">
-      <div className="max-w-5xl mx-auto px-6 py-12">
+      <div className="max-w-6xl mx-auto px-6 py-12">
         <div className="text-center mb-12">
           <div className="bg-gradient-to-r from-primary-900 to-primary-700 text-white rounded-2xl p-8 shadow-2xl">
             <h1 className="text-4xl font-light mb-4">TranscribeAlpha</h1>

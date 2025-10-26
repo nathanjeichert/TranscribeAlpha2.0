@@ -60,8 +60,6 @@ const secondsToLabel = (seconds: number) => {
     .padStart(3, '0')}`
 }
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max)
-
 export default function TranscriptEditor({
   sessionId,
   mediaUrl,
@@ -101,7 +99,23 @@ export default function TranscriptEditor({
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
 
-  const isVideo = useMemo(() => (mediaType ?? '').startsWith('video/'), [mediaType])
+  const effectiveMediaUrl = useMemo(() => {
+    if (mediaUrl) return mediaUrl
+    if (sessionMeta?.media_blob_name) {
+      return `/api/media/${sessionMeta.media_blob_name}`
+    }
+    return undefined
+  }, [mediaUrl, sessionMeta])
+
+  const effectiveMediaType = useMemo(
+    () => mediaType ?? sessionMeta?.media_content_type ?? undefined,
+    [mediaType, sessionMeta],
+  )
+
+  const isVideo = useMemo(
+    () => (effectiveMediaType ?? '').startsWith('video/'),
+    [effectiveMediaType],
+  )
 
   useEffect(() => {
     setLocalIncludeTimestamps(includeTimestamps)
@@ -186,7 +200,7 @@ export default function TranscriptEditor({
   }, [editingField])
 
   useEffect(() => {
-    const player = mediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
+    const player = effectiveMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
     if (!player) return
 
     const handleTimeUpdate = () => {
@@ -221,7 +235,7 @@ export default function TranscriptEditor({
     return () => {
       player.removeEventListener('timeupdate', handleTimeUpdate)
     }
-  }, [mediaUrl, isVideo, lineBoundaries, autoScroll])
+  }, [effectiveMediaUrl, isVideo, lineBoundaries, autoScroll])
 
   const handleLineFieldChange = useCallback(
     (lineId: string, field: keyof EditorLine, value: string | number) => {
@@ -247,23 +261,6 @@ export default function TranscriptEditor({
     [],
   )
 
-  const nudgeLineTime = useCallback(
-    (lineId: string, field: 'start' | 'end', delta: number) => {
-      setLines((prev) =>
-        prev.map((line) =>
-          line.id === lineId
-            ? {
-                ...line,
-                [field]: clamp(parseFloat(String(line[field])) + delta, 0, Math.max(line.end, line.start) + 3600),
-              }
-            : line,
-        ),
-      )
-      setIsDirty(true)
-    },
-    [],
-  )
-
   const handleIncludeToggle = useCallback(
     (checked: boolean) => {
       setLocalIncludeTimestamps(checked)
@@ -275,15 +272,16 @@ export default function TranscriptEditor({
 
   const playLine = useCallback(
     (line: EditorLine) => {
+      if (!effectiveMediaUrl) return
       setSelectedLineId(line.id)
-      const player = mediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
+      const player = isVideo ? videoRef.current : audioRef.current
       if (!player) return
       player.currentTime = line.start
       player.play().catch(() => {
         /* ignored */
       })
     },
-    [mediaUrl, isVideo],
+    [effectiveMediaUrl, isVideo],
   )
 
   const beginEdit = useCallback((line: EditorLine, field: 'speaker' | 'text') => {
@@ -449,8 +447,8 @@ export default function TranscriptEditor({
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
-            <div className="space-y-4 xl:col-span-1">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="space-y-4">
               <div className="rounded-lg border border-primary-200 bg-primary-50 p-4 text-sm text-primary-700 space-y-2">
                 <div className="flex justify-between">
                   <span className="font-medium text-primary-900">Updated</span>
@@ -581,15 +579,15 @@ export default function TranscriptEditor({
               </div>
             </div>
 
-            <div className="xl:col-span-3">
+            <div>
               <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
-                <div className="grid grid-cols-[80px_minmax(120px,150px)_1fr_200px] border-b border-primary-200 bg-primary-100 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-primary-600">
+                <div className="grid grid-cols-[90px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
                   <div>Pg:Ln</div>
                   <div>Speaker</div>
                   <div>Utterance</div>
                   <div className="text-right">Timing</div>
                 </div>
-                <div className="max-h-[70vh] overflow-y-auto">
+                <div className="max-h-[72vh] overflow-y-auto">
                   {loading ? (
                     <div className="p-6 text-center text-primary-500">Loading editor…</div>
                   ) : lines.length === 0 ? (
@@ -598,6 +596,11 @@ export default function TranscriptEditor({
                     lines.map((line) => {
                       const isActive = activeLineId === line.id
                       const isSelected = selectedLineId === line.id
+                      const rowClasses = [
+                        'grid grid-cols-[90px_170px_minmax(0,1fr)_220px] items-center gap-3 border-b border-primary-100 px-4 py-2 text-sm',
+                        isActive ? 'bg-yellow-100' : 'bg-white hover:bg-primary-50',
+                        isSelected ? 'ring-2 ring-primary-300' : '',
+                      ]
                       return (
                         <div
                           key={line.id}
@@ -605,9 +608,7 @@ export default function TranscriptEditor({
                             lineRefs.current[line.id] = el
                           }}
                           onClick={() => setSelectedLineId(line.id)}
-                          className={`group grid grid-cols-[80px_minmax(120px,150px)_1fr_200px] items-center gap-3 border-b border-primary-100 px-4 py-2 text-sm transition ${
-                            isActive ? 'bg-primary-100/70' : 'bg-white'
-                          } ${isSelected ? 'ring-2 ring-primary-300' : ''}`}
+                          className={rowClasses.join(' ')}
                         >
                           <div className="text-xs font-mono text-primary-500">
                             {line.page ?? '—'}:{line.line ?? '—'}
@@ -669,8 +670,9 @@ export default function TranscriptEditor({
                               <span>{line.text || '—'}</span>
                             )}
                           </div>
-                          <div className="flex items-center justify-end gap-2 text-xs text-primary-600">
-                            <div className="flex flex-col items-end gap-1">
+                          <div className="flex items-center justify-end gap-4 text-xs text-primary-600">
+                            <div className="flex flex-col items-end gap-1 text-[11px] text-primary-500">
+                              <span className="uppercase tracking-wide text-[10px] text-primary-400">Start</span>
                               <input
                                 type="number"
                                 step="0.01"
@@ -679,8 +681,11 @@ export default function TranscriptEditor({
                                 onChange={(event) =>
                                   handleLineFieldChange(line.id, 'start', parseFloat(event.target.value))
                                 }
-                                className="w-20 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                                className="w-24 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
                               />
+                            </div>
+                            <div className="flex flex-col items-end gap-1 text-[11px] text-primary-500">
+                              <span className="uppercase tracking-wide text-[10px] text-primary-400">End</span>
                               <input
                                 type="number"
                                 step="0.01"
@@ -689,44 +694,14 @@ export default function TranscriptEditor({
                                 onChange={(event) =>
                                   handleLineFieldChange(line.id, 'end', parseFloat(event.target.value))
                                 }
-                                className="w-20 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                                className="w-24 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
                               />
-                            </div>
-                            <div className="hidden flex-col gap-1 text-[10px] text-primary-500 group-hover:flex">
-                              <button
-                                type="button"
-                                className="rounded border border-primary-200 px-2 py-0.5 hover:border-primary-400 hover:bg-primary-100"
-                                onClick={() => nudgeLineTime(line.id, 'start', -0.1)}
-                              >
-                                Start -0.1s
-                              </button>
-                              <button
-                                type="button"
-                                className="rounded border border-primary-200 px-2 py-0.5 hover:border-primary-400 hover:bg-primary-100"
-                                onClick={() => nudgeLineTime(line.id, 'start', 0.1)}
-                              >
-                                Start +0.1s
-                              </button>
-                              <button
-                                type="button"
-                                className="rounded border border-primary-200 px-2 py-0.5 hover:border-primary-400 hover:bg-primary-100"
-                                onClick={() => nudgeLineTime(line.id, 'end', -0.1)}
-                              >
-                                End -0.1s
-                              </button>
-                              <button
-                                type="button"
-                                className="rounded border border-primary-200 px-2 py-0.5 hover:border-primary-400 hover:bg-primary-100"
-                                onClick={() => nudgeLineTime(line.id, 'end', 0.1)}
-                              >
-                                End +0.1s
-                              </button>
                             </div>
                             <button
                               type="button"
-                              className="rounded border border-primary-300 px-2 py-1 text-xs font-medium text-primary-700 hover:border-primary-500 hover:bg-primary-100"
+                              className="rounded border border-primary-300 px-3 py-1 text-xs font-medium text-primary-700 hover:border-primary-500 hover:bg-primary-100"
                               onClick={() => playLine(line)}
-                              disabled={!mediaUrl}
+                              disabled={!effectiveMediaUrl}
                             >
                               Play
                             </button>
@@ -744,4 +719,3 @@ export default function TranscriptEditor({
     </div>
   )
 }
-
