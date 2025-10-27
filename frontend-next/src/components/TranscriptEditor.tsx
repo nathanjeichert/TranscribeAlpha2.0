@@ -19,7 +19,6 @@ export interface EditorSessionResponse {
   title_data: Record<string, string>
   audio_duration: number
   lines_per_page: number
-  include_timestamps: boolean
   lines: EditorLine[]
   created_at?: string
   updated_at?: string
@@ -37,14 +36,12 @@ interface TranscriptEditorProps {
   sessionId?: string | null
   mediaUrl?: string
   mediaType?: string
-  includeTimestamps: boolean
   docxBase64?: string | null
   xmlBase64?: string | null
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
   onSessionChange: (session: EditorSessionResponse) => void
   onSaveComplete: (result: EditorSaveResponse) => void
-  onIncludeTimestampsChange: (value: boolean) => void
 }
 
 const secondsToLabel = (seconds: number) => {
@@ -64,14 +61,12 @@ export default function TranscriptEditor({
   sessionId,
   mediaUrl,
   mediaType,
-  includeTimestamps,
   docxBase64,
   xmlBase64,
   onDownload,
   buildFilename,
   onSessionChange,
   onSaveComplete,
-  onIncludeTimestampsChange,
 }: TranscriptEditorProps) {
   const [lines, setLines] = useState<EditorLine[]>([])
   const [sessionMeta, setSessionMeta] = useState<EditorSessionResponse | null>(null)
@@ -79,7 +74,6 @@ export default function TranscriptEditor({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
-  const [localIncludeTimestamps, setLocalIncludeTimestamps] = useState(includeTimestamps)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId ?? null)
   const [activeLineId, setActiveLineId] = useState<string | null>(null)
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
@@ -95,7 +89,6 @@ export default function TranscriptEditor({
 
   const [importXmlFile, setImportXmlFile] = useState<File | null>(null)
   const [importMediaFile, setImportMediaFile] = useState<File | null>(null)
-  const [importIncludeTimestamps, setImportIncludeTimestamps] = useState(true)
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [localMediaPreviewUrl, setLocalMediaPreviewUrl] = useState<string | null>(null)
@@ -119,10 +112,6 @@ export default function TranscriptEditor({
     () => (effectiveMediaType ?? '').startsWith('video/'),
     [effectiveMediaType],
   )
-
-  useEffect(() => {
-    setLocalIncludeTimestamps(includeTimestamps)
-  }, [includeTimestamps])
 
   const lineBoundaries = useMemo(
     () =>
@@ -153,13 +142,11 @@ export default function TranscriptEditor({
         const data: EditorSessionResponse = await response.json()
         setSessionMeta(data)
         setLines(data.lines || [])
-        setLocalIncludeTimestamps(data.include_timestamps ?? includeTimestamps)
         setIsDirty(false)
         setActiveLineId(null)
         setSelectedLineId(null)
         setEditingField(null)
         activeLineMarker.current = null
-        onIncludeTimestampsChange(data.include_timestamps ?? includeTimestamps)
         onSessionChange(data)
 
         if (!id && data.session_id) {
@@ -174,7 +161,7 @@ export default function TranscriptEditor({
         setLoading(false)
       }
     },
-    [includeTimestamps, onIncludeTimestampsChange, onSessionChange],
+    [onSessionChange],
   )
 
   useEffect(() => {
@@ -264,15 +251,6 @@ export default function TranscriptEditor({
     [],
   )
 
-  const handleIncludeToggle = useCallback(
-    (checked: boolean) => {
-      setLocalIncludeTimestamps(checked)
-      onIncludeTimestampsChange(checked)
-      setIsDirty(true)
-    },
-    [onIncludeTimestampsChange],
-  )
-
   const playLine = useCallback(
     (line: EditorLine) => {
       if (!effectiveMediaUrl) return
@@ -329,7 +307,6 @@ export default function TranscriptEditor({
         },
         body: JSON.stringify({
           lines,
-          include_timestamps: localIncludeTimestamps,
           title_data: sessionMeta?.title_data ?? {},
           media_blob_name: sessionMeta?.media_blob_name ?? null,
           media_content_type: sessionMeta?.media_content_type ?? null,
@@ -342,14 +319,12 @@ export default function TranscriptEditor({
       const data: EditorSaveResponse = await response.json()
       setSessionMeta(data)
       setLines(data.lines || [])
-      setLocalIncludeTimestamps(data.include_timestamps ?? localIncludeTimestamps)
       setIsDirty(false)
       setActiveLineId(null)
       setSelectedLineId(null)
       setEditingField(null)
       activeLineMarker.current = null
 
-      onIncludeTimestampsChange(data.include_timestamps ?? localIncludeTimestamps)
       onSaveComplete(data)
       onSessionChange(data)
     } catch (err: any) {
@@ -357,7 +332,7 @@ export default function TranscriptEditor({
     } finally {
       setSaving(false)
     }
-  }, [sessionMeta, activeSessionId, lines, localIncludeTimestamps, onIncludeTimestampsChange, onSaveComplete, onSessionChange])
+  }, [sessionMeta, activeSessionId, lines, onSaveComplete, onSessionChange])
 
   const handleImport = useCallback(
     async (event: React.FormEvent) => {
@@ -374,7 +349,6 @@ export default function TranscriptEditor({
         if (importMediaFile) {
           formData.append('media_file', importMediaFile)
         }
-        formData.append('include_timestamps', importIncludeTimestamps ? 'on' : '')
 
         const response = await fetch('/api/transcripts/import', {
           method: 'POST',
@@ -387,7 +361,6 @@ export default function TranscriptEditor({
         const data: EditorSessionResponse = await response.json()
         setSessionMeta(data)
         setLines(data.lines || [])
-        setLocalIncludeTimestamps(data.include_timestamps ?? true)
         setIsDirty(false)
         setActiveLineId(null)
         setSelectedLineId(null)
@@ -396,7 +369,6 @@ export default function TranscriptEditor({
         if (data.session_id) {
           setActiveSessionId(data.session_id)
         }
-        onIncludeTimestampsChange(data.include_timestamps ?? true)
         onSessionChange(data)
         setImportXmlFile(null)
         setImportMediaFile(null)
@@ -406,7 +378,7 @@ export default function TranscriptEditor({
         setImporting(false)
       }
     },
-    [importXmlFile, importMediaFile, importIncludeTimestamps, onIncludeTimestampsChange, onSessionChange],
+    [importXmlFile, importMediaFile, onSessionChange],
   )
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
@@ -428,15 +400,6 @@ export default function TranscriptEditor({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-white">
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={localIncludeTimestamps}
-                onChange={(event) => handleIncludeToggle(event.target.checked)}
-              />
-              Include timestamps in DOCX
-            </label>
             <label className="flex items-center gap-2 text-sm text-white">
               <input
                 type="checkbox"
@@ -560,14 +523,6 @@ export default function TranscriptEditor({
                       className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
                     />
                   </div>
-                  <label className="flex items-center gap-2 text-xs text-primary-700">
-                    <input
-                      type="checkbox"
-                      checked={importIncludeTimestamps}
-                      onChange={(event) => setImportIncludeTimestamps(event.target.checked)}
-                    />
-                    Include timestamps on import
-                  </label>
                   <button type="submit" className="btn-outline w-full text-sm" disabled={importing}>
                     {importing ? 'Importing…' : 'Import Transcript'}
                   </button>

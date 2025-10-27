@@ -11,7 +11,6 @@ interface FormData {
   input_time: string
   location: string
   speaker_names: string
-  include_timestamps: boolean
 }
 
 interface TranscriptResponse {
@@ -19,7 +18,6 @@ interface TranscriptResponse {
   docx_base64: string
   oncue_xml_base64: string
   editor_session_id?: string
-  include_timestamps?: boolean
   media_blob_name?: string | null
   media_content_type?: string | null
 }
@@ -35,13 +33,11 @@ export default function TranscribeForm() {
     input_time: '',
     location: '',
     speaker_names: '',
-    include_timestamps: false,
   })
 
   const [activeTab, setActiveTab] = useState<AppTab>('transcribe')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [editorSessionId, setEditorSessionId] = useState<string | null>(null)
-  const [editorIncludeTimestamps, setEditorIncludeTimestamps] = useState<boolean>(false)
   const [isLoading, setIsLoading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<TranscriptResponse | null>(null)
@@ -59,21 +55,17 @@ export default function TranscribeForm() {
       docx_base64?: string | null
       oncue_xml_base64?: string | null
       transcript?: string | null
-      include_timestamps?: boolean
       media_blob_name?: string | null
       media_content_type?: string | null
     }) => {
       const sessionIdValue = raw.session_id ?? raw.editor_session_id ?? null
-      const includeTimestampsValue = raw.include_timestamps ?? false
 
       setEditorSessionId(sessionIdValue)
-      setEditorIncludeTimestamps(includeTimestampsValue)
       setResult((prev) => ({
         transcript: raw.transcript ?? prev?.transcript ?? '',
         docx_base64: raw.docx_base64 ?? prev?.docx_base64 ?? '',
         oncue_xml_base64: raw.oncue_xml_base64 ?? prev?.oncue_xml_base64 ?? '',
         editor_session_id: sessionIdValue ?? undefined,
-        include_timestamps: includeTimestampsValue,
         media_blob_name: raw.media_blob_name ?? prev?.media_blob_name,
         media_content_type: raw.media_content_type ?? prev?.media_content_type,
       }))
@@ -119,7 +111,6 @@ export default function TranscribeForm() {
             docx_base64: data.docx_base64 ?? undefined,
             oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
             transcript: data.transcript ?? undefined,
-            include_timestamps: data.include_timestamps ?? undefined,
             media_blob_name: data.media_blob_name ?? undefined,
             media_content_type: data.media_content_type ?? undefined,
           })
@@ -156,7 +147,6 @@ export default function TranscribeForm() {
     setError('')
     setResult(null)
     setEditorSessionId(null)
-    setEditorIncludeTimestamps(formData.include_timestamps)
     setActiveTab('transcribe')
 
     const previewUrl = URL.createObjectURL(file)
@@ -190,11 +180,7 @@ export default function TranscribeForm() {
       const submitFormData = new FormData()
       submitFormData.append('file', selectedFile)
       Object.entries(formData).forEach(([key, value]) => {
-        if (key === 'include_timestamps') {
-          submitFormData.append(key, value ? 'on' : '')
-        } else {
-          submitFormData.append(key, value.toString())
-        }
+        submitFormData.append(key, value.toString())
       })
 
       const response = await fetch('/api/transcribe', {
@@ -213,7 +199,6 @@ export default function TranscribeForm() {
         docx_base64: data.docx_base64,
         oncue_xml_base64: data.oncue_xml_base64,
         transcript: data.transcript,
-        include_timestamps: data.include_timestamps,
         media_blob_name: data.media_blob_name ?? undefined,
         media_content_type: data.media_content_type ?? undefined,
       })
@@ -280,7 +265,6 @@ export default function TranscribeForm() {
       docx_base64: data.docx_base64 ?? undefined,
       oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
       transcript: data.transcript ?? undefined,
-      include_timestamps: data.include_timestamps ?? undefined,
       media_blob_name: data.media_blob_name ?? undefined,
       media_content_type: data.media_content_type ?? undefined,
     })
@@ -466,20 +450,6 @@ export default function TranscribeForm() {
                       millisecond-accurate word-level timestamps for OnCue synchronization.
                     </div>
                   </div>
-                  <div>
-                    <label className="flex items-center">
-                      <input
-                        type="checkbox"
-                        name="include_timestamps"
-                        checked={formData.include_timestamps}
-                        onChange={handleInputChange}
-                        className="mr-3"
-                      />
-                      <span className="text-sm font-medium text-primary-700">
-                        Include timestamps in transcript
-                      </span>
-                    </label>
-                  </div>
                 </div>
               </div>
 
@@ -610,14 +580,12 @@ export default function TranscribeForm() {
             sessionId={editorSessionId}
             mediaUrl={mediaPreviewUrl || undefined}
             mediaType={mediaContentType ?? selectedFile?.type}
-            includeTimestamps={editorIncludeTimestamps}
             docxBase64={result?.docx_base64}
             xmlBase64={result?.oncue_xml_base64}
             onDownload={downloadFile}
             buildFilename={generateFilename}
             onSessionChange={syncEditorSession}
             onSaveComplete={handleEditorSave}
-            onIncludeTimestampsChange={setEditorIncludeTimestamps}
           />
         )}
       </div>

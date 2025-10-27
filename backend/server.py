@@ -211,15 +211,13 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
             return None
 
 
-def format_transcript_text(turns: List[TranscriptTurn], include_timestamps: bool) -> str:
-    if include_timestamps:
-        return "\n\n".join(
-            [
-                f"{turn.timestamp + ' ' if (turn.timestamp and include_timestamps) else ''}{turn.speaker.upper()}:\t\t{turn.text}"
-                for turn in turns
-            ]
-        )
-    return "\n\n".join([f"{turn.speaker.upper()}:\t\t{turn.text}" for turn in turns])
+def format_transcript_text(turns: List[TranscriptTurn]) -> str:
+    return "\n\n".join(
+        [
+            f"{(turn.timestamp + ' ') if turn.timestamp else ''}{turn.speaker.upper()}:\t\t{turn.text}"
+            for turn in turns
+        ]
+    )
 
 
 def serialize_line_entries(line_entries: List[dict]) -> List[dict]:
@@ -245,13 +243,12 @@ def build_session_artifacts(
     turns: List[TranscriptTurn],
     title_data: dict,
     duration_seconds: float,
-    include_timestamps: bool,
     lines_per_page: int,
 ):
     docx_bytes = create_docx(title_data, turns)
     oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds, lines_per_page)
     line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
-    transcript_text = format_transcript_text(turns, include_timestamps)
+    transcript_text = format_transcript_text(turns)
     return docx_bytes, oncue_xml, transcript_text, serialize_line_entries(line_entries)
 
 
@@ -261,7 +258,6 @@ def build_session_response(session_data: dict) -> dict:
         "title_data": session_data.get("title_data", {}),
         "audio_duration": session_data.get("audio_duration", 0.0),
         "lines_per_page": session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
-        "include_timestamps": session_data.get("include_timestamps", False),
         "lines": session_data.get("lines", []),
         "created_at": session_data.get("created_at"),
         "updated_at": session_data.get("updated_at"),
@@ -327,10 +323,7 @@ def normalize_line_payloads(
     return [item[1] for item in normalized_lines], duration_seconds
 
 
-def construct_turns_from_lines(
-    normalized_lines: List[dict],
-    include_timestamps: bool,
-) -> List[TranscriptTurn]:
+def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptTurn]:
     turns: List[TranscriptTurn] = []
     current_speaker: Optional[str] = None
     current_text_parts: List[str] = []
@@ -342,7 +335,7 @@ def construct_turns_from_lines(
         if current_speaker is None:
             return
         full_text = " ".join([part for part in current_text_parts if part]).strip()
-        timestamp_str = seconds_to_timestamp(current_start) if (current_start is not None and include_timestamps) else None
+        timestamp_str = seconds_to_timestamp(current_start) if current_start is not None else None
         turns.append(
             TranscriptTurn(
                 speaker=current_speaker,
@@ -647,7 +640,6 @@ async def transcribe(
     input_time: str = Form(""),
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
-    include_timestamps: Optional[str] = Form(None),
 ):
     logger.info(f"Received transcription request for file: {file.filename}")
     
@@ -703,9 +695,6 @@ async def transcribe(
         "FILE_DURATION": "Calculating...",
     }
 
-    # Convert checkbox value to boolean
-    timestamps_enabled = include_timestamps == "on"
-    
     # Upload media for editor playback
     media_blob_name = None
     media_content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
@@ -738,10 +727,9 @@ async def transcribe(
                 file.filename,
                 speaker_list,
                 title_data,
-                timestamps_enabled,
             )
 
-            # Cache the transcript results (not the docx, as that depends on timestamp setting)
+            # Cache the transcript results
             temp_transcript_cache[cache_key] = {
                 "turns": turns,
                 "duration": duration_seconds,
@@ -757,7 +745,6 @@ async def transcribe(
         turns,
         title_data,
         duration_seconds or 0,
-        timestamps_enabled,
         DEFAULT_LINES_PER_PAGE,
     )
     docx_b64 = base64.b64encode(docx_bytes).decode()
@@ -774,7 +761,6 @@ async def transcribe(
         "title_data": title_data,
         "audio_duration": float(duration_seconds or 0),
         "lines_per_page": DEFAULT_LINES_PER_PAGE,
-        "include_timestamps": timestamps_enabled,
         "turns": serialize_transcript_turns(turns),
         "lines": line_payloads,
         "docx_base64": docx_b64,
@@ -797,7 +783,6 @@ async def transcribe(
         "docx_base64": docx_b64,
         "oncue_xml_base64": oncue_b64,
         "editor_session_id": session_id,
-        "include_timestamps": timestamps_enabled,
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
     }
@@ -838,8 +823,6 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
     if not isinstance(lines_payload, list) or not lines_payload:
         raise HTTPException(status_code=400, detail="Lines payload is required")
 
-    include_timestamps = payload.get("include_timestamps", session_data.get("include_timestamps", False))
-
     title_updates = payload.get("title_data") or {}
     current_title = dict(session_data.get("title_data") or {})
     current_title.update(title_updates)
@@ -848,7 +831,7 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
     lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
 
     normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-    turns = construct_turns_from_lines(normalized_lines, include_timestamps)
+    turns = construct_turns_from_lines(normalized_lines)
 
     if not turns:
         raise HTTPException(status_code=400, detail="No valid turns could be constructed from lines")
@@ -857,7 +840,6 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
         turns,
         current_title,
         duration_seconds,
-        include_timestamps,
         lines_per_page,
     )
 
@@ -877,7 +859,6 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
     session_data["lines"] = updated_lines_payload
     session_data["title_data"] = current_title
     session_data["audio_duration"] = duration_seconds
-    session_data["include_timestamps"] = include_timestamps
     session_data["docx_base64"] = docx_b64
     session_data["oncue_xml_base64"] = oncue_b64
     session_data["transcript_text"] = transcript_text
@@ -895,7 +876,6 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
         "oncue_xml_base64": oncue_b64,
         "transcript": transcript_text,
         "title_data": current_title,
-        "include_timestamps": include_timestamps,
         "audio_duration": duration_seconds,
         "updated_at": session_data["updated_at"],
         "expires_at": session_data["expires_at"],
@@ -916,7 +896,6 @@ async def import_oncue_transcript(
     input_date: str = Form(""),
     input_time: str = Form(""),
     location: str = Form(""),
-    include_timestamps: Optional[str] = Form(None),
 ):
     xml_bytes = await xml_file.read()
     if not xml_bytes:
@@ -939,10 +918,8 @@ async def import_oncue_transcript(
 
     duration_seconds = float(parsed["audio_duration"] or 0)
     lines_payload = parsed["lines"]
-    include_ts = include_timestamps == "on" if include_timestamps is not None else True
-
     normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-    turns = construct_turns_from_lines(normalized_lines, include_ts)
+    turns = construct_turns_from_lines(normalized_lines)
     if not turns:
         raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
 
@@ -950,7 +927,6 @@ async def import_oncue_transcript(
         turns,
         title_data,
         duration_seconds,
-        include_ts,
         DEFAULT_LINES_PER_PAGE,
     )
 
@@ -986,7 +962,6 @@ async def import_oncue_transcript(
         "title_data": title_data,
         "audio_duration": duration_seconds,
         "lines_per_page": DEFAULT_LINES_PER_PAGE,
-        "include_timestamps": include_ts,
         "turns": serialize_transcript_turns(turns),
         "lines": line_payloads,
         "docx_base64": docx_b64,

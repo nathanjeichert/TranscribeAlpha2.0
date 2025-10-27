@@ -476,7 +476,6 @@ def process_transcription(
     filename: str,
     speaker_names: Optional[List[str]],
     title_data: dict,
-    include_timestamps: bool = False,
 ):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = os.path.join(temp_dir, filename)
@@ -540,7 +539,7 @@ def process_transcription(
         if not ASSEMBLYAI_API_KEY:
             raise RuntimeError("ASSEMBLYAI_API_KEY environment variable not set")
 
-        turns = transcribe_with_assemblyai(audio_path, speaker_names, include_timestamps)
+        turns = transcribe_with_assemblyai(audio_path, speaker_names)
 
         if not turns:
             raise RuntimeError("AssemblyAI transcription failed")
