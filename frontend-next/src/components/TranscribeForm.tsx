@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import TranscriptEditor, { EditorSaveResponse, EditorSessionResponse } from '@/components/TranscriptEditor'
+import ClipCreator from '@/components/ClipCreator'
 
 interface FormData {
   case_name: string
@@ -22,7 +23,7 @@ interface TranscriptResponse {
   media_content_type?: string | null
 }
 
-type AppTab = 'transcribe' | 'editor'
+type AppTab = 'transcribe' | 'editor' | 'clip'
 
 export default function TranscribeForm() {
   const [formData, setFormData] = useState<FormData>({
@@ -45,6 +46,7 @@ export default function TranscribeForm() {
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string>('')
   const [mediaContentType, setMediaContentType] = useState<string | undefined>(undefined)
   const [mediaIsLocal, setMediaIsLocal] = useState(false)
+  const [sessionDetails, setSessionDetails] = useState<EditorSessionResponse | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -57,6 +59,7 @@ export default function TranscribeForm() {
       transcript?: string | null
       media_blob_name?: string | null
       media_content_type?: string | null
+      full_session?: EditorSessionResponse
     }) => {
       const sessionIdValue = raw.session_id ?? raw.editor_session_id ?? null
 
@@ -69,6 +72,10 @@ export default function TranscribeForm() {
         media_blob_name: raw.media_blob_name ?? prev?.media_blob_name,
         media_content_type: raw.media_content_type ?? prev?.media_content_type,
       }))
+
+      if (raw.full_session) {
+        setSessionDetails(raw.full_session)
+      }
 
       if (raw.media_blob_name) {
         if (mediaPreviewUrl && mediaIsLocal) {
@@ -109,6 +116,7 @@ export default function TranscribeForm() {
             transcript: data.transcript ?? undefined,
             media_blob_name: data.media_blob_name ?? undefined,
             media_content_type: data.media_content_type ?? undefined,
+            full_session: data,
           })
         }
       } catch (err) {
@@ -122,6 +130,64 @@ export default function TranscribeForm() {
       cancelled = true
     }
   }, [syncEditorSession])
+
+  useEffect(() => {
+    if (!editorSessionId) {
+      setSessionDetails(null)
+      return
+    }
+    if (sessionDetails?.session_id === editorSessionId) {
+      return
+    }
+
+    let cancelled = false
+
+    const loadSession = async () => {
+      try {
+        const response = await fetch(`/api/transcripts/${editorSessionId}`)
+        if (!response.ok) {
+          return
+        }
+        const data: EditorSessionResponse = await response.json()
+        if (cancelled) return
+        syncEditorSession({
+          session_id: data.session_id,
+          docx_base64: data.docx_base64 ?? undefined,
+          oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
+          transcript: data.transcript ?? undefined,
+          media_blob_name: data.media_blob_name ?? undefined,
+          media_content_type: data.media_content_type ?? undefined,
+          full_session: data,
+        })
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('Failed to load session details', err)
+        }
+      }
+    }
+
+    loadSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [editorSessionId, sessionDetails?.session_id, syncEditorSession])
+
+  const handleSessionChange = useCallback(
+    (session: EditorSessionResponse) => {
+      setSessionDetails(session)
+      syncEditorSession({
+        session_id: session.session_id,
+        docx_base64: session.docx_base64 ?? undefined,
+        oncue_xml_base64: session.oncue_xml_base64 ?? undefined,
+        transcript: session.transcript ?? undefined,
+        media_blob_name: session.media_blob_name ?? undefined,
+        media_content_type: session.media_content_type ?? undefined,
+        full_session: session,
+      })
+    },
+    [syncEditorSession],
+  )
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = event.target
@@ -143,6 +209,7 @@ export default function TranscribeForm() {
     setError('')
     setResult(null)
     setEditorSessionId(null)
+    setSessionDetails(null)
     setActiveTab('transcribe')
 
     const previewUrl = URL.createObjectURL(file)
@@ -164,6 +231,7 @@ export default function TranscribeForm() {
     setError('')
     setResult(null)
     setEditorSessionId(null)
+    setSessionDetails(null)
 
     const progressInterval = setInterval(() => {
       setProgress((prev) => {
@@ -256,6 +324,7 @@ export default function TranscribeForm() {
   }
 
   const handleEditorSave = (data: EditorSaveResponse) => {
+    setSessionDetails(data)
     syncEditorSession({
       session_id: data.session_id,
       docx_base64: data.docx_base64 ?? undefined,
@@ -263,6 +332,7 @@ export default function TranscribeForm() {
       transcript: data.transcript ?? undefined,
       media_blob_name: data.media_blob_name ?? undefined,
       media_content_type: data.media_content_type ?? undefined,
+      full_session: data,
     })
   }
 
@@ -278,6 +348,10 @@ export default function TranscribeForm() {
 
   const previewContentType = mediaContentType ?? selectedFile?.type ?? ''
   const isVideoPreview = previewContentType.startsWith('video/')
+  const clipMediaUrl = sessionDetails?.media_blob_name
+    ? `/api/media/${sessionDetails.media_blob_name}`
+    : mediaPreviewUrl || undefined
+  const clipMediaType = sessionDetails?.media_content_type ?? mediaContentType ?? selectedFile?.type
 
   return (
     <div className="min-h-screen bg-primary-50">
@@ -295,6 +369,9 @@ export default function TranscribeForm() {
           </button>
           <button className={tabClasses('editor')} onClick={() => setActiveTab('editor')}>
             Editor
+          </button>
+          <button className={tabClasses('clip')} onClick={() => setActiveTab('clip')}>
+            Clip Creator
           </button>
         </div>
 
@@ -580,8 +657,20 @@ export default function TranscribeForm() {
             xmlBase64={result?.oncue_xml_base64}
             onDownload={downloadFile}
             buildFilename={generateFilename}
-            onSessionChange={syncEditorSession}
+            onSessionChange={handleSessionChange}
             onSaveComplete={handleEditorSave}
+          />
+        )}
+
+        {activeTab === 'clip' && (
+          <ClipCreator
+            session={sessionDetails}
+            sessionId={editorSessionId}
+            mediaUrl={clipMediaUrl}
+            mediaType={clipMediaType}
+            onSessionRefresh={handleSessionChange}
+            onDownload={downloadFile}
+            buildFilename={generateFilename}
           />
         )}
       </div>

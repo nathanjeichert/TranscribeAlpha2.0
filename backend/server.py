@@ -5,6 +5,9 @@ import logging
 import uuid
 import tempfile
 import hashlib
+import subprocess
+import re
+import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Tuple, Any
 import xml.etree.ElementTree as ET
@@ -37,6 +40,7 @@ try:
         seconds_to_timestamp,
         WordTimestamp,
         create_docx,
+        ffmpeg_executable_path,
     )
 except ImportError:
     try:
@@ -48,6 +52,7 @@ except ImportError:
             seconds_to_timestamp,
             WordTimestamp,
             create_docx,
+            ffmpeg_executable_path,
         )
     except ImportError:
         import transcriber
@@ -58,6 +63,7 @@ except ImportError:
         seconds_to_timestamp = transcriber.seconds_to_timestamp
         WordTimestamp = transcriber.WordTimestamp
         create_docx = transcriber.create_docx
+        ffmpeg_executable_path = transcriber.ffmpeg_executable_path
 
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -84,9 +90,16 @@ last_cleanup_time = datetime.now()
 EDITOR_SESSION_PREFIX = "editor_sessions/"
 EDITOR_SESSION_TTL_DAYS = int(os.getenv("EDITOR_SESSION_TTL_DAYS", "7"))
 
+CLIP_SESSION_PREFIX = "clip_sessions/"
+CLIP_SESSION_TTL_DAYS = int(os.getenv("CLIP_SESSION_TTL_DAYS", str(EDITOR_SESSION_TTL_DAYS)))
+
 
 def _session_blob_name(session_id: str) -> str:
     return f"{EDITOR_SESSION_PREFIX}{session_id}.json"
+
+
+def _clip_blob_name(clip_id: str) -> str:
+    return f"{CLIP_SESSION_PREFIX}{clip_id}.json"
 
 
 def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:
@@ -155,6 +168,46 @@ def delete_editor_session(session_id: str) -> None:
         logger.error("Failed to delete editor session %s: %s", session_id, e)
 
 
+def save_clip_session(clip_id: str, clip_data: dict) -> None:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_clip_blob_name(clip_id))
+        blob.metadata = {
+            "clip_id": clip_id,
+            "parent_session_id": clip_data.get("parent_session_id"),
+            "created_at": clip_data.get("created_at"),
+            "expires_at": clip_data.get("expires_at"),
+        }
+        blob.upload_from_string(json.dumps(clip_data), content_type="application/json")
+        logger.info("Saved clip session %s", clip_id)
+    except Exception as exc:
+        logger.error("Failed to save clip session %s: %s", clip_id, exc)
+        raise
+
+
+def load_clip_session(clip_id: str) -> Optional[dict]:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_clip_blob_name(clip_id))
+        if not blob.exists():
+            return None
+        return json.loads(blob.download_as_text())
+    except Exception as exc:
+        logger.error("Failed to load clip session %s: %s", clip_id, exc)
+        return None
+
+
+def delete_clip_session(clip_id: str) -> None:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_clip_blob_name(clip_id))
+        if blob.exists():
+            blob.delete()
+            logger.info("Deleted clip session %s", clip_id)
+    except Exception as exc:
+        logger.error("Failed to delete clip session %s: %s", clip_id, exc)
+
+
 def session_is_expired(session_data: dict) -> bool:
     expires_at = session_data.get("expires_at")
     if not expires_at:
@@ -198,6 +251,39 @@ def cleanup_expired_editor_sessions():
             logger.info("Cleanup removed %s expired editor sessions", deleted)
     except Exception as e:
         logger.error("Error during editor session cleanup: %s", e)
+
+
+def cleanup_expired_clip_sessions():
+    """Delete stored clip sessions whose TTL has expired."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        now = datetime.now(timezone.utc)
+        for blob in bucket.list_blobs(prefix=CLIP_SESSION_PREFIX):
+            try:
+                raw = blob.download_as_text()
+                clip_data = json.loads(raw)
+            except Exception:
+                continue
+
+            expires_at = clip_data.get("expires_at")
+            if not expires_at:
+                continue
+
+            try:
+                expires_dt = datetime.fromisoformat(expires_at)
+            except ValueError:
+                try:
+                    expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+
+            if expires_dt < now:
+                try:
+                    blob.delete()
+                except Exception:
+                    logger.warning("Failed to delete expired clip session %s", blob.name)
+    except Exception as exc:
+        logger.error("Error during clip session cleanup: %s", exc)
 
 def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
@@ -267,7 +353,158 @@ def build_session_response(session_data: dict) -> dict:
         "transcript": session_data.get("transcript_text"),
         "media_blob_name": session_data.get("media_blob_name"),
         "media_content_type": session_data.get("media_content_type"),
+        "clips": session_data.get("clips", []),
     }
+
+
+def ensure_session_clip_list(session_data: dict) -> List[dict]:
+    clips = session_data.get("clips")
+    if isinstance(clips, list):
+        return clips
+    session_data["clips"] = []
+    return session_data["clips"]
+
+
+def parse_timecode_to_seconds(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        if ":" not in stripped:
+            return float(stripped)
+        parts = stripped.split(":")
+        seconds = 0.0
+        multiplier = 1.0
+        for component in reversed(parts):
+            component = component.strip()
+            if not component:
+                return None
+            seconds += float(component) * multiplier
+            multiplier *= 60.0
+        return seconds
+    except ValueError:
+        return None
+
+
+def parse_pgln(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def find_line_index_by_id(lines: List[dict], line_id: Any) -> Optional[int]:
+    if line_id is None:
+        return None
+    target = str(line_id)
+    for idx, line in enumerate(lines):
+        if str(line.get("id")) == target:
+            return idx
+    return None
+
+
+def find_line_index_by_pgln(lines: List[dict], pgln: Optional[int]) -> Optional[int]:
+    if pgln is None:
+        return None
+    for idx, line in enumerate(lines):
+        line_pgln = line.get("pgln")
+        try:
+            if line_pgln is not None and int(line_pgln) == int(pgln):
+                return idx
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def find_line_index_by_time(
+    lines: List[dict],
+    time_seconds: Optional[float],
+    prefer_start: bool,
+) -> Optional[int]:
+    if time_seconds is None or not lines:
+        return None
+
+    if prefer_start:
+        for idx, line in enumerate(lines):
+            start = float(line.get("start", 0.0))
+            end = float(line.get("end", start))
+            if time_seconds <= start:
+                return idx
+            if start <= time_seconds <= max(end, start):
+                return idx
+        return len(lines) - 1
+
+    for reverse_idx in range(len(lines) - 1, -1, -1):
+        line = lines[reverse_idx]
+        start = float(line.get("start", 0.0))
+        end = float(line.get("end", start))
+        if time_seconds >= end:
+            return reverse_idx
+        if start <= time_seconds <= max(end, start):
+            return reverse_idx
+    return 0
+
+
+def resolve_line_index(
+    lines: List[dict],
+    *,
+    line_id: Any = None,
+    pgln: Any = None,
+    time_seconds: Optional[float] = None,
+    prefer_start: bool,
+) -> Optional[int]:
+    candidate = find_line_index_by_id(lines, line_id)
+    if candidate is not None:
+        return candidate
+
+    candidate = find_line_index_by_pgln(lines, parse_pgln(pgln))
+    if candidate is not None:
+        return candidate
+
+    candidate = find_line_index_by_time(lines, time_seconds, prefer_start)
+    if candidate is not None:
+        return candidate
+
+    return None
+
+
+def sanitize_clip_label(label: Optional[str], default_name: str) -> str:
+    if not label:
+        return default_name
+    cleaned = str(label).strip()
+    if not cleaned:
+        return default_name
+    # Collapse whitespace and limit length for storage
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if len(cleaned) > 120:
+        cleaned = cleaned[:120].rstrip()
+    return cleaned
+
+
+def get_ffmpeg_binary() -> str:
+    if ffmpeg_executable_path and shutil.which(ffmpeg_executable_path):
+        return ffmpeg_executable_path
+    fallback = shutil.which("ffmpeg")
+    if fallback:
+        return fallback
+    raise HTTPException(status_code=500, detail="FFmpeg binary not available on server")
+
+
+def slugify_filename(name: str, default: str = "clip") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()) if name else ""
+    cleaned = cleaned.strip("-._")
+    return cleaned or default
 
 
 def normalize_line_payloads(
@@ -608,6 +845,99 @@ def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, conte
         logger.error(f"Error uploading preview file to Cloud Storage: {str(e)}")
         raise
 
+
+def upload_clip_file_to_cloud_storage(file_bytes: bytes, filename: str, content_type: Optional[str]) -> str:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        safe_name = filename or "clip-output"
+        blob_name = f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
+        blob = bucket.blob(blob_name)
+        metadata = {
+            "original_filename": safe_name,
+            "content_type": content_type or "application/octet-stream",
+            "file_type": "clip",
+        }
+        blob.metadata = metadata
+        if content_type:
+            blob.content_type = content_type
+        blob.upload_from_string(file_bytes)
+        logger.info("Uploaded clip media %s to Cloud Storage", blob_name)
+        return blob_name
+    except Exception as exc:
+        logger.error("Error uploading clip media to Cloud Storage: %s", exc)
+        raise
+
+
+def clip_media_segment(
+    source_blob_name: Optional[str],
+    clip_start: float,
+    clip_end: float,
+    content_type: Optional[str],
+    clip_label: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    if not source_blob_name:
+        return None, None
+
+    if clip_end <= clip_start:
+        raise HTTPException(status_code=400, detail="Clip duration must be greater than zero")
+
+    bucket = storage_client.bucket(BUCKET_NAME)
+    source_blob = bucket.blob(source_blob_name)
+    if not source_blob.exists():
+        raise HTTPException(status_code=404, detail="Original media for session is unavailable")
+
+    extension = os.path.splitext(source_blob_name)[1]
+    if not extension and content_type:
+        guessed = mimetypes.guess_extension(content_type)
+        extension = guessed or extension
+    extension = extension or ".mp4"
+
+    ffmpeg_bin = get_ffmpeg_binary()
+    start_time = max(clip_start, 0.0)
+    duration = max(clip_end - clip_start, 0.01)
+
+    source_temp = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
+    output_temp = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
+    try:
+        source_temp.close()
+        output_temp.close()
+        source_blob.download_to_filename(source_temp.name)
+
+        command = [
+            ffmpeg_bin,
+            "-y",
+            "-ss",
+            f"{start_time:.3f}",
+            "-i",
+            source_temp.name,
+            "-t",
+            f"{duration:.3f}",
+            "-c",
+            "copy",
+            "-avoid_negative_ts",
+            "make_zero",
+            output_temp.name,
+        ]
+
+        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if process.returncode != 0:
+            logger.error("FFmpeg clip command failed: %s", process.stderr.decode("utf-8", errors="ignore"))
+            raise HTTPException(status_code=500, detail="FFmpeg failed to produce clip")
+
+        with open(output_temp.name, "rb") as output_file:
+            clip_bytes = output_file.read()
+
+        filename_slug = slugify_filename(clip_label or "clip")
+        clip_filename = f"{filename_slug}{extension}"
+        clip_blob_name = upload_clip_file_to_cloud_storage(clip_bytes, clip_filename, content_type)
+        return clip_blob_name, content_type
+    finally:
+        for temp_path in (source_temp.name, output_temp.name):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
 app = FastAPI(
     title="TranscribeAlpha API",
     description="Professional Legal Transcript Generator using AssemblyAI",
@@ -628,6 +958,7 @@ async def startup_event():
     logger.info("Starting TranscribeAlpha with Cloud Storage enabled")
     cleanup_old_files()
     cleanup_expired_editor_sessions()
+    cleanup_expired_clip_sessions()
 
 
 @app.post("/api/transcribe")
@@ -769,6 +1100,7 @@ async def transcribe(
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
         "updated_at": created_at.isoformat(),
+        "clips": [],
     }
 
     try:
@@ -808,6 +1140,253 @@ async def get_latest_editor_session():
     if not session_data:
         raise HTTPException(status_code=404, detail="No editor sessions available")
     return JSONResponse(build_session_response(session_data))
+
+
+@app.post("/api/clips")
+async def create_clip(payload: Dict = Body(...)):
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    session_data = load_editor_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Editor session not found")
+    if session_is_expired(session_data):
+        delete_editor_session(session_id)
+        raise HTTPException(status_code=404, detail="Editor session expired")
+
+    lines = session_data.get("lines") or []
+    if not lines:
+        raise HTTPException(status_code=400, detail="Session does not contain transcript lines")
+
+    # Resolve lines-per-page for the clip
+    try:
+        lines_per_page = int(payload.get("lines_per_page") or session_data.get("lines_per_page") or DEFAULT_LINES_PER_PAGE)
+    except (TypeError, ValueError):
+        lines_per_page = DEFAULT_LINES_PER_PAGE
+    if lines_per_page <= 0:
+        lines_per_page = DEFAULT_LINES_PER_PAGE
+
+    # Accept page/line pairs if provided and derive pgln value for lookup
+    start_pgln = payload.get("start_pgln")
+    if start_pgln is None and payload.get("start_page") is not None and payload.get("start_line") is not None:
+        try:
+            start_pgln = int(payload["start_page"]) * 100 + int(payload["start_line"])
+        except (TypeError, ValueError):
+            start_pgln = None
+
+    end_pgln = payload.get("end_pgln")
+    if end_pgln is None and payload.get("end_page") is not None and payload.get("end_line") is not None:
+        try:
+            end_pgln = int(payload["end_page"]) * 100 + int(payload["end_line"])
+        except (TypeError, ValueError):
+            end_pgln = None
+
+    start_time = parse_timecode_to_seconds(payload.get("start_time"))
+    end_time = parse_timecode_to_seconds(payload.get("end_time"))
+
+    start_index = resolve_line_index(
+        lines,
+        line_id=payload.get("start_line_id"),
+        pgln=start_pgln,
+        time_seconds=start_time,
+        prefer_start=True,
+    )
+    if start_index is None:
+        raise HTTPException(status_code=400, detail="Unable to resolve clip start line")
+
+    end_index = resolve_line_index(
+        lines,
+        line_id=payload.get("end_line_id"),
+        pgln=end_pgln,
+        time_seconds=end_time,
+        prefer_start=False,
+    )
+    if end_index is None:
+        raise HTTPException(status_code=400, detail="Unable to resolve clip end line")
+
+    if start_index > end_index:
+        start_index, end_index = end_index, start_index
+
+    selected_slice = lines[start_index : end_index + 1]
+    if not selected_slice:
+        raise HTTPException(status_code=400, detail="Selected clip range is empty")
+
+    start_line = selected_slice[0]
+    end_line = selected_slice[-1]
+
+    start_absolute = float(start_line.get("start", 0.0) or 0.0)
+    end_absolute = float(end_line.get("end", start_absolute) or start_absolute)
+    if end_absolute <= start_absolute:
+        end_absolute = start_absolute + 0.01
+
+    rebased_lines: List[dict] = []
+    for local_idx, original_line in enumerate(selected_slice):
+        original_start = float(original_line.get("start", 0.0) or 0.0)
+        original_end = float(original_line.get("end", original_start) or original_start)
+        if original_end <= original_start:
+            original_end = original_start + 0.01
+
+        rebased_lines.append(
+            {
+                "id": f"clip-{local_idx}",
+                "speaker": (str(original_line.get("speaker", "SPEAKER"))).strip().upper() or "SPEAKER",
+                "text": str(original_line.get("text", "")),
+                "start": max(original_start - start_absolute, 0.0),
+                "end": max(original_end - start_absolute, 0.0),
+                "is_continuation": False if local_idx == 0 else bool(original_line.get("is_continuation", False)),
+            }
+        )
+
+    clip_duration_hint = max(end_absolute - start_absolute, 0.01)
+    normalized_lines, normalized_duration = normalize_line_payloads(rebased_lines, clip_duration_hint)
+    turns = construct_turns_from_lines(normalized_lines)
+    if not turns:
+        raise HTTPException(status_code=400, detail="Unable to construct transcript turns for clip")
+
+    title_overrides = payload.get("title_overrides") if isinstance(payload.get("title_overrides"), dict) else {}
+    clip_title_data = dict(session_data.get("title_data") or {})
+    for key, value in title_overrides.items():
+        if value is None:
+            continue
+        clip_title_data[key] = str(value)
+
+    clip_count = len(ensure_session_clip_list(session_data))
+    default_name = f"Clip {clip_count + 1}"
+    clip_name = sanitize_clip_label(payload.get("clip_label"), default_name)
+
+    base_filename = clip_title_data.get("FILE_NAME") or "clip-output"
+    filename_root, filename_ext = os.path.splitext(base_filename)
+    if not filename_ext:
+        guessed_ext = mimetypes.guess_extension(session_data.get("media_content_type") or "")
+        filename_ext = guessed_ext or ""
+    clip_filename = f"{filename_root}_{slugify_filename(clip_name)}{filename_ext}" if filename_root else f"{slugify_filename(clip_name)}{filename_ext}"
+    clip_title_data["FILE_NAME"] = clip_filename
+
+    hours, remainder = divmod(normalized_duration, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    clip_title_data["FILE_DURATION"] = f"{int(hours):02d}:{int(minutes):02d}:{int(round(seconds)):02d}"
+
+    docx_bytes, oncue_xml, transcript_text, clip_line_entries = build_session_artifacts(
+        turns,
+        clip_title_data,
+        normalized_duration,
+        lines_per_page,
+    )
+
+    docx_b64 = base64.b64encode(docx_bytes).decode()
+    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+
+    clip_media_blob_name, clip_media_content_type = clip_media_segment(
+        session_data.get("media_blob_name"),
+        start_absolute,
+        end_absolute,
+        session_data.get("media_content_type"),
+        clip_name,
+    )
+
+    clip_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc)
+    clip_expires_at = created_at + timedelta(days=CLIP_SESSION_TTL_DAYS)
+
+    clip_data = {
+        "clip_id": clip_id,
+        "parent_session_id": session_id,
+        "name": clip_name,
+        "created_at": created_at.isoformat(),
+        "expires_at": clip_expires_at.isoformat(),
+        "duration": float(normalized_duration),
+        "start_time": float(start_absolute),
+        "end_time": float(end_absolute),
+        "start_line_id": start_line.get("id"),
+        "end_line_id": end_line.get("id"),
+        "start_pgln": start_line.get("pgln"),
+        "end_pgln": end_line.get("pgln"),
+        "start_page": start_line.get("page"),
+        "start_line_number": start_line.get("line"),
+        "end_page": end_line.get("page"),
+        "end_line_number": end_line.get("line"),
+        "docx_base64": docx_b64,
+        "oncue_xml_base64": oncue_b64,
+        "transcript_text": transcript_text,
+        "lines": clip_line_entries,
+        "title_data": clip_title_data,
+        "lines_per_page": lines_per_page,
+        "media_blob_name": clip_media_blob_name,
+        "media_content_type": clip_media_content_type,
+    }
+
+    clip_summary = {
+        "clip_id": clip_id,
+        "name": clip_name,
+        "created_at": created_at.isoformat(),
+        "duration": float(normalized_duration),
+        "start_time": float(start_absolute),
+        "end_time": float(end_absolute),
+        "start_pgln": start_line.get("pgln"),
+        "end_pgln": end_line.get("pgln"),
+        "start_page": start_line.get("page"),
+        "start_line": start_line.get("line"),
+        "end_page": end_line.get("page"),
+        "end_line": end_line.get("line"),
+        "media_blob_name": clip_media_blob_name,
+        "media_content_type": clip_media_content_type,
+        "file_name": clip_title_data.get("FILE_NAME"),
+    }
+
+    try:
+        save_clip_session(clip_id, clip_data)
+    except Exception as exc:
+        logger.error("Failed to store clip session %s: %s", clip_id, exc)
+        raise HTTPException(status_code=500, detail="Unable to persist clip data")
+
+    clips_list = ensure_session_clip_list(session_data)
+    clips_list.append(clip_summary)
+
+    session_data["updated_at"] = created_at.isoformat()
+    session_data["expires_at"] = (created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
+
+    try:
+        save_editor_session(session_id, session_data)
+    except Exception as exc:
+        clips_list.pop()
+        delete_clip_session(clip_id)
+        logger.error("Failed to update session %s after clip creation: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Unable to update session with clip metadata")
+
+    clip_response = dict(clip_data)
+    clip_response.pop("parent_session_id", None)
+    clip_response["transcript"] = clip_response.pop("transcript_text", "")
+    clip_response["summary"] = clip_summary
+
+    return JSONResponse({
+        "clip": clip_response,
+        "session": build_session_response(session_data),
+    })
+
+
+@app.get("/api/clips/{clip_id}")
+async def get_clip_session(clip_id: str):
+    clip_data = load_clip_session(clip_id)
+    if not clip_data:
+        raise HTTPException(status_code=404, detail="Clip session not found")
+
+    expires_at = clip_data.get("expires_at")
+    if expires_at:
+        try:
+            expires_dt = datetime.fromisoformat(expires_at)
+        except ValueError:
+            try:
+                expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                expires_dt = None
+        if expires_dt and expires_dt < datetime.now(timezone.utc):
+            delete_clip_session(clip_id)
+            raise HTTPException(status_code=404, detail="Clip session expired")
+
+    response_payload = dict(clip_data)
+    response_payload["transcript"] = response_payload.pop("transcript_text", "")
+    return JSONResponse(response_payload)
 
 
 @app.put("/api/transcripts/{session_id}")
@@ -970,6 +1549,7 @@ async def import_oncue_transcript(
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
         "source": "import",
+        "clips": [],
     }
 
     save_editor_session(session_id, session_payload)
@@ -1044,6 +1624,7 @@ async def health_check():
         try:
             cleanup_old_files()
             cleanup_expired_editor_sessions()
+            cleanup_expired_clip_sessions()
             last_cleanup_time = current_time
             logger.info("Periodic cleanup completed via health check")
         except Exception as e:
