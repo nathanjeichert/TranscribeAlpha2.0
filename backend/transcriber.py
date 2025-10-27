@@ -388,12 +388,13 @@ def replace_placeholder_text(element, placeholder: str, replacement: str) -> Non
                     replace_placeholder_text(cell, placeholder, replacement)
 
 
-def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], include_timestamps: bool = False) -> bytes:
+def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> bytes:
     """
     Create a DOCX transcript with simple one-paragraph-per-turn formatting.
 
     Word will automatically wrap lines based on the first-line indent (1.0").
     The XML generation must match Word's natural line wrapping behavior.
+    Timestamps are currently excluded to keep pagination aligned with OnCue output.
     """
     doc = Document("transcript_template.docx")
     for key, value in title_data.items():
@@ -417,12 +418,6 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], includ
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
 
-            # Include timestamp if available and requested
-            if include_timestamps and turn.timestamp:
-                timestamp_text = f"{turn.timestamp} "
-                timestamp_run = p.add_run(timestamp_text)
-                timestamp_run.font.name = "Courier New"
-
             speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
             text_run = p.add_run(turn.text)
@@ -434,12 +429,6 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn], includ
             p.paragraph_format.first_line_indent = Inches(1.0)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
-
-            # Include timestamp if available and requested
-            if include_timestamps and turn.timestamp:
-                timestamp_text = f"{turn.timestamp} "
-                timestamp_run = p.add_run(timestamp_text)
-                timestamp_run.font.name = "Courier New"
 
             speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
@@ -556,7 +545,7 @@ def process_transcription(
         if not turns:
             raise RuntimeError("AssemblyAI transcription failed")
 
-        docx_bytes = create_docx(title_data, turns, include_timestamps)
+        docx_bytes = create_docx(title_data, turns)
 
         return turns, docx_bytes, duration_seconds
 def timestamp_to_seconds(timestamp: Optional[str]) -> float:

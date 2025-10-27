@@ -248,7 +248,7 @@ def build_session_artifacts(
     include_timestamps: bool,
     lines_per_page: int,
 ):
-    docx_bytes = create_docx(title_data, turns, include_timestamps)
+    docx_bytes = create_docx(title_data, turns)
     oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds, lines_per_page)
     line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
     transcript_text = format_transcript_text(turns, include_timestamps)
