@@ -14,6 +14,24 @@ interface EditorLine {
   is_continuation?: boolean
 }
 
+export interface ClipSummary {
+  clip_id: string
+  name: string
+  created_at: string
+  duration: number
+  start_time: number
+  end_time: number
+  start_pgln?: number | null
+  end_pgln?: number | null
+  start_page?: number | null
+  start_line?: number | null
+  end_page?: number | null
+  end_line?: number | null
+  media_blob_name?: string | null
+  media_content_type?: string | null
+  file_name?: string | null
+}
+
 export interface EditorSessionResponse {
   session_id?: string | null
   title_data: Record<string, string>
@@ -28,6 +46,7 @@ export interface EditorSessionResponse {
   transcript?: string | null
   media_blob_name?: string | null
   media_content_type?: string | null
+  clips?: ClipSummary[]
 }
 
 export type EditorSaveResponse = EditorSessionResponse
