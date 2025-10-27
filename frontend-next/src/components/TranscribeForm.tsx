@@ -78,10 +78,6 @@ export default function TranscribeForm() {
         setMediaContentType(raw.media_content_type ?? undefined)
         setMediaIsLocal(false)
       }
-
-      if (sessionIdValue) {
-        setActiveTab('editor')
-      }
     },
     [mediaIsLocal, mediaPreviewUrl],
   )
