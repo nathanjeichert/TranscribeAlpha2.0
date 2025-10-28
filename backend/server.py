@@ -4,6 +4,7 @@ import base64
 import logging
 import uuid
 import tempfile
+import io
 import hashlib
 import subprocess
 import re
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Tuple, Any
 import xml.etree.ElementTree as ET
 from google.cloud import storage
+from google.api_core import exceptions as gcs_exceptions
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -778,17 +780,33 @@ def cleanup_old_files():
     except Exception as e:
         logger.error(f"Error during cleanup: {str(e)}")
 
+def _format_gcs_error(error: Exception) -> str:
+    if isinstance(error, gcs_exceptions.GoogleAPIError):
+        message = error.message or str(error)
+        if getattr(error, "errors", None):
+            message = f"{message} | details={error.errors}"
+        return message
+    return str(error)
+
+
+def _upload_bytes_to_blob(blob: storage.Blob, file_bytes: bytes, content_type: Optional[str] = None) -> None:
+    blob.chunk_size = 5 * 1024 * 1024  # 5MB chunking to support larger files consistently
+    buffer = io.BytesIO(file_bytes)
+    buffer.seek(0)
+    blob.upload_from_file(buffer, size=len(file_bytes), content_type=content_type or "application/octet-stream")
+
+
 def upload_to_cloud_storage(file_bytes: bytes, filename: str) -> str:
     """Upload file to Cloud Storage and return the blob name"""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
         blob_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
         blob = bucket.blob(blob_name)
-        blob.upload_from_string(file_bytes)
+        _upload_bytes_to_blob(blob, file_bytes)
         logger.info(f"Uploaded {filename} to Cloud Storage as {blob_name}")
         return blob_name
     except Exception as e:
-        logger.error(f"Error uploading to Cloud Storage: {str(e)}")
+        logger.error(f"Error uploading to Cloud Storage: {_format_gcs_error(e)}")
         raise
 
 def download_from_cloud_storage(blob_name: str) -> bytes:
@@ -838,11 +856,11 @@ def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, conte
         if content_type:
             blob.content_type = content_type
             
-        blob.upload_from_string(file_bytes)
+        _upload_bytes_to_blob(blob, file_bytes, content_type)
         logger.info(f"Uploaded preview file {filename} to Cloud Storage as {blob_name}")
         return blob_name
     except Exception as e:
-        logger.error(f"Error uploading preview file to Cloud Storage: {str(e)}")
+        logger.error(f"Error uploading preview file to Cloud Storage: {_format_gcs_error(e)}")
         raise
 
 
@@ -860,11 +878,11 @@ def upload_clip_file_to_cloud_storage(file_bytes: bytes, filename: str, content_
         blob.metadata = metadata
         if content_type:
             blob.content_type = content_type
-        blob.upload_from_string(file_bytes)
+        _upload_bytes_to_blob(blob, file_bytes, content_type)
         logger.info("Uploaded clip media %s to Cloud Storage", blob_name)
         return blob_name
     except Exception as exc:
-        logger.error("Error uploading clip media to Cloud Storage: %s", exc)
+        logger.error("Error uploading clip media to Cloud Storage: %s", _format_gcs_error(exc))
         raise
 
 
