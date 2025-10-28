@@ -417,6 +417,7 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.first_line_indent = Inches(1.0)  # Standard legal transcript indent
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.widow_control = False
 
             speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
@@ -429,6 +430,7 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.first_line_indent = Inches(1.0)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.widow_control = False
 
             speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
             speaker_run.font.name = "Courier New"
