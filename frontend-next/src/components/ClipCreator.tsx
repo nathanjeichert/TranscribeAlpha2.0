@@ -147,14 +147,46 @@ export default function ClipCreator({
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
 
-  const isVideo = useMemo(() => (mediaType ?? '').startsWith('video/'), [mediaType])
-  const effectiveMediaUrl = useMemo(() => {
-    if (!mediaUrl) {
-      return undefined
+  const inferredMediaType = useMemo(() => {
+    if (mediaType && mediaType.length > 0) {
+      return mediaType
     }
-    const trimmed = mediaUrl.trim()
-    return trimmed.length > 0 ? trimmed : undefined
-  }, [mediaUrl])
+    if (session?.media_content_type) {
+      return session.media_content_type
+    }
+    if (activeClip?.media_content_type) {
+      return activeClip.media_content_type
+    }
+    return undefined
+  }, [mediaType, session?.media_content_type, activeClip?.media_content_type])
+
+  const effectiveMediaUrl = useMemo(() => {
+    if (mediaUrl && mediaUrl.trim().length > 0) {
+      return mediaUrl.trim()
+    }
+    if (session?.media_blob_name) {
+      return `/api/media/${session.media_blob_name}`
+    }
+    if (activeClip?.media_blob_name) {
+      return `/api/media/${activeClip.media_blob_name}`
+    }
+    return undefined
+  }, [mediaUrl, session?.media_blob_name, activeClip?.media_blob_name])
+
+  const isVideo = useMemo(() => {
+    const knownType = inferredMediaType ?? ''
+    if (knownType.startsWith('video/')) {
+      return true
+    }
+    if (knownType.startsWith('audio/')) {
+      return false
+    }
+    if (!effectiveMediaUrl) {
+      return false
+    }
+    const lowered = effectiveMediaUrl.toLowerCase()
+    return ['.mp4', '.mov', '.m4v', '.webm', '.mkv'].some((ext) => lowered.includes(ext))
+  }, [inferredMediaType, effectiveMediaUrl])
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const playerRef = isVideo ? videoRef : audioRef
