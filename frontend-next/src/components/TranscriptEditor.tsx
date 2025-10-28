@@ -485,6 +485,7 @@ export default function TranscriptEditor({
                       key={effectiveMediaUrl}
                       ref={videoRef}
                       controls
+                      preload="metadata"
                       className="w-full rounded-lg border border-primary-200 shadow"
                       src={effectiveMediaUrl}
                     />
@@ -493,6 +494,7 @@ export default function TranscriptEditor({
                       key={effectiveMediaUrl}
                       ref={audioRef}
                       controls
+                      preload="metadata"
                       className="w-full"
                       src={effectiveMediaUrl}
                     />

@@ -19,7 +19,7 @@ from google.api_core import exceptions as gcs_exceptions
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1603,29 +1603,75 @@ async def upload_media_preview(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 @app.get("/api/media/{file_id}")
-async def serve_media_file(file_id: str):
+async def serve_media_file(file_id: str, request: Request):
     """Serve media file for preview"""
     try:
-        # Get file metadata
         metadata = get_blob_metadata(file_id)
         if not metadata:
             raise HTTPException(status_code=404, detail="Media file not found")
-        
-        # Download file from Cloud Storage
-        file_bytes = download_from_cloud_storage(file_id)
-        
-        # Create streaming response for large files
-        def generate():
-            yield file_bytes
-        
+
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(file_id)
+        if not blob.exists():
+            raise HTTPException(status_code=404, detail="Media file not found")
+
+        file_size = metadata.get("size") or blob.size or 0
+        content_type = metadata.get("content_type", "application/octet-stream")
+
+        range_header = request.headers.get("range")
+        start = 0
+        end = file_size - 1 if file_size else None
+        status_code = 200
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600",
+        }
+
+        if range_header and file_size:
+            range_match = re.match(r"bytes=(\d*)-(\d*)", range_header)
+            if range_match:
+                if range_match.group(1):
+                    start = int(range_match.group(1))
+                if range_match.group(2):
+                    end = int(range_match.group(2))
+                if end is None or end >= file_size:
+                    end = file_size - 1
+                if start > end:
+                    raise HTTPException(status_code=416, detail="Invalid range header")
+
+                status_code = 206
+                headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                headers["Content-Length"] = str(end - start + 1)
+            else:
+                logger.warning("Invalid range header received: %s", range_header)
+
+        elif file_size:
+            headers["Content-Length"] = str(file_size)
+
+        def iter_chunks(start_pos: int, end_pos: Optional[int]):
+            chunk_size = 1024 * 1024  # 1MB chunks
+            bytes_remaining = (end_pos - start_pos + 1) if end_pos is not None else None
+            with blob.open("rb") as stream:
+                if start_pos:
+                    stream.seek(start_pos)
+                while True:
+                    read_size = chunk_size if bytes_remaining is None else min(chunk_size, bytes_remaining)
+                    if read_size <= 0:
+                        break
+                    data = stream.read(read_size)
+                    if not data:
+                        break
+                    yield data
+                    if bytes_remaining is not None:
+                        bytes_remaining -= len(data)
+                        if bytes_remaining <= 0:
+                            break
+
         return StreamingResponse(
-            generate(),
-            media_type=metadata['content_type'],
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(len(file_bytes)),
-                "Cache-Control": "public, max-age=3600"
-            }
+            iter_chunks(start, end),
+            media_type=content_type,
+            status_code=status_code,
+            headers=headers,
         )
     except Exception as e:
         logger.error(f"Error serving media file {file_id}: {str(e)}")

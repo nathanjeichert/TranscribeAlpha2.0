@@ -853,9 +853,9 @@ export default function ClipCreator({
                 {effectiveMediaUrl ? (
                   <div className="bg-primary-900 rounded-lg p-4">
                     {isVideo ? (
-                      <video ref={videoRef} src={effectiveMediaUrl} controls className="w-full rounded" />
+                      <video ref={videoRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full rounded" />
                     ) : (
-                      <audio ref={audioRef} src={effectiveMediaUrl} controls className="w-full" />
+                      <audio ref={audioRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full" />
                     )}
                   </div>
                 ) : (

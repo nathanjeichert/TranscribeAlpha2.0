@@ -348,10 +348,14 @@ export default function TranscribeForm() {
 
   const previewContentType = mediaContentType ?? selectedFile?.type ?? ''
   const isVideoPreview = previewContentType.startsWith('video/')
-  const clipMediaUrl = sessionDetails?.media_blob_name
-    ? `/api/media/${sessionDetails.media_blob_name}`
-    : mediaPreviewUrl || undefined
-  const clipMediaType = sessionDetails?.media_content_type ?? mediaContentType ?? selectedFile?.type
+  const clipMediaUrl =
+    (mediaIsLocal && mediaPreviewUrl) ||
+    (sessionDetails?.media_blob_name ? `/api/media/${sessionDetails.media_blob_name}` : mediaPreviewUrl || undefined)
+  const clipMediaType =
+    (mediaIsLocal ? mediaContentType ?? selectedFile?.type : undefined) ??
+    sessionDetails?.media_content_type ??
+    mediaContentType ??
+    selectedFile?.type
 
   return (
     <div className="min-h-screen bg-primary-50">
