@@ -11,7 +11,6 @@ import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Tuple, Any
-import xml.etree.ElementTree as ET
 from google.cloud import storage
 from google.api_core import exceptions as gcs_exceptions
 
@@ -37,7 +36,7 @@ try:
     from .transcriber import (
         process_transcription,
         TranscriptTurn,
-        generate_oncue_xml,
+        generate_viewer_html,
         compute_transcript_line_entries,
         seconds_to_timestamp,
         WordTimestamp,
@@ -49,7 +48,7 @@ except ImportError:
         from transcriber import (
             process_transcription,
             TranscriptTurn,
-            generate_oncue_xml,
+            generate_viewer_html,
             compute_transcript_line_entries,
             seconds_to_timestamp,
             WordTimestamp,
@@ -60,7 +59,7 @@ except ImportError:
         import transcriber
         process_transcription = transcriber.process_transcription
         TranscriptTurn = transcriber.TranscriptTurn
-        generate_oncue_xml = transcriber.generate_oncue_xml
+        generate_viewer_html = transcriber.generate_viewer_html
         compute_transcript_line_entries = transcriber.compute_transcript_line_entries
         seconds_to_timestamp = transcriber.seconds_to_timestamp
         WordTimestamp = transcriber.WordTimestamp
@@ -316,6 +315,7 @@ def serialize_line_entries(line_entries: List[dict]) -> List[dict]:
                 "id": entry["id"],
                 "speaker": entry["speaker"],
                 "text": entry["text"],
+                "rendered_text": entry.get("rendered_text", ""),
                 "start": float(entry["start"]),
                 "end": float(entry["end"]),
                 "page": entry.get("page"),
@@ -332,12 +332,27 @@ def build_session_artifacts(
     title_data: dict,
     duration_seconds: float,
     lines_per_page: int,
+    media_filename: Optional[str] = None,
+    media_content_type: Optional[str] = None,
 ):
     docx_bytes = create_docx(title_data, turns)
-    oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds, lines_per_page)
-    line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
+    viewer_data = generate_viewer_html(
+        turns,
+        title_data,
+        duration_seconds,
+        lines_per_page,
+        media_filename=media_filename,
+        media_content_type=media_content_type,
+    )
+    line_entries = viewer_data["line_entries"]
     transcript_text = format_transcript_text(turns)
-    return docx_bytes, oncue_xml, transcript_text, serialize_line_entries(line_entries)
+    return (
+        docx_bytes,
+        viewer_data["html"],
+        transcript_text,
+        serialize_line_entries(line_entries),
+        viewer_data["payload"],
+    )
 
 
 def build_session_response(session_data: dict) -> dict:
@@ -351,7 +366,8 @@ def build_session_response(session_data: dict) -> dict:
         "updated_at": session_data.get("updated_at"),
         "expires_at": session_data.get("expires_at"),
         "docx_base64": session_data.get("docx_base64"),
-        "oncue_xml_base64": session_data.get("oncue_xml_base64"),
+        "viewer_html_base64": session_data.get("viewer_html_base64"),
+        "viewer_payload": session_data.get("viewer_payload"),
         "transcript": session_data.get("transcript_text"),
         "media_blob_name": session_data.get("media_blob_name"),
         "media_content_type": session_data.get("media_content_type"),
@@ -665,86 +681,6 @@ def load_latest_editor_session() -> Optional[dict]:
         logger.error("Failed to load latest editor session: %s", e)
         return None
 
-
-def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid OnCue XML: {exc}")
-
-    deposition = root.find(".//deposition")
-    title_data = {
-        "CASE_NAME": "",
-        "CASE_NUMBER": "",
-        "FIRM_OR_ORGANIZATION_NAME": "",
-        "DATE": deposition.get("date") if deposition is not None else "",
-        "TIME": "",
-        "LOCATION": "",
-        "FILE_NAME": deposition.get("filename") if deposition is not None else "imported.xml",
-        "FILE_DURATION": "",
-    }
-
-    lines: List[dict] = []
-    current_speaker: Optional[str] = None
-    max_end = 0.0
-
-    for line_idx, line_elem in enumerate(root.findall(".//depoLine")):
-        raw_text = line_elem.attrib.get("text", "")
-        video_start = float(line_elem.attrib.get("videoStart", "0") or 0)
-        video_stop = float(line_elem.attrib.get("videoStop", "0") or video_start)
-        page = line_elem.attrib.get("page")
-        line_number = line_elem.attrib.get("line")
-        pgln = line_elem.attrib.get("pgLN")
-
-        trimmed = raw_text.lstrip()
-        speaker = current_speaker
-        text_content = trimmed
-        is_continuation = True
-
-        if trimmed:
-            if ":   " in trimmed:
-                potential_speaker, remainder = trimmed.split(":   ", 1)
-                if potential_speaker.strip():
-                    speaker = potential_speaker.strip().upper()
-                    text_content = remainder.strip()
-                    is_continuation = False
-            elif current_speaker is None:
-                speaker = "SPEAKER"
-                text_content = trimmed.strip()
-                is_continuation = False
-        else:
-            text_content = ""
-
-        if speaker is None:
-            speaker = "SPEAKER"
-
-        current_speaker = speaker
-        max_end = max(max_end, video_stop)
-
-        lines.append(
-            {
-                "id": line_elem.attrib.get("pgLN", f"{line_idx}"),
-                "speaker": speaker,
-                "text": text_content,
-                "start": video_start,
-                "end": video_stop,
-                "page": int(page) if page and page.isdigit() else None,
-                "line": int(line_number) if line_number and line_number.isdigit() else None,
-                "pgln": int(pgln) if pgln and pgln.isdigit() else None,
-                "is_continuation": is_continuation,
-            }
-        )
-
-    duration_seconds = max_end
-    hours, rem = divmod(duration_seconds, 3600)
-    minutes, seconds = divmod(rem, 60)
-    title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
-
-    return {
-        "lines": lines,
-        "title_data": title_data,
-        "audio_duration": duration_seconds,
-    }
 
 def create_cache_key(
     file_bytes: bytes,
@@ -1090,14 +1026,22 @@ async def transcribe(
             logger.error(f"Transcription error: {error_detail}")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
-    docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+    (
+        docx_bytes,
+        viewer_html,
+        transcript_text,
+        line_payloads,
+        viewer_payload,
+    ) = build_session_artifacts(
         turns,
         title_data,
         duration_seconds or 0,
         DEFAULT_LINES_PER_PAGE,
+        media_filename=file.filename,
+        media_content_type=media_content_type,
     )
     docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+    viewer_html_b64 = base64.b64encode(viewer_html.encode("utf-8")).decode()
 
     session_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc)
@@ -1113,7 +1057,8 @@ async def transcribe(
         "turns": serialize_transcript_turns(turns),
         "lines": line_payloads,
         "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
+        "viewer_html_base64": viewer_html_b64,
+        "viewer_payload": viewer_payload,
         "transcript_text": transcript_text,
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
@@ -1131,7 +1076,8 @@ async def transcribe(
     response_data = {
         "transcript": transcript_text,
         "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
+        "viewer_html_base64": viewer_html_b64,
+        "viewer_payload": viewer_payload,
         "editor_session_id": session_id,
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
@@ -1285,15 +1231,23 @@ async def create_clip(payload: Dict = Body(...)):
     minutes, seconds = divmod(remainder, 60)
     clip_title_data["FILE_DURATION"] = f"{int(hours):02d}:{int(minutes):02d}:{int(round(seconds)):02d}"
 
-    docx_bytes, oncue_xml, transcript_text, clip_line_entries = build_session_artifacts(
+    (
+        docx_bytes,
+        viewer_html,
+        transcript_text,
+        clip_line_entries,
+        viewer_payload,
+    ) = build_session_artifacts(
         turns,
         clip_title_data,
         normalized_duration,
         lines_per_page,
+        media_filename=clip_filename,
+        media_content_type=clip_media_content_type or session_data.get("media_content_type"),
     )
 
     docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+    viewer_html_b64 = base64.b64encode(viewer_html.encode("utf-8")).decode()
 
     clip_media_blob_name, clip_media_content_type = clip_media_segment(
         session_data.get("media_blob_name"),
@@ -1325,7 +1279,8 @@ async def create_clip(payload: Dict = Body(...)):
         "end_page": end_line.get("page"),
         "end_line_number": end_line.get("line"),
         "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
+        "viewer_html_base64": viewer_html_b64,
+        "viewer_payload": viewer_payload,
         "transcript_text": transcript_text,
         "lines": clip_line_entries,
         "title_data": clip_title_data,
@@ -1433,15 +1388,23 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
     if not turns:
         raise HTTPException(status_code=400, detail="No valid turns could be constructed from lines")
 
-    docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
+    (
+        docx_bytes,
+        viewer_html,
+        transcript_text,
+        updated_lines_payload,
+        viewer_payload,
+    ) = build_session_artifacts(
         turns,
         current_title,
         duration_seconds,
         lines_per_page,
+        media_filename=current_title.get("FILE_NAME"),
+        media_content_type=session_data.get("media_content_type"),
     )
 
     docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+    viewer_html_b64 = base64.b64encode(viewer_html.encode("utf-8")).decode()
 
     hours, rem = divmod(duration_seconds, 3600)
     minutes, seconds = divmod(rem, 60)
@@ -1457,7 +1420,8 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
     session_data["title_data"] = current_title
     session_data["audio_duration"] = duration_seconds
     session_data["docx_base64"] = docx_b64
-    session_data["oncue_xml_base64"] = oncue_b64
+    session_data["viewer_html_base64"] = viewer_html_b64
+    session_data["viewer_payload"] = viewer_payload
     session_data["transcript_text"] = transcript_text
     session_data["media_blob_name"] = media_blob_name
     session_data["media_content_type"] = media_content_type
@@ -1470,7 +1434,8 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
         "session_id": session_id,
         "lines": updated_lines_payload,
         "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
+        "viewer_html_base64": viewer_html_b64,
+        "viewer_payload": viewer_payload,
         "transcript": transcript_text,
         "title_data": current_title,
         "audio_duration": duration_seconds,
@@ -1482,98 +1447,6 @@ async def update_editor_session(session_id: str, payload: Dict = Body(...)):
 
     return JSONResponse(response_payload)
 
-
-@app.post("/api/transcripts/import")
-async def import_oncue_transcript(
-    xml_file: UploadFile = File(...),
-    media_file: Optional[UploadFile] = File(None),
-    case_name: str = Form(""),
-    case_number: str = Form(""),
-    firm_name: str = Form(""),
-    input_date: str = Form(""),
-    input_time: str = Form(""),
-    location: str = Form(""),
-):
-    xml_bytes = await xml_file.read()
-    if not xml_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded XML file is empty")
-
-    xml_text = xml_bytes.decode("utf-8", errors="replace")
-    parsed = parse_oncue_xml(xml_text)
-
-    title_data = parsed["title_data"]
-    overrides = {
-        "CASE_NAME": case_name or title_data.get("CASE_NAME", ""),
-        "CASE_NUMBER": case_number or title_data.get("CASE_NUMBER", ""),
-        "FIRM_OR_ORGANIZATION_NAME": firm_name or title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
-        "DATE": input_date or title_data.get("DATE", ""),
-        "TIME": input_time or title_data.get("TIME", ""),
-        "LOCATION": location or title_data.get("LOCATION", ""),
-        "FILE_NAME": title_data.get("FILE_NAME") or xml_file.filename or "imported.xml",
-    }
-    title_data.update(overrides)
-
-    duration_seconds = float(parsed["audio_duration"] or 0)
-    lines_payload = parsed["lines"]
-    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-    turns = construct_turns_from_lines(normalized_lines)
-    if not turns:
-        raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
-
-    docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
-        turns,
-        title_data,
-        duration_seconds,
-        DEFAULT_LINES_PER_PAGE,
-    )
-
-    docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
-
-    media_blob_name = None
-    media_content_type = None
-    if media_file:
-        media_bytes = await media_file.read()
-        if media_bytes:
-            media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename)[0]
-            try:
-                media_blob_name = upload_preview_file_to_cloud_storage(
-                    media_bytes,
-                    media_file.filename,
-                    media_content_type,
-                )
-            except Exception as e:
-                logger.error("Failed to store media during import: %s", e)
-                media_blob_name = None
-                media_content_type = None
-
-    session_id = uuid.uuid4().hex
-    created_at = datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
-
-    session_payload = {
-        "session_id": session_id,
-        "created_at": created_at.isoformat(),
-        "updated_at": created_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "title_data": title_data,
-        "audio_duration": duration_seconds,
-        "lines_per_page": DEFAULT_LINES_PER_PAGE,
-        "turns": serialize_transcript_turns(turns),
-        "lines": line_payloads,
-        "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
-        "transcript_text": transcript_text,
-        "media_blob_name": media_blob_name,
-        "media_content_type": media_content_type,
-        "source": "import",
-        "clips": [],
-    }
-
-    save_editor_session(session_id, session_payload)
-
-    response_payload = build_session_response(session_payload)
-    return JSONResponse(response_payload)
 
 @app.post("/api/upload-preview")
 async def upload_media_preview(file: UploadFile = File(...)):

@@ -5,7 +5,7 @@ import time
 import tempfile
 import logging
 import shutil
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import sys
 
 # Python 3.9+ type hint compatibility
@@ -20,6 +20,7 @@ from docx.shared import Inches, Pt
 import ffmpeg
 from pydub import AudioSegment
 from pydantic import BaseModel
+from backend.viewer import render_viewer_html
 
 # AssemblyAI integration
 try:
@@ -394,7 +395,7 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
 
     Word will automatically wrap lines based on the first-line indent (1.0").
     The XML generation must match Word's natural line wrapping behavior.
-    Timestamps are currently excluded to keep pagination aligned with OnCue output.
+    Timestamps are currently excluded to keep pagination aligned with the viewer-rendered line breaks.
     """
     doc = Document("transcript_template.docx")
     for key, value in title_data.items():
@@ -569,7 +570,7 @@ def timestamp_to_seconds(timestamp: Optional[str]) -> float:
 
 
 def seconds_to_timestamp(seconds: float) -> str:
-    """Convert seconds float to OnCue-style [MM:SS] or [HH:MM:SS] timestamp."""
+    """Convert seconds float to a transcript timestamp string like [MM:SS] or [HH:MM:SS]."""
     if seconds < 0:
         seconds = 0.0
     total_seconds = int(round(seconds))
@@ -783,75 +784,128 @@ def compute_transcript_line_entries(
     return line_entries, last_pgln
 
 
-def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, audio_duration: float, lines_per_page: int = 25) -> str:
-    """
-    Generate OnCue-compatible XML from transcript turns.
+def _sanitize_title_data(metadata: dict) -> Dict[str, str]:
+    safe: Dict[str, str] = {}
+    for key, value in metadata.items():
+        if value is None:
+            safe[key] = ""
+        else:
+            safe[key] = str(value)
+    return safe
 
-    This function breaks long utterances into multiple lines to match the DOCX formatting:
-    - First line: 15 spaces + "SPEAKER:" (padded to ~21 chars) + text (max ~48 chars)
-    - Continuation lines: 5 spaces + text (max ~57 chars)
-    - Total line length: ~71 chars for speaker lines, ~62 chars for continuation lines
-    """
-    from xml.etree.ElementTree import Element, SubElement, tostring
 
-    root = Element(
-        "onCue",
-        {
-            "xmlns:xsd": "http://www.w3.org/2001/XMLSchema",
-            "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+def build_viewer_payload(
+    line_entries: List[dict],
+    metadata: dict,
+    audio_duration: float,
+    lines_per_page: int = 25,
+    media_filename: Optional[str] = None,
+    media_content_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Construct the JSON payload consumed by the standalone HTML viewer.
+    """
+    title_data = _sanitize_title_data(metadata or {})
+    resolved_media_filename = media_filename or title_data.get("FILE_NAME") or "media.mp4"
+
+    speakers = []
+    speaker_seen = set()
+    lines_payload: List[Dict[str, Any]] = []
+    page_index_map: Dict[int, List[int]] = {}
+
+    for idx, entry in enumerate(line_entries):
+        page_number = int(entry.get("page") or 1)
+        line_number = int(entry.get("line") or (idx + 1))
+        speaker = str(entry.get("speaker", "SPEAKER")).upper()
+        if speaker not in speaker_seen:
+            speaker_seen.add(speaker)
+            speakers.append(speaker)
+
+        line_obj = {
+            "id": entry.get("id") or f"line-{idx}",
+            "speaker": speaker,
+            "text": entry.get("text", ""),
+            "rendered_text": entry.get("rendered_text", ""),
+            "start": round(float(entry.get("start", 0.0) or 0.0), 3),
+            "end": round(float(entry.get("end", 0.0) or 0.0), 3),
+            "page_number": page_number,
+            "line_number": line_number,
+            "pgln": entry.get("pgln"),
+            "is_continuation": bool(entry.get("is_continuation", False)),
+        }
+        lines_payload.append(line_obj)
+        page_index_map.setdefault(page_number, []).append(idx)
+
+    pages: List[Dict[str, Any]] = []
+    for page_number in sorted(page_index_map.keys()):
+        indexes = page_index_map[page_number]
+        if not indexes:
+            continue
+        first_line = lines_payload[indexes[0]]
+        last_line = lines_payload[indexes[-1]]
+        pages.append(
+            {
+                "page_number": page_number,
+                "line_indexes": indexes,
+                "pgln_start": first_line.get("pgln"),
+                "pgln_end": last_line.get("pgln"),
+            }
+        )
+
+    payload: Dict[str, Any] = {
+        "meta": {
+            "title": title_data,
+            "duration_seconds": round(float(audio_duration or 0.0), 3),
+            "lines_per_page": lines_per_page,
+            "speakers": speakers,
         },
-    )
-
-    media_id = os.path.splitext(metadata.get("FILE_NAME", "deposition"))[0]
-    depo_attrs = {
-        "mediaId": media_id,
-        "linesPerPage": str(lines_per_page),
+        "media": {
+            "filename": resolved_media_filename,
+            "content_type": media_content_type or "",
+            "relative_path": resolved_media_filename,
+        },
+        "lines": lines_payload,
+        "pages": pages,
     }
-    if metadata.get("DATE"):
-        depo_attrs["date"] = metadata["DATE"]
+    return payload
 
-    deposition = SubElement(root, "deposition", depo_attrs)
 
-    video_attrs = {
-        "ID": "1",
-        "filename": metadata.get("FILE_NAME", "audio.mp3"),
-        "startTime": "0",
-        "stopTime": str(int(round(audio_duration))),
-        "firstPGLN": "101",
-        "lastPGLN": "0",  # placeholder
-        "startTuned": "no",
-        "stopTuned": "no",
-    }
-    depo_video = SubElement(deposition, "depoVideo", video_attrs)
+def generate_viewer_html(
+    transcript_turns: List[TranscriptTurn],
+    metadata: dict,
+    audio_duration: float,
+    lines_per_page: int = 25,
+    media_filename: Optional[str] = None,
+    media_content_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Build the viewer payload and rendered HTML from transcript turns.
 
-    line_entries, last_pgln = compute_transcript_line_entries(
+    Returns a dict with keys:
+        - payload: JSON-serializable viewer payload
+        - html: rendered HTML string ready for download
+    """
+    line_entries, _ = compute_transcript_line_entries(
         transcript_turns,
         audio_duration,
         lines_per_page,
     )
-
-    for entry in line_entries:
-        SubElement(
-            depo_video,
-            "depoLine",
-            {
-                "prefix": "",
-                "text": entry["rendered_text"],
-                "page": str(entry["page"]),
-                "line": str(entry["line"]),
-                "pgLN": str(entry["pgln"]),
-                "videoID": "1",
-                "videoStart": f"{entry['start']:.2f}",
-                "videoStop": f"{entry['end']:.2f}",
-                "isEdited": "no",
-                "isSynched": "yes",
-                "isRedacted": "no",
-            },
-        )
-
-    depo_video.set("lastPGLN", str(last_pgln))
-
-    xml_bytes = tostring(root, encoding="utf-8", method="xml")
-    xml_str = xml_bytes.decode("utf-8")
-    xml_str = "".join(xml_str.splitlines())  # single line like sample
-    return xml_str
+    viewer_payload = build_viewer_payload(
+        line_entries,
+        metadata,
+        audio_duration,
+        lines_per_page,
+        media_filename=media_filename,
+        media_content_type=media_content_type,
+    )
+    html = render_viewer_html(
+        {
+            **viewer_payload,
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+    )
+    return {
+        "payload": viewer_payload,
+        "html": html,
+        "line_entries": line_entries,
+    }

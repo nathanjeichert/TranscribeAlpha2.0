@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ViewerPayload } from '@/types/transcript'
 
 interface EditorLine {
   id: string
@@ -42,7 +43,8 @@ export interface EditorSessionResponse {
   updated_at?: string
   expires_at?: string
   docx_base64?: string | null
-  oncue_xml_base64?: string | null
+  viewer_html_base64?: string | null
+  viewer_payload?: ViewerPayload | null
   transcript?: string | null
   media_blob_name?: string | null
   media_content_type?: string | null
@@ -56,7 +58,8 @@ interface TranscriptEditorProps {
   mediaUrl?: string
   mediaType?: string
   docxBase64?: string | null
-  xmlBase64?: string | null
+  viewerHtmlBase64?: string | null
+  viewerPayload?: ViewerPayload | null
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
   onSessionChange: (session: EditorSessionResponse) => void
@@ -81,7 +84,8 @@ export default function TranscriptEditor({
   mediaUrl,
   mediaType,
   docxBase64,
-  xmlBase64,
+  viewerHtmlBase64,
+  viewerPayload,
   onDownload,
   buildFilename,
   onSessionChange,
@@ -106,25 +110,17 @@ export default function TranscriptEditor({
   const lastFetchedId = useRef<string | undefined>(undefined)
   const activeLineMarker = useRef<string | null>(null)
 
-  const [importXmlFile, setImportXmlFile] = useState<File | null>(null)
-  const [importMediaFile, setImportMediaFile] = useState<File | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [importError, setImportError] = useState<string | null>(null)
-  const [localMediaPreviewUrl, setLocalMediaPreviewUrl] = useState<string | null>(null)
-  const [localMediaType, setLocalMediaType] = useState<string | undefined>(undefined)
-
   const effectiveMediaUrl = useMemo(() => {
-    if (localMediaPreviewUrl) return localMediaPreviewUrl
     if (mediaUrl) return mediaUrl
     if (sessionMeta?.media_blob_name) {
       return `/api/media/${sessionMeta.media_blob_name}`
     }
     return undefined
-  }, [localMediaPreviewUrl, mediaUrl, sessionMeta])
+  }, [mediaUrl, sessionMeta])
 
   const effectiveMediaType = useMemo(
-    () => localMediaType ?? mediaType ?? sessionMeta?.media_content_type ?? undefined,
-    [localMediaType, mediaType, sessionMeta],
+    () => mediaType ?? sessionMeta?.media_content_type ?? undefined,
+    [mediaType, sessionMeta],
   )
 
   const isVideo = useMemo(
@@ -284,14 +280,6 @@ export default function TranscriptEditor({
     [effectiveMediaUrl, isVideo],
   )
 
-  useEffect(() => {
-    return () => {
-      if (localMediaPreviewUrl) {
-        URL.revokeObjectURL(localMediaPreviewUrl)
-      }
-    }
-  }, [localMediaPreviewUrl])
-
   const beginEdit = useCallback((line: EditorLine, field: 'speaker' | 'text') => {
     setEditingField({
       lineId: line.id,
@@ -353,56 +341,16 @@ export default function TranscriptEditor({
     }
   }, [sessionMeta, activeSessionId, lines, onSaveComplete, onSessionChange])
 
-  const handleImport = useCallback(
-    async (event: React.FormEvent) => {
-      event.preventDefault()
-      if (!importXmlFile) {
-        setImportError('Select an OnCue XML file to import.')
-        return
-      }
-      setImporting(true)
-      setImportError(null)
-      try {
-        const formData = new FormData()
-        formData.append('xml_file', importXmlFile)
-        if (importMediaFile) {
-          formData.append('media_file', importMediaFile)
-        }
-
-        const response = await fetch('/api/transcripts/import', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to import transcript')
-        }
-        const data: EditorSessionResponse = await response.json()
-        setSessionMeta(data)
-        setLines(data.lines || [])
-        setIsDirty(false)
-        setActiveLineId(null)
-        setSelectedLineId(null)
-        setEditingField(null)
-        activeLineMarker.current = null
-        if (data.session_id) {
-          setActiveSessionId(data.session_id)
-        }
-        onSessionChange(data)
-        setImportXmlFile(null)
-        setImportMediaFile(null)
-      } catch (err: any) {
-        setImportError(err.message || 'Failed to import transcript')
-      } finally {
-        setImporting(false)
-      }
-    },
-    [importXmlFile, importMediaFile, onSessionChange],
-  )
-
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
-  const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
+  const viewerHtml = viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
+  const effectiveViewerPayload = viewerPayload ?? sessionMeta?.viewer_payload ?? null
   const transcriptText = sessionMeta?.transcript ?? ''
+  const viewerLinesPerPage =
+    (effectiveViewerPayload?.meta?.lines_per_page ?? sessionMeta?.lines_per_page ?? 25) || 25
+  const viewerLineCount = effectiveViewerPayload?.lines?.length ?? lines.length
+  const viewerPageCount =
+    effectiveViewerPayload?.pages?.length ??
+    (viewerLinesPerPage > 0 ? Math.ceil(viewerLineCount / viewerLinesPerPage) : 0)
 
   const sessionInfo = sessionMeta?.title_data ?? {}
   const expiresLabel = sessionMeta?.expires_at ? new Date(sessionMeta.expires_at).toLocaleString() : '—'
@@ -505,51 +453,6 @@ export default function TranscriptEditor({
                   Upload media to enable playback controls.
                 </div>
               )}
-
-              <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-3">
-                <h3 className="text-sm font-medium text-primary-900">Import Existing Transcript</h3>
-                {importError && (
-                  <p className="text-xs text-red-600">{importError}</p>
-                )}
-                <form className="space-y-3" onSubmit={handleImport}>
-                  <div>
-                    <label className="text-xs font-medium text-primary-700">OnCue XML *</label>
-                    <input
-                      type="file"
-                      accept=".xml"
-                      onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
-                      className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-primary-700">Media (optional)</label>
-                    <input
-                      type="file"
-                      accept="audio/*,video/*"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0] ?? null
-                        setImportMediaFile(file)
-                        if (localMediaPreviewUrl) {
-                          URL.revokeObjectURL(localMediaPreviewUrl)
-                        }
-                        if (file) {
-                          const url = URL.createObjectURL(file)
-                          setLocalMediaPreviewUrl(url)
-                          setLocalMediaType(file.type)
-                        } else {
-                          setLocalMediaPreviewUrl(null)
-                          setLocalMediaType(undefined)
-                        }
-                      }}
-                      className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
-                    />
-                  </div>
-                  <button type="submit" className="btn-outline w-full text-sm" disabled={importing}>
-                    {importing ? 'Importing…' : 'Import Transcript'}
-                  </button>
-                </form>
-              </div>
-
               <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-2 text-sm text-primary-700">
                 <h3 className="font-medium text-primary-900">Downloads</h3>
                 <button
@@ -569,12 +472,31 @@ export default function TranscriptEditor({
                 <button
                   className="btn-outline w-full"
                   onClick={() =>
-                    xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')
+                    viewerHtml &&
+                    onDownload(
+                      viewerHtml,
+                      buildFilename('Transcript-Viewer', '.html'),
+                      'text/html',
+                    )
                   }
-                  disabled={!xmlData}
+                  disabled={!viewerHtml}
                 >
-                  Download OnCue XML
+                  Download HTML Viewer
                 </button>
+                {viewerHtml && (
+                  <p className="text-xs text-primary-500">
+                    Place the HTML file alongside the video/audio to launch the standalone viewer offline.
+                  </p>
+                )}
+                {viewerLineCount > 0 && (
+                  <div className="rounded-md border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700">
+                    <p className="font-semibold text-primary-900">Viewer Summary</p>
+                    <p>
+                      {viewerLineCount} line{viewerLineCount === 1 ? '' : 's'} across {viewerPageCount}{' '}
+                      page{viewerPageCount === 1 ? '' : 's'} with subtitle + document modes.
+                    </p>
+                  </div>
+                )}
                 {transcriptText && (
                   <button
                     className="btn-outline w-full"
@@ -604,7 +526,7 @@ export default function TranscriptEditor({
                   {loading ? (
                     <div className="p-6 text-center text-primary-500">Loading editor…</div>
                   ) : lines.length === 0 ? (
-                    <div className="p-6 text-center text-primary-500">No lines available. Import or transcribe to begin editing.</div>
+                    <div className="p-6 text-center text-primary-500">No lines available. Generate a transcript to begin editing.</div>
                   ) : (
                     lines.map((line) => {
                       const isActive = activeLineId === line.id

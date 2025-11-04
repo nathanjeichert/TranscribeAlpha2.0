@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcript Viewer</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #080b12;
+      color: #f9fafb;
+      font-family: 'Courier New', Courier, monospace;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .app {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: radial-gradient(circle at top, #0f172a 0%, #020617 60%);
+    }
+
+    .app-header {
+      padding: 24px clamp(16px, 4vw, 48px) 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(15, 23, 42, 0.55) 100%);
+      backdrop-filter: blur(8px);
+    }
+
+    .app-header h1 {
+      margin: 0;
+      font-size: clamp(20px, 2.6vw, 28px);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #f8fafc;
+    }
+
+    .app-header p {
+      margin: 8px 0 0;
+      font-size: clamp(12px, 1.6vw, 14px);
+      color: #94a3b8;
+    }
+
+    .app-main {
+      flex: 1;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .viewer {
+      position: relative;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .viewer-layout {
+      flex: 1;
+      display: flex;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .viewer.mode-subtitle .viewer-layout {
+      flex-direction: column;
+    }
+
+    .video-pane {
+      position: relative;
+      flex: 1 1 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      min-height: 0;
+    }
+
+    .viewer.mode-document .video-pane {
+      flex: 2 1 65%;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    .subtitle-view {
+      position: absolute;
+      left: 50%;
+      bottom: 120px;
+      transform: translateX(-50%);
+      width: min(90%, 900px);
+      padding: 18px 28px;
+      background: rgba(5, 5, 5, 0.78);
+      border-radius: 16px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.6);
+      display: none;
+      gap: 8px;
+      border: 1px solid rgba(250, 204, 21, 0.25);
+    }
+
+    .viewer.mode-subtitle .subtitle-view {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .subtitle-line {
+      font-size: clamp(18px, 2vw, 21px);
+      line-height: 1.4;
+      white-space: pre-wrap;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      opacity: 0.22;
+      color: #e2e8f0;
+    }
+
+    .subtitle-line.current {
+      opacity: 1;
+      color: #fefce8;
+    }
+
+    .subtitle-line.next {
+      opacity: 0.6;
+    }
+
+    .subtitle-line.future {
+      opacity: 0.35;
+    }
+
+    .document-view {
+      flex: 1 1 35%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: clamp(24px, 4vw, 48px);
+      background: radial-gradient(circle at center, rgba(4, 6, 15, 0.95) 0%, rgba(2, 7, 15, 0.92) 60%, rgba(2, 6, 20, 0.85) 100%);
+      border-left: 1px solid rgba(255, 255, 255, 0.05);
+      min-height: 0;
+    }
+
+    .viewer.mode-document .document-view {
+      display: flex;
+    }
+
+    .doc-wrapper {
+      width: 100%;
+      max-width: 620px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .doc-page-indicator {
+      font-size: 14px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #a5b4fc;
+    }
+
+    .doc-page-container {
+      width: 100%;
+    }
+
+    .doc-page {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding: clamp(28px, 5vw, 42px) clamp(32px, 5vw, 48px);
+      border: 3px solid rgba(249, 250, 251, 0.85);
+      border-radius: 12px;
+      background: #020617;
+      box-shadow: 0 26px 60px rgba(0, 0, 0, 0.55);
+      position: relative;
+      overflow: hidden;
+      min-height: clamp(460px, 60vh, 640px);
+      justify-content: center;
+    }
+
+    .doc-page.active {
+      display: flex;
+    }
+
+    .doc-page::before {
+      content: '';
+      position: absolute;
+      inset: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      pointer-events: none;
+      border-radius: 6px;
+    }
+
+    .doc-line {
+      position: relative;
+      display: flex;
+      gap: 18px;
+      align-items: baseline;
+      padding: 2px 10px 2px 14px;
+      font-size: clamp(16px, 1.7vw, 18px);
+      line-height: 1.35;
+      color: #e2e8f0;
+      white-space: pre;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .doc-line:hover {
+      background: rgba(148, 163, 184, 0.14);
+    }
+
+    .doc-line.current {
+      background: #facc15;
+      color: #1f2937;
+    }
+
+    .doc-line.current .doc-line-number {
+      color: #7c2d12;
+    }
+
+    .doc-line-number {
+      width: clamp(52px, 6vw, 68px);
+      text-align: right;
+      font-weight: 700;
+      color: rgba(148, 163, 184, 0.7);
+    }
+
+    .doc-line-text {
+      flex: 1;
+      white-space: pre;
+    }
+
+    .doc-empty {
+      color: rgba(148, 163, 184, 0.7);
+      font-size: 14px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .toolbar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: clamp(16px, 3vw, 24px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      background: linear-gradient(0deg, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.35) 100%);
+      transform: translateY(115%);
+      opacity: 0;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+      pointer-events: none;
+      backdrop-filter: blur(6px);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .toolbar.visible {
+      transform: translateY(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .toolbar-left,
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .toolbar-center {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    .toolbar-btn {
+      appearance: none;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(15, 23, 42, 0.65);
+      color: #f8fafc;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+      font-family: 'Courier New', Courier, monospace;
+      letter-spacing: 0.5px;
+    }
+
+    .toolbar-btn:hover {
+      background: rgba(59, 130, 246, 0.75);
+      border-color: rgba(96, 165, 250, 0.95);
+      transform: translateY(-1px);
+    }
+
+    .toolbar-btn.view-toggle.active {
+      background: #facc15;
+      border-color: #facc15;
+      color: #1f2937;
+      box-shadow: 0 0 12px rgba(250, 204, 21, 0.45);
+    }
+
+    .control-btn {
+      min-width: 72px;
+      text-align: center;
+    }
+
+    .progress-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      max-width: clamp(260px, 60vw, 520px);
+    }
+
+    .time-label {
+      font-size: 12px;
+      color: #cbd5f5;
+      width: 56px;
+      text-align: center;
+      letter-spacing: 1px;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      background: rgba(148, 163, 184, 0.35);
+      border-radius: 2px;
+      outline: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #facc15;
+      box-shadow: 0 0 10px rgba(250, 204, 21, 0.4);
+      border: none;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #facc15;
+      border: none;
+      cursor: pointer;
+    }
+
+    .volume-icon {
+      font-size: 16px;
+      color: #e2e8f0;
+    }
+
+    #volumeSlider {
+      width: clamp(80px, 18vw, 140px);
+    }
+
+    .app-footer {
+      padding: 12px clamp(16px, 4vw, 48px) 18px;
+      font-size: 12px;
+      color: rgba(148, 163, 184, 0.6);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 960px) {
+      .viewer.mode-document .viewer-layout {
+        flex-direction: column;
+      }
+
+      .viewer.mode-document .document-view {
+        order: 2;
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .viewer.mode-document .video-pane {
+        order: 1;
+        flex: none;
+        height: 55vh;
+      }
+
+      .doc-wrapper {
+        max-width: 520px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1 id="caseTitle">Transcript Viewer</h1>
+      <p id="caseDetails"></p>
+    </header>
+    <main class="app-main">
+      <div class="viewer mode-subtitle" id="viewer">
+        <div class="viewer-layout">
+          <div class="video-pane">
+            <video id="mediaPlayer" preload="metadata" playsinline></video>
+            <div class="subtitle-view" id="subtitleView">
+              <div class="subtitle-line current" id="subtitleCurrent"></div>
+              <div class="subtitle-line next" id="subtitleNext"></div>
+              <div class="subtitle-line future" id="subtitleFuture"></div>
+            </div>
+          </div>
+          <div class="document-view" id="documentView">
+            <div class="doc-wrapper">
+              <div class="doc-page-indicator" id="docPageIndicator">Page 1</div>
+              <div class="doc-page-container" id="docPageContainer">
+                <div class="doc-empty">Transcript loading…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="toolbar" id="viewerToolbar">
+          <div class="toolbar-left">
+            <button type="button" class="toolbar-btn view-toggle active" data-view="subtitle">Subtitle View</button>
+            <button type="button" class="toolbar-btn view-toggle" data-view="document">Full Document View</button>
+          </div>
+          <div class="toolbar-center">
+            <button type="button" class="toolbar-btn control-btn" data-action="rewind" aria-label="Rewind 10 seconds">⏪ 10s</button>
+            <button type="button" class="toolbar-btn control-btn" data-action="play" aria-label="Play or pause">▶</button>
+            <button type="button" class="toolbar-btn control-btn" data-action="forward" aria-label="Fast forward 10 seconds">10s ⏩</button>
+            <div class="progress-group">
+              <span class="time-label" id="currentTime">00:00</span>
+              <input type="range" id="progressBar" min="0" max="100" step="0.1" value="0" />
+              <span class="time-label" id="totalDuration">00:00</span>
+            </div>
+          </div>
+          <div class="toolbar-right">
+            <span class="volume-icon" id="volumeIcon">🔊</span>
+            <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
+          </div>
+        </div>
+      </div>
+    </main>
+    <footer class="app-footer">
+      <p id="footerMeta"></p>
+    </footer>
+  </div>
+
+  <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
+  <script>
+    (function () {
+      const dataElement = document.getElementById('transcript-data');
+      let payload = {};
+      try {
+        payload = JSON.parse(dataElement.textContent || '{}');
+      } catch (err) {
+        console.error('Failed to parse transcript payload', err);
+      }
+      dataElement.remove();
+
+      const viewer = document.getElementById('viewer');
+      const video = document.getElementById('mediaPlayer');
+      const subtitleCurrent = document.getElementById('subtitleCurrent');
+      const subtitleNext = document.getElementById('subtitleNext');
+      const subtitleFuture = document.getElementById('subtitleFuture');
+      const subtitleView = document.getElementById('subtitleView');
+      const documentView = document.getElementById('documentView');
+      const docContainer = document.getElementById('docPageContainer');
+      const docIndicator = document.getElementById('docPageIndicator');
+      const toolbar = document.getElementById('viewerToolbar');
+      const viewButtons = Array.from(document.querySelectorAll('.view-toggle'));
+      const controlButtons = Array.from(document.querySelectorAll('.control-btn'));
+      const progressBar = document.getElementById('progressBar');
+      const currentTimeLabel = document.getElementById('currentTime');
+      const totalDurationLabel = document.getElementById('totalDuration');
+      const volumeSlider = document.getElementById('volumeSlider');
+      const volumeIcon = document.getElementById('volumeIcon');
+      const caseTitleEl = document.getElementById('caseTitle');
+      const caseDetailsEl = document.getElementById('caseDetails');
+      const footerMetaEl = document.getElementById('footerMeta');
+
+      const allLines = Array.isArray(payload.lines) ? payload.lines : [];
+      const allPages = Array.isArray(payload.pages) ? payload.pages : [];
+      const titleData = (payload.meta && payload.meta.title) || {};
+      const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
+      const speakerList = Array.isArray(payload.meta && payload.meta.speakers) ? payload.meta.speakers : [];
+
+      const defaultFileName = (payload.media && (payload.media.relative_path || payload.media.filename)) || 'media.mp4';
+      const mediaContentType = payload.media && payload.media.content_type;
+
+      const source = document.createElement('source');
+      source.src = defaultFileName;
+      if (mediaContentType) {
+        source.type = mediaContentType;
+      }
+      video.appendChild(source);
+      video.preload = 'metadata';
+      video.controls = false;
+      video.playsInline = true;
+
+      const displayCaseName = titleData.CASE_NAME || 'Transcript Viewer';
+      const displayDate = titleData.DATE || '';
+      const displayFile = titleData.FILE_NAME || defaultFileName;
+      const displayLocation = titleData.LOCATION || '';
+
+      caseTitleEl.textContent = displayCaseName.toUpperCase();
+      document.title = displayCaseName ? displayCaseName + ' — Transcript Viewer' : 'Transcript Viewer';
+
+      const detailsParts = [displayFile];
+      if (displayDate) detailsParts.push(displayDate);
+      if (displayLocation) detailsParts.push(displayLocation);
+      caseDetailsEl.textContent = detailsParts.filter(Boolean).join(' • ');
+
+      const footerParts = [];
+      if (speakerList.length) footerParts.push('Speakers: ' + speakerList.join(', '));
+      footerParts.push('Generated ' + new Date().toLocaleString());
+      footerMetaEl.textContent = footerParts.join('  |  ');
+
+      let toolbarTimeout = null;
+      let currentMode = 'subtitle';
+      let activeLineIndex = -1;
+      let activeLineElement = null;
+      let activePageElement = null;
+
+      const lineElements = new Map();
+      const pageElements = new Map();
+
+      function showToolbar(temporary) {
+        toolbar.classList.add('visible');
+        if (toolbarTimeout) {
+          clearTimeout(toolbarTimeout);
+        }
+        if (temporary !== false) {
+          toolbarTimeout = setTimeout(() => {
+            if (!toolbar.matches(':hover')) {
+              toolbar.classList.remove('visible');
+            }
+          }, 2600);
+        }
+      }
+
+      function updateVolumeIcon(volume) {
+        if (volume === 0) {
+          volumeIcon.textContent = '🔇';
+        } else if (volume < 0.5) {
+          volumeIcon.textContent = '🔉';
+        } else {
+          volumeIcon.textContent = '🔊';
+        }
+      }
+
+      function formatTime(seconds) {
+        if (!Number.isFinite(seconds)) {
+          return '00:00';
+        }
+        const totalSeconds = Math.max(0, Math.floor(seconds));
+        const h = Math.floor(totalSeconds / 3600);
+        const m = Math.floor((totalSeconds % 3600) / 60);
+        const s = totalSeconds % 60;
+        if (h > 0) {
+          return [h, m, s].map((val) => String(val).padStart(2, '0')).join(':');
+        }
+        return [m, s].map((val) => String(val).padStart(2, '0')).join(':');
+      }
+
+      function buildRenderedText(line) {
+        if (line && typeof line.rendered_text === 'string' && line.rendered_text.trim().length > 0) {
+          return line.rendered_text;
+        }
+        const speaker = line && line.speaker ? line.speaker.toUpperCase() : 'SPEAKER';
+        const text = line && line.text ? line.text : '';
+        return speaker + ':   ' + text;
+      }
+
+      function buildDocumentView() {
+        if (!allLines.length || !allPages.length) {
+          documentView.classList.add('empty');
+          docContainer.innerHTML = '<div class="doc-empty">Transcript unavailable</div>';
+          return;
+        }
+        documentView.classList.remove('empty');
+        docContainer.innerHTML = '';
+        lineElements.clear();
+        pageElements.clear();
+
+        allPages.forEach((page) => {
+          const pageNumber = page.page_number || 1;
+          const pageEl = document.createElement('div');
+          pageEl.className = 'doc-page';
+          pageEl.dataset.pageNumber = String(pageNumber);
+
+          const lineHolder = document.createElement('div');
+          lineHolder.className = 'doc-lines';
+
+          (page.line_indexes || []).forEach((index) => {
+            const line = allLines[index];
+            if (!line) return;
+            const row = document.createElement('div');
+            row.className = 'doc-line';
+            row.dataset.lineId = line.id;
+            row.dataset.index = String(index);
+
+            const numberSpan = document.createElement('span');
+            numberSpan.className = 'doc-line-number';
+            numberSpan.textContent = line.pgln != null ? String(line.pgln).padStart(3, '0') : '';
+
+            const textSpan = document.createElement('span');
+            textSpan.className = 'doc-line-text';
+            textSpan.textContent = buildRenderedText(line);
+
+            row.appendChild(numberSpan);
+            row.appendChild(textSpan);
+            lineHolder.appendChild(row);
+            lineElements.set(line.id, row);
+
+            row.addEventListener('click', () => {
+              if (typeof line.start === 'number') {
+                video.currentTime = Math.max(0, line.start - 0.05);
+                if (video.paused) {
+                  video.play().catch(() => {});
+                }
+              }
+            });
+          });
+
+          pageEl.appendChild(lineHolder);
+          docContainer.appendChild(pageEl);
+          pageElements.set(pageNumber, pageEl);
+        });
+      }
+
+      buildDocumentView();
+
+      function findActiveLine(time) {
+        if (!allLines.length) {
+          return -1;
+        }
+        for (let i = 0; i < allLines.length; i += 1) {
+          const line = allLines[i];
+          const start = Number(line.start) || 0;
+          const end = Number(line.end);
+          if (!Number.isFinite(end)) {
+            if (time >= start && i === allLines.length - 1) {
+              return i;
+            }
+            continue;
+          }
+          if (time < start) {
+            return Math.max(0, i - 1);
+          }
+          if (time >= start && time < end) {
+            return i;
+          }
+        }
+        return allLines.length - 1;
+      }
+
+      function updateSubtitleLines(index) {
+        if (!allLines.length || index < 0) {
+          subtitleCurrent.textContent = '';
+          subtitleNext.textContent = '';
+          subtitleFuture.textContent = '';
+          return;
+        }
+        const current = allLines[index];
+        const next = allLines[index + 1];
+        const future = allLines[index + 2];
+
+        subtitleCurrent.textContent = buildRenderedText(current);
+        subtitleNext.textContent = next ? buildRenderedText(next) : '';
+        subtitleFuture.textContent = future ? buildRenderedText(future) : '';
+      }
+
+      function setActivePage(pageNumber) {
+        if (!pageElements.size) {
+          return;
+        }
+        if (activePageElement) {
+          activePageElement.classList.remove('active');
+        }
+        const nextPage = pageElements.get(pageNumber) || Array.from(pageElements.values())[0];
+        if (nextPage) {
+          nextPage.classList.add('active');
+          activePageElement = nextPage;
+          docIndicator.textContent = 'Page ' + (pageNumber || 1);
+        }
+      }
+
+      function setActiveLine(lineId) {
+        if (activeLineElement) {
+          activeLineElement.classList.remove('current');
+        }
+        const el = lineElements.get(lineId);
+        if (el) {
+          el.classList.add('current');
+          activeLineElement = el;
+          if (currentMode === 'document') {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      }
+
+      function handleTimeUpdate() {
+        const currentTime = video.currentTime;
+        const duration = video.duration || durationSeconds || 0;
+        if (Number.isFinite(duration) && duration > 0) {
+          progressBar.disabled = false;
+          progressBar.value = String((currentTime / duration) * 100);
+          totalDurationLabel.textContent = formatTime(duration);
+        } else {
+          progressBar.disabled = true;
+        }
+        currentTimeLabel.textContent = formatTime(currentTime);
+
+        const index = findActiveLine(currentTime);
+        if (index !== activeLineIndex) {
+          activeLineIndex = index;
+          if (index >= 0) {
+            const line = allLines[index];
+            updateSubtitleLines(index);
+            setActiveLine(line.id);
+            setActivePage(line.page_number || 1);
+          } else {
+            updateSubtitleLines(-1);
+          }
+        }
+      }
+
+      function setMode(nextMode) {
+        if (nextMode === currentMode) {
+          return;
+        }
+        currentMode = nextMode;
+        viewer.classList.remove('mode-subtitle', 'mode-document');
+        viewer.classList.add('mode-' + currentMode);
+        viewButtons.forEach((btn) => {
+          btn.classList.toggle('active', btn.dataset.view === currentMode);
+        });
+        if (currentMode === 'document' && activeLineIndex >= 0) {
+          const line = allLines[activeLineIndex];
+          if (line) {
+            setActivePage(line.page_number || 1);
+            setActiveLine(line.id);
+          }
+        }
+        showToolbar(true);
+      }
+
+      viewButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = button.dataset.view === 'document' ? 'document' : 'subtitle';
+          setMode(target);
+        });
+      });
+
+      controlButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const action = button.dataset.action;
+          if (action === 'rewind') {
+            video.currentTime = Math.max(0, video.currentTime - 10);
+          } else if (action === 'forward') {
+            const duration = video.duration || durationSeconds || 0;
+            if (duration) {
+              video.currentTime = Math.min(duration, video.currentTime + 10);
+            }
+          } else if (action === 'play') {
+            if (video.paused) {
+              video.play().catch(() => {});
+            } else {
+              video.pause();
+            }
+          }
+          showToolbar(true);
+        });
+      });
+
+      progressBar.addEventListener('input', (event) => {
+        const duration = video.duration || durationSeconds || 0;
+        if (!duration) {
+          return;
+        }
+        const value = Number(event.target.value) || 0;
+        video.currentTime = (value / 100) * duration;
+      });
+
+      volumeSlider.addEventListener('input', () => {
+        const value = Number(volumeSlider.value);
+        video.volume = value;
+        updateVolumeIcon(value);
+      });
+      updateVolumeIcon(Number(volumeSlider.value));
+
+      video.addEventListener('play', () => {
+        controlButtons
+          .filter((btn) => btn.dataset.action === 'play')
+          .forEach((btn) => {
+            btn.textContent = '❚❚';
+          });
+        showToolbar(true);
+      });
+
+      video.addEventListener('pause', () => {
+        controlButtons
+          .filter((btn) => btn.dataset.action === 'play')
+          .forEach((btn) => {
+            btn.textContent = '▶';
+          });
+        showToolbar(false);
+      });
+
+      video.addEventListener('timeupdate', handleTimeUpdate);
+      video.addEventListener('seeked', handleTimeUpdate);
+      video.addEventListener('loadedmetadata', () => {
+        totalDurationLabel.textContent = formatTime(video.duration || durationSeconds || 0);
+        handleTimeUpdate();
+      });
+      video.addEventListener('ended', () => {
+        handleTimeUpdate();
+        showToolbar(false);
+      });
+
+      viewer.addEventListener('mousemove', () => showToolbar(true));
+      viewer.addEventListener('mouseenter', () => showToolbar(true));
+      toolbar.addEventListener('mouseenter', () => {
+        if (toolbarTimeout) {
+          clearTimeout(toolbarTimeout);
+        }
+        toolbar.classList.add('visible');
+      });
+      toolbar.addEventListener('mouseleave', () => {
+        showToolbar(true);
+      });
+
+      showToolbar(true);
+      handleTimeUpdate();
+    })();
+  </script>
+</body>
+</html>

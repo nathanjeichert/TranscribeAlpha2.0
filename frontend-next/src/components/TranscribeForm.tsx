@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import TranscriptEditor, { EditorSaveResponse, EditorSessionResponse } from '@/components/TranscriptEditor'
 import ClipCreator from '@/components/ClipCreator'
+import type { ViewerPayload } from '@/types/transcript'
 
 interface FormData {
   case_name: string
@@ -17,7 +18,8 @@ interface FormData {
 interface TranscriptResponse {
   transcript: string
   docx_base64: string
-  oncue_xml_base64: string
+  viewer_html_base64: string
+  viewer_payload?: ViewerPayload | null
   editor_session_id?: string
   media_blob_name?: string | null
   media_content_type?: string | null
@@ -55,7 +57,8 @@ export default function TranscribeForm() {
       session_id?: string | null
       editor_session_id?: string | null
       docx_base64?: string | null
-      oncue_xml_base64?: string | null
+      viewer_html_base64?: string | null
+      viewer_payload?: ViewerPayload | null
       transcript?: string | null
       media_blob_name?: string | null
       media_content_type?: string | null
@@ -67,7 +70,8 @@ export default function TranscribeForm() {
       setResult((prev) => ({
         transcript: raw.transcript ?? prev?.transcript ?? '',
         docx_base64: raw.docx_base64 ?? prev?.docx_base64 ?? '',
-        oncue_xml_base64: raw.oncue_xml_base64 ?? prev?.oncue_xml_base64 ?? '',
+        viewer_html_base64: raw.viewer_html_base64 ?? prev?.viewer_html_base64 ?? '',
+        viewer_payload: raw.viewer_payload ?? prev?.viewer_payload ?? null,
         editor_session_id: sessionIdValue ?? undefined,
         media_blob_name: raw.media_blob_name ?? prev?.media_blob_name,
         media_content_type: raw.media_content_type ?? prev?.media_content_type,
@@ -112,7 +116,8 @@ export default function TranscribeForm() {
           syncEditorSession({
             session_id: data.session_id,
             docx_base64: data.docx_base64 ?? undefined,
-            oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
+            viewer_html_base64: data.viewer_html_base64 ?? undefined,
+            viewer_payload: data.viewer_payload ?? undefined,
             transcript: data.transcript ?? undefined,
             media_blob_name: data.media_blob_name ?? undefined,
             media_content_type: data.media_content_type ?? undefined,
@@ -153,7 +158,8 @@ export default function TranscribeForm() {
         syncEditorSession({
           session_id: data.session_id,
           docx_base64: data.docx_base64 ?? undefined,
-          oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
+          viewer_html_base64: data.viewer_html_base64 ?? undefined,
+          viewer_payload: data.viewer_payload ?? undefined,
           transcript: data.transcript ?? undefined,
           media_blob_name: data.media_blob_name ?? undefined,
           media_content_type: data.media_content_type ?? undefined,
@@ -179,7 +185,8 @@ export default function TranscribeForm() {
       syncEditorSession({
         session_id: session.session_id,
         docx_base64: session.docx_base64 ?? undefined,
-        oncue_xml_base64: session.oncue_xml_base64 ?? undefined,
+        viewer_html_base64: session.viewer_html_base64 ?? undefined,
+        viewer_payload: session.viewer_payload ?? undefined,
         transcript: session.transcript ?? undefined,
         media_blob_name: session.media_blob_name ?? undefined,
         media_content_type: session.media_content_type ?? undefined,
@@ -261,7 +268,8 @@ export default function TranscribeForm() {
       syncEditorSession({
         session_id: data.editor_session_id ?? null,
         docx_base64: data.docx_base64,
-        oncue_xml_base64: data.oncue_xml_base64,
+        viewer_html_base64: data.viewer_html_base64,
+        viewer_payload: data.viewer_payload ?? null,
         transcript: data.transcript,
         media_blob_name: data.media_blob_name ?? undefined,
         media_content_type: data.media_content_type ?? undefined,
@@ -281,7 +289,13 @@ export default function TranscribeForm() {
   }
 
   const downloadFile = (base64Data: string, filename: string, mimeType: string) => {
-    const byteCharacters = atob(base64Data)
+    const safeData = (base64Data || '').trim()
+    if (!safeData) {
+      console.warn('No data available to download for', filename)
+      return
+    }
+
+    const byteCharacters = atob(safeData)
     const byteNumbers = new Array(byteCharacters.length)
     for (let i = 0; i < byteCharacters.length; i++) {
       byteNumbers[i] = byteCharacters.charCodeAt(i)
@@ -328,7 +342,8 @@ export default function TranscribeForm() {
     syncEditorSession({
       session_id: data.session_id,
       docx_base64: data.docx_base64 ?? undefined,
-      oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
+      viewer_html_base64: data.viewer_html_base64 ?? undefined,
+      viewer_payload: data.viewer_payload ?? undefined,
       transcript: data.transcript ?? undefined,
       media_blob_name: data.media_blob_name ?? undefined,
       media_content_type: data.media_content_type ?? undefined,
@@ -523,8 +538,8 @@ export default function TranscribeForm() {
                   </div>
                   <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
                     <div className="text-sm text-primary-700">
-                      Transcriptions are processed with <span className="font-medium">AssemblyAI</span> to provide
-                      millisecond-accurate word-level timestamps for OnCue synchronization.
+                      Transcriptions run on <span className="font-medium">AssemblyAI</span>, delivering millisecond-accurate
+                      timestamps for the dual-mode HTML transcript viewer.
                     </div>
                   </div>
                 </div>
@@ -616,11 +631,15 @@ export default function TranscribeForm() {
                       </button>
                       <button
                         onClick={() =>
-                          downloadFile(result.oncue_xml_base64, generateFilename('transcript', '.xml'), 'application/xml')
+                          downloadFile(
+                            result.viewer_html_base64,
+                            generateFilename('transcript-viewer', '.html'),
+                            'text/html',
+                          )
                         }
                         className="btn-primary text-center py-3"
                       >
-                        📋 Download OnCue XML
+                        💻 Download HTML Viewer
                       </button>
                     </div>
                     <div className="flex justify-between items-center">
@@ -658,7 +677,8 @@ export default function TranscribeForm() {
             mediaUrl={mediaPreviewUrl || undefined}
             mediaType={mediaContentType ?? selectedFile?.type}
             docxBase64={result?.docx_base64}
-            xmlBase64={result?.oncue_xml_base64}
+            viewerHtmlBase64={result?.viewer_html_base64}
+            viewerPayload={result?.viewer_payload ?? undefined}
             onDownload={downloadFile}
             buildFilename={generateFilename}
             onSessionChange={handleSessionChange}
@@ -675,6 +695,7 @@ export default function TranscribeForm() {
             onSessionRefresh={handleSessionChange}
             onDownload={downloadFile}
             buildFilename={generateFilename}
+            viewerPayload={sessionDetails?.viewer_payload}
           />
         )}
       </div>

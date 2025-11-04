@@ -29,3 +29,4 @@ uvicorn backend.server:app --reload
 
 The backend relies on the [AssemblyAI Python SDK](https://github.com/AssemblyAI/assemblyai-python-sdk) for transcription and formatting.
 - Transcriptions run on AssemblyAI's `slam-1` model to take advantage of its speaker-and-language-aware accuracy.
+- Every transcript export now includes a standalone HTML viewer with subtitle and full-document modes. Download it from the Transcription or Editor tabs and place the HTML file next to the related media file to launch an offline-ready playback experience.

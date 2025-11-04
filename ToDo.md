@@ -22,19 +22,19 @@ This file provides a list, sorted by category and not in any particular order, o
 
 ### Changes to Core Transcribing Functionality
 - Remove need for Gemini vs AssemblyAI comparison (AssemblyAI is the sole engine)
-- Improve OnCue transcript formatting
+- Polish HTML viewer transcript formatting
 - ~~Delete option to enter number of lines per page~~
-  - **COMPLETED**: Backend uses fixed 25 lines per page for OnCue XML
+  - **COMPLETED**: Backend uses fixed 25 lines per page for viewer + DOCX layout
   - Frontend control removed to avoid user confusion
 ### Logistics, Deployment, Etc.
 - Setup login system w/api key management, etc. 
 - Figure out cost tracking
 
 ## Transcript Editor
-- Create a transcript editor for both synced and unsynced transcripts, or else integrate with external editor and allow re-importing/re-syncing of oncue transcripts
+- Create a transcript editor for both synced and unsynced transcripts, or else integrate with external editor and allow re-importing/re-syncing of viewer JSON transcripts
 
 ## Sync Mode
-- Create sync mode using forced allignment to produce OnCue transcripts from human-generated pdfs/docx. Ensure persistent formatting accross different styles, line numbering schema
+- Create sync mode using forced alignment to produce viewer-ready transcripts from human-edited pdfs/docx. Ensure persistent formatting across different styles, line numbering schema
 
 ## FFMPEG Clip Creator
 - Features:

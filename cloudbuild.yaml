@@ -13,7 +13,7 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'transcribealpha-assemblyai'
+      - '${_SERVICE_NAME}'
       - '--image'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA'
       - '--region'
@@ -40,6 +40,7 @@ images:
 # Substitution variables (set these in Cloud Build trigger)
 substitutions:
   _ASSEMBLYAI_API_KEY: 'your-assemblyai-key-here'
+  _SERVICE_NAME: 'transcribealpha-assemblyai'
 
 # Build options
 options:

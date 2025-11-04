@@ -1,7 +1,8 @@
 'use client'
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorSessionResponse, ClipSummary } from '@/components/TranscriptEditor'
+import type { ViewerPayload } from '@/types/transcript'
 
 interface ClipCreatorProps {
   session: EditorSessionResponse | null
@@ -11,6 +12,7 @@ interface ClipCreatorProps {
   onSessionRefresh: (session: EditorSessionResponse) => void
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
+  viewerPayload?: ViewerPayload | null
 }
 
 interface ClipLineEntry {
@@ -39,7 +41,8 @@ interface ClipDetailResponse {
   end_page?: number | null
   end_line_number?: number | null
   docx_base64: string
-  oncue_xml_base64: string
+  viewer_html_base64: string
+  viewer_payload?: ViewerPayload | null
   transcript: string
   lines: ClipLineEntry[]
   title_data: Record<string, string>
@@ -121,9 +124,20 @@ export default function ClipCreator({
   onSessionRefresh,
   onDownload,
   buildFilename,
+  viewerPayload,
 }: ClipCreatorProps) {
   const lines = useMemo<EditorLine[]>(() => session?.lines ?? [], [session])
   const clipHistory = useMemo<ClipSummary[]>(() => session?.clips ?? [], [session])
+  const sessionViewerPayload = useMemo<ViewerPayload | null>(
+    () => viewerPayload ?? session?.viewer_payload ?? null,
+    [viewerPayload, session],
+  )
+  const sessionViewerLinesPerPage =
+    (sessionViewerPayload?.meta?.lines_per_page ?? session?.lines_per_page ?? 25) || 25
+  const sessionViewerLineCount = sessionViewerPayload?.lines?.length ?? lines.length
+  const sessionViewerPageCount =
+    sessionViewerPayload?.pages?.length ??
+    (sessionViewerLinesPerPage > 0 ? Math.ceil(sessionViewerLineCount / sessionViewerLinesPerPage) : 0)
 
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('time')
   const [timeStart, setTimeStart] = useState('')
@@ -142,12 +156,13 @@ export default function ClipCreator({
   const [activeClip, setActiveClip] = useState<ClipDetailResponse | null>(null)
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null)
   const [previewing, setPreviewing] = useState(false)
-  const [importXmlFile, setImportXmlFile] = useState<File | null>(null)
-  const [importMediaFile, setImportMediaFile] = useState<File | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [importError, setImportError] = useState<string | null>(null)
-  const [importMessage, setImportMessage] = useState<string | null>(null)
-  const [importResetKey, setImportResetKey] = useState(0)
+  const activeViewerPayload = activeClip?.viewer_payload ?? null
+  const activeViewerLineCount = activeViewerPayload?.lines?.length ?? activeClip?.lines?.length ?? 0
+  const activeViewerPageCount =
+    activeViewerPayload?.pages?.length ??
+    (activeClip?.lines_per_page && activeClip.lines_per_page > 0
+      ? Math.ceil(activeViewerLineCount / activeClip.lines_per_page)
+      : 0)
 
   const effectiveMediaUrl = useMemo(() => {
     if (mediaUrl && mediaUrl.trim()) {
@@ -425,12 +440,12 @@ export default function ClipCreator({
     [buildFilename, fetchClipDetail, onDownload],
   )
 
-  const handleDownloadXml = useCallback(
+  const handleDownloadViewer = useCallback(
     async (clipId: string) => {
       const detail = await fetchClipDetail(clipId)
       if (!detail) return
-      const filename = buildFilename(detail.name.replace(/\s+/g, '-').toLowerCase(), '.xml')
-      onDownload(detail.oncue_xml_base64, filename, 'application/xml')
+      const filename = buildFilename(detail.name.replace(/\s+/g, '-').toLowerCase(), '.html')
+      onDownload(detail.viewer_html_base64, filename, 'text/html')
     },
     [buildFilename, fetchClipDetail, onDownload],
   )
@@ -504,47 +519,6 @@ export default function ClipCreator({
       setIsSubmitting(false)
     }
   }, [clipName, lines, onSessionRefresh, selectedRange, selectionMode, session, sessionId])
-
-  const handleImportTranscript = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault()
-      if (!importXmlFile) {
-        setImportError('Select an OnCue XML file to import.')
-        return
-      }
-      setImporting(true)
-      setImportError(null)
-      setImportMessage(null)
-      try {
-        const formData = new FormData()
-        formData.append('xml_file', importXmlFile)
-        if (importMediaFile) {
-          formData.append('media_file', importMediaFile)
-        }
-
-        const response = await fetch('/api/transcripts/import', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to import transcript')
-        }
-        const data: EditorSessionResponse = await response.json()
-        onSessionRefresh(data)
-        setImportMessage('Transcript imported successfully. Clip builder is ready.')
-        setImportXmlFile(null)
-        setImportMediaFile(null)
-        setImportResetKey((value) => value + 1)
-      } catch (err: any) {
-        const message = typeof err?.message === 'string' ? err.message : 'Failed to import transcript'
-        setImportError(message)
-      } finally {
-        setImporting(false)
-      }
-    },
-    [importXmlFile, importMediaFile, onSessionRefresh],
-  )
 
   const renderLineRow = (line: EditorLine, index: number) => {
     const isSelected =
@@ -622,9 +596,9 @@ export default function ClipCreator({
             <button
               type="button"
               className="btn-outline text-xs"
-              onClick={() => handleDownloadXml(summary.clip_id)}
+              onClick={() => handleDownloadViewer(summary.clip_id)}
             >
-              XML
+              HTML Viewer
             </button>
             {summary.media_blob_name && (
               <a
@@ -647,60 +621,13 @@ export default function ClipCreator({
 
   return (
     <div className="space-y-8">
-      <div className="card">
-        <div className="card-header">
-          <h2 className="text-xl font-medium">Import Transcript</h2>
-        </div>
-        <div className="card-body space-y-4">
-          <p className="text-sm text-primary-700">
-            Bring an existing OnCue XML transcript into the clip builder. Optionally include the corresponding media file
-            for preview and clip exports.
-          </p>
-          {importError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importError}</div>
-          )}
-          {importMessage && (
-            <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{importMessage}</div>
-          )}
-          <form className="grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={handleImportTranscript}>
-            <div className="space-y-2">
-              <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">OnCue XML *</label>
-              <input
-                key={`import-xml-${importResetKey}`}
-                type="file"
-                accept=".xml"
-                onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
-                className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
-              />
-              <p className="text-xs text-primary-500">Select the transcript exported from OnCue.</p>
-            </div>
-            <div className="space-y-2">
-              <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media (optional)</label>
-              <input
-                key={`import-media-${importResetKey}`}
-                type="file"
-                accept="audio/*,video/*"
-                onChange={(event) => setImportMediaFile(event.target.files?.[0] ?? null)}
-                className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
-              />
-              <p className="text-xs text-primary-500">Include matching video or audio to enable preview playback.</p>
-            </div>
-            <div className="md:col-span-2">
-              <button type="submit" className="btn-outline w-full md:w-auto" disabled={importing}>
-                {importing ? 'Importing…' : 'Import transcript'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
       {!hasSession ? (
         <div className="card">
           <div className="card-header">
             <h2 className="text-xl font-medium">Clip Creator</h2>
           </div>
           <div className="card-body space-y-3 text-primary-700">
-            <p>Import a transcript above or generate one from the Transcription tab to start building clips.</p>
+            <p>Generate a transcript from the Transcription tab to start building clips.</p>
           </div>
         </div>
       ) : !hasLines ? (
@@ -710,8 +637,8 @@ export default function ClipCreator({
           </div>
           <div className="card-body space-y-3 text-primary-700">
             <p>
-              This session does not have any transcript lines yet. Complete the transcription or import process before
-              generating clips.
+              This session does not have any transcript lines yet. Complete the transcription process before generating
+              clips.
             </p>
           </div>
         </div>
@@ -722,6 +649,15 @@ export default function ClipCreator({
               <h2 className="text-xl font-medium">Build a Clip</h2>
             </div>
             <div className="card-body space-y-6">
+              {sessionViewerLineCount > 0 && (
+                <div className="rounded-lg border border-primary-200 bg-primary-50 p-4 text-sm text-primary-700">
+                  <p className="font-semibold text-primary-900">HTML Viewer Ready</p>
+                  <p>
+                    {sessionViewerLineCount} line{sessionViewerLineCount === 1 ? '' : 's'} across {sessionViewerPageCount}{' '}
+                    page{sessionViewerPageCount === 1 ? '' : 's'}. Subtitle and document modes stay in sync with your clips.
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   {cardSectionTitle('Clip name')}
@@ -888,10 +824,16 @@ export default function ClipCreator({
               <div className="card-body space-y-4">
                 <div>
                   <div className="text-lg font-semibold text-primary-900">{activeClip.name}</div>
-                  <div className="text-sm text-primary-600">
-                    {formatSeconds(activeClip.duration)} • Source {formatSeconds(activeClip.start_time)} – {formatSeconds(activeClip.end_time)}
-                  </div>
+                <div className="text-sm text-primary-600">
+                  {formatSeconds(activeClip.duration)} • Source {formatSeconds(activeClip.start_time)} – {formatSeconds(activeClip.end_time)}
                 </div>
+                {activeViewerLineCount > 0 && (
+                  <div className="text-xs text-primary-500">
+                    Viewer coverage: {activeViewerLineCount} line{activeViewerLineCount === 1 ? '' : 's'} • {activeViewerPageCount}{' '}
+                    page{activeViewerPageCount === 1 ? '' : 's'}
+                  </div>
+                )}
+              </div>
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="button"
@@ -906,20 +848,23 @@ export default function ClipCreator({
                   >
                     Download DOCX
                   </button>
-                  <button
-                    type="button"
-                    className="btn-primary text-sm"
-                    onClick={() =>
-                      onDownload(
-                        activeClip.oncue_xml_base64,
-                        buildFilename(activeClip.name.replace(/\s+/g, '-').toLowerCase(), '.xml'),
-                        'application/xml',
-                      )
-                    }
-                  >
-                    Download XML
-                  </button>
-                  {activeClip.media_blob_name && (
+                <button
+                  type="button"
+                  className="btn-primary text-sm"
+                  onClick={() =>
+                    onDownload(
+                      activeClip.viewer_html_base64,
+                      buildFilename(activeClip.name.replace(/\s+/g, '-').toLowerCase(), '.html'),
+                      'text/html',
+                    )
+                  }
+                >
+                  Download HTML Viewer
+                </button>
+                <p className="text-xs text-primary-500">
+                  Store the HTML file with the exported clip media to replay subtitles and transcript offline.
+                </p>
+                {activeClip.media_blob_name && (
                     <a
                       href={`/api/media/${activeClip.media_blob_name}`}
                       className="btn-outline text-sm"
