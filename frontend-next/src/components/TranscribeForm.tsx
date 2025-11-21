@@ -47,6 +47,9 @@ export default function TranscribeForm() {
   const [mediaContentType, setMediaContentType] = useState<string | undefined>(undefined)
   const [mediaIsLocal, setMediaIsLocal] = useState(false)
   const [sessionDetails, setSessionDetails] = useState<EditorSessionResponse | null>(null)
+  const [geminiBusy, setGeminiBusy] = useState(false)
+  const [geminiError, setGeminiError] = useState<string | null>(null)
+  const [useGeminiPolish, setUseGeminiPolish] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -271,6 +274,10 @@ export default function TranscribeForm() {
         setMediaContentType(data.media_content_type ?? undefined)
       }
       setProgress(100)
+
+      if (useGeminiPolish && (data.editor_session_id ?? editorSessionId)) {
+        await handleGeminiRefine()
+      }
     } catch (err: any) {
       console.error('Transcription error:', err)
       setError(err.message || 'Transcription failed')
@@ -336,6 +343,31 @@ export default function TranscribeForm() {
     })
   }
 
+  const handleGeminiRefine = useCallback(async () => {
+    if (!editorSessionId) {
+      setGeminiError('No transcript session available for Gemini.')
+      return
+    }
+    setGeminiBusy(true)
+    setGeminiError(null)
+    try {
+      const response = await fetch(`/api/transcripts/${editorSessionId}/gemini-refine`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Gemini refinement failed')
+      }
+      const data: EditorSessionResponse = await response.json()
+      handleSessionChange(data)
+      setActiveTab('editor')
+    } catch (err: any) {
+      setGeminiError(err.message || 'Gemini refinement failed')
+    } finally {
+      setGeminiBusy(false)
+    }
+  }, [editorSessionId, handleSessionChange])
+
   const tabClasses = (tab: AppTab) =>
     `px-4 py-2 rounded-lg font-medium transition ${
       activeTab === tab
@@ -381,6 +413,27 @@ export default function TranscribeForm() {
 
         {activeTab === 'transcribe' && (
           <div className="space-y-8">
+            {editorSessionId && (
+              <div className="card border border-amber-300 bg-amber-50/50">
+                <div className="card-body flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">Experimental: Gemini Polish</p>
+                    <p className="text-xs text-amber-800">
+                      Refine the current transcript using Gemini 3.0 Pro Preview to correct words, punctuation, speakers, and timing.
+                    </p>
+                    {geminiError && <p className="text-xs text-red-700 mt-1">{geminiError}</p>}
+                  </div>
+                  <button
+                    className="rounded-lg border-2 border-amber-400 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900 shadow-sm hover:bg-amber-200 disabled:opacity-60"
+                    onClick={handleGeminiRefine}
+                    disabled={geminiBusy}
+                  >
+                    {geminiBusy ? 'Running Gemini...' : 'Run Gemini Polish'}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="space-y-8">
               <div className="card">
                 <div className="card-header">
@@ -495,6 +548,18 @@ export default function TranscribeForm() {
                         className="input-field"
                         placeholder="e.g., Conference Room A, 123 Main St, City, State"
                       />
+                    </div>
+                    <div className="md:col-span-2 flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+                      <input
+                        id="useGeminiPolish"
+                        type="checkbox"
+                        checked={useGeminiPolish}
+                        onChange={(event) => setUseGeminiPolish(event.target.checked)}
+                        className="h-4 w-4 accent-amber-500"
+                      />
+                      <label htmlFor="useGeminiPolish" className="text-sm text-amber-900">
+                        Experimental: Run Gemini 3.0 Pro Preview after transcription to polish wording, speakers, and timing.
+                      </label>
                     </div>
                   </div>
                 </div>

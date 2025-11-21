@@ -43,6 +43,8 @@ try:
         WordTimestamp,
         create_docx,
         ffmpeg_executable_path,
+        convert_video_to_audio,
+        get_media_duration,
     )
 except ImportError:
     try:
@@ -55,6 +57,8 @@ except ImportError:
             WordTimestamp,
             create_docx,
             ffmpeg_executable_path,
+            convert_video_to_audio,
+            get_media_duration,
         )
     except ImportError:
         import transcriber
@@ -746,6 +750,137 @@ def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
         "audio_duration": duration_seconds,
     }
 
+
+def prepare_audio_for_gemini(blob_name: str, content_type: Optional[str]) -> Tuple[str, str, float, str]:
+    """Download media, convert to audio if needed, and return (audio_path, mime_type, duration, original_path)."""
+    media_path, detected_type = download_blob_to_path(blob_name)
+    audio_path = media_path
+    audio_mime = detected_type or content_type or "application/octet-stream"
+
+    if audio_mime.startswith("video"):
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        temp_audio.close()
+        converted = convert_video_to_audio(media_path, temp_audio.name)
+        if converted:
+            audio_path = converted
+            audio_mime = "audio/mp3"
+        else:
+            audio_path = media_path
+            audio_mime = "audio/mp3"
+    elif not audio_mime.startswith("audio"):
+        audio_mime = "audio/mp3"
+
+    duration_seconds = get_media_duration(audio_path) or 0.0
+    return audio_path, audio_mime, duration_seconds, media_path
+
+
+def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hint: float) -> List[dict]:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+
+    try:
+        import google.generativeai as genai
+    except Exception as exc:
+        logger.error("google-generativeai not available: %s", exc)
+        raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
+
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.0-pro-preview")
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+    except Exception as exc:
+        logger.error("Failed to initialize Gemini client: %s", exc)
+        raise HTTPException(status_code=500, detail="Unable to initialize Gemini client") from exc
+
+    instructions = (
+        "You are improving an OnCue-style legal transcript. "
+        "Use the provided XML transcript and the audio to correct wording, punctuation, casing, and speaker labels. "
+        "Return ONLY a JSON array of objects with fields: speaker (uppercase string), text (string), start (float seconds), end (float seconds). "
+        "Preserve line order, keep timestamps close to the originals but adjust slightly if needed, ensure start < end and entries are non-overlapping and chronological. "
+        "Do not include any extra keys or wrapping text."
+    )
+
+    try:
+        uploaded = genai.upload_file(path=audio_path, mime_type=audio_mime)
+    except Exception as exc:
+        logger.error("Failed to upload media to Gemini: %s", exc)
+        raise HTTPException(status_code=502, detail="Uploading media to Gemini failed") from exc
+
+    try:
+        response = model.generate_content(
+            [
+                instructions,
+                f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}",
+                uploaded,
+            ],
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.15,
+                response_mime_type="application/json",
+            ),
+            request_options={"timeout": 600},
+        )
+    except Exception as exc:
+        logger.error("Gemini generation failed: %s", exc)
+        try:
+            genai.delete_file(uploaded.name)
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail="Gemini transcript refinement failed") from exc
+
+    try:
+        genai.delete_file(uploaded.name)
+    except Exception:
+        pass
+
+    raw_text = getattr(response, "text", None)
+    if not raw_text and getattr(response, "candidates", None):
+        try:
+            raw_text = response.candidates[0].content.parts[0].text
+        except Exception:
+            raw_text = None
+
+    if not raw_text:
+        logger.error("Gemini response missing text payload")
+        raise HTTPException(status_code=502, detail="Gemini returned an empty response")
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        logger.error("Failed to parse Gemini JSON: %s", exc)
+        raise HTTPException(status_code=502, detail="Gemini returned invalid JSON") from exc
+
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=502, detail="Gemini response must be a list of line objects")
+
+    normalized = []
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            continue
+        speaker = str(item.get("speaker", "")).strip() or f"SPEAKER {idx + 1}"
+        text = str(item.get("text", "")).strip()
+        try:
+            start_val = float(item.get("start", 0.0))
+            end_val = float(item.get("end", start_val))
+        except (TypeError, ValueError):
+            start_val = 0.0
+            end_val = start_val
+        normalized.append(
+            {
+                "id": item.get("id") or f"gem-{idx}",
+                "speaker": speaker.upper(),
+                "text": text,
+                "start": max(start_val, 0.0),
+                "end": max(end_val, start_val),
+                "is_continuation": False,
+            }
+        )
+
+    if not normalized:
+        raise HTTPException(status_code=502, detail="Gemini did not return any transcript lines")
+
+    return normalized
+
 def create_cache_key(
     file_bytes: bytes,
     speaker_list: Optional[List[str]],
@@ -862,6 +997,22 @@ def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, conte
     except Exception as e:
         logger.error(f"Error uploading preview file to Cloud Storage: {_format_gcs_error(e)}")
         raise
+
+
+def download_blob_to_path(blob_name: str) -> Tuple[str, Optional[str]]:
+    """Download a blob to a temporary file and return the path and content type."""
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(blob_name)
+    if not blob.exists():
+        raise HTTPException(status_code=404, detail="Media blob not found")
+
+    data = blob.download_as_bytes()
+    suffix = mimetypes.guess_extension(blob.content_type or "") or ".bin"
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp_file.write(data)
+    temp_file.flush()
+    temp_file.close()
+    return temp_file.name, blob.content_type
 
 
 def upload_clip_file_to_cloud_storage(file_bytes: bytes, filename: str, content_type: Optional[str]) -> str:
@@ -1158,6 +1309,82 @@ async def get_latest_editor_session():
     if not session_data:
         raise HTTPException(status_code=404, detail="No editor sessions available")
     return JSONResponse(build_session_response(session_data))
+
+
+@app.post("/api/transcripts/{session_id}/gemini-refine")
+async def gemini_refine_transcript(session_id: str):
+    session_data = load_editor_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Editor session not found")
+    if session_is_expired(session_data):
+        delete_editor_session(session_id)
+        raise HTTPException(status_code=404, detail="Editor session expired")
+
+    media_blob_name = session_data.get("media_blob_name")
+    if not media_blob_name:
+        raise HTTPException(status_code=400, detail="This session has no media attached for Gemini refinement")
+
+    xml_b64 = session_data.get("oncue_xml_base64")
+    if not xml_b64:
+        raise HTTPException(status_code=400, detail="OnCue XML is missing for this session")
+
+    try:
+        xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Unable to decode the session XML")
+
+    audio_path = None
+    media_path = None
+    try:
+        audio_path, audio_mime, duration_seconds, media_path = prepare_audio_for_gemini(
+            media_blob_name, session_data.get("media_content_type")
+        )
+        duration_hint = duration_seconds or float(session_data.get("audio_duration") or 0)
+        gemini_lines = run_gemini_edit(xml_text, audio_path, audio_mime, duration_hint)
+
+        normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_hint)
+        turns = construct_turns_from_lines(normalized_lines)
+        if not turns:
+            raise HTTPException(status_code=400, detail="Gemini refinement returned no usable turns")
+
+        lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+        title_data = session_data.get("title_data") or {}
+
+        docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
+            turns,
+            title_data,
+            normalized_duration,
+            lines_per_page,
+        )
+
+        docx_b64 = base64.b64encode(docx_bytes).decode()
+        oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+
+        hours, rem = divmod(normalized_duration, 3600)
+        minutes, seconds = divmod(rem, 60)
+        title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+        updated_at = datetime.now(timezone.utc)
+        session_data["turns"] = serialize_transcript_turns(turns)
+        session_data["lines"] = updated_lines_payload
+        session_data["title_data"] = title_data
+        session_data["audio_duration"] = normalized_duration
+        session_data["docx_base64"] = docx_b64
+        session_data["oncue_xml_base64"] = oncue_b64
+        session_data["transcript_text"] = transcript_text
+        session_data["updated_at"] = updated_at.isoformat()
+        session_data["expires_at"] = (updated_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
+
+        save_editor_session(session_id, session_data)
+
+        return JSONResponse(build_session_response(session_data))
+    finally:
+        for path in (audio_path, media_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
 
 @app.post("/api/clips")
