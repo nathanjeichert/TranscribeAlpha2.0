@@ -120,7 +120,20 @@ def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
 def snapshot_media_key(session_data: dict) -> str:
     title_data = session_data.get("title_data") or {}
     xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
-    key = session_data.get("media_blob_name") or xml_filename or session_data.get("session_id") or "unknown"
+
+    media_id_from_xml = None
+    xml_b64 = session_data.get("oncue_xml_base64")
+    if xml_b64:
+        try:
+            xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
+            root = ET.fromstring(xml_text)
+            deposition = root.find(".//deposition")
+            if deposition is not None:
+                media_id_from_xml = deposition.get("mediaId") or deposition.get("mediaID")
+        except Exception:
+            media_id_from_xml = None
+
+    key = session_data.get("media_blob_name") or media_id_from_xml or xml_filename or session_data.get("session_id") or "unknown"
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
     return safe
 
