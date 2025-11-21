@@ -557,9 +557,6 @@ export default function TranscriptEditor({
                     Rename Speaker
                   </button>
                 </form>
-                <p className="text-[11px] text-primary-500">
-                  After renaming, click Save Changes to regenerate the DOCX and XML downloads.
-                </p>
               </div>
 
               {effectiveMediaUrl ? (
