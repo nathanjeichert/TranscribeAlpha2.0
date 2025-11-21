@@ -147,145 +147,123 @@ export default function TranscriptEditor({
     [effectiveMediaType],
   )
 
+
+
   const lineBoundaries = useMemo(
     () =>
       lines.map((line) => ({
         id: line.id,
-
-        const effectiveMediaUrl = useMemo(() => {
-          if (localMediaPreviewUrl) return localMediaPreviewUrl
-          if (mediaUrl) return mediaUrl
-          if (sessionMeta?.media_blob_name) {
-            return `/api/media/${sessionMeta.media_blob_name}`
-          }
-          return undefined
-        }, [localMediaPreviewUrl, mediaUrl, sessionMeta])
-
-  const effectiveMediaType = useMemo(
-          () => localMediaType ?? mediaType ?? sessionMeta?.media_content_type ?? undefined,
-          [localMediaType, mediaType, sessionMeta],
-        )
-
-  const isVideo = useMemo(
-          () => (effectiveMediaType ?? '').startsWith('video/'),
-          [effectiveMediaType],
-        )
-
-  const lineBoundaries = useMemo(
-          () =>
-            lines.map((line) => ({
-              id: line.id,
-              start: line.start,
-              end: line.end > line.start ? line.end : line.start + 0.05,
-            })),
-          [lines],
-        )
+        start: line.start,
+        end: line.end > line.start ? line.end : line.start + 0.05,
+      })),
+    [lines],
+  )
 
   const fetchSession = useCallback(
-          async (id?: string | null) => {
-            setLoading(true)
-            setError(null)
-            try {
-              const endpoint = id ? `/api/transcripts/${id}` : '/api/transcripts/latest'
-              const response = await fetch(endpoint)
-              if (!response.ok) {
-                // Session expired or not found - attempt recovery if we have a media ID
-                if (response.status === 404) {
-                  const lastMediaId = localStorage.getItem('last_active_media_id')
-                  if (lastMediaId) {
-                    console.log('Session expired, attempting recovery for media:', lastMediaId)
-                    try {
-                      // 1. List snapshots for this media
-                      const snapResponse = await fetch(`/api/snapshots/${encodeURIComponent(lastMediaId)}`)
-                      if (snapResponse.ok) {
-                        const snapData = await snapResponse.json()
-                        const snapshots = snapData.snapshots || []
-                        if (snapshots.length > 0) {
-                          // 2. Get the latest snapshot
-                          const latestSnap = snapshots[0]
-                          const restoreResponse = await fetch(`/api/snapshots/${encodeURIComponent(lastMediaId)}/${latestSnap.snapshot_id}`)
-                          if (restoreResponse.ok) {
-                            const restoreData = await restoreResponse.json()
+    async (id?: string | null) => {
+      setLoading(true)
+      setError(null)
+      try {
+        const endpoint = id ? `/api/transcripts/${id}` : '/api/transcripts/latest'
+        const response = await fetch(endpoint)
+        if (!response.ok) {
+          // Session expired or not found - attempt recovery if we have a media ID
+          if (response.status === 404) {
+            const lastMediaId = localStorage.getItem('last_active_media_id')
+            if (lastMediaId) {
+              console.log('Session expired, attempting recovery for media:', lastMediaId)
+              try {
+                // 1. List snapshots for this media
+                const snapResponse = await fetch(`/api/snapshots/${encodeURIComponent(lastMediaId)}`)
+                if (snapResponse.ok) {
+                  const snapData = await snapResponse.json()
+                  const snapshots = snapData.snapshots || []
+                  if (snapshots.length > 0) {
+                    // 2. Get the latest snapshot
+                    const latestSnap = snapshots[0]
+                    const restoreResponse = await fetch(`/api/snapshots/${encodeURIComponent(lastMediaId)}/${latestSnap.snapshot_id}`)
+                    if (restoreResponse.ok) {
+                      const restoreData = await restoreResponse.json()
 
-                            // 3. Create new session from snapshot data
-                            const createResponse = await fetch('/api/transcripts/create', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({
-                                lines: restoreData.lines,
-                                title_data: restoreData.title_data,
-                                media_blob_name: restoreData.media_blob_name, // Might be null in snapshot, but that's ok
-                                media_content_type: restoreData.media_content_type,
-                                audio_duration: restoreData.audio_duration,
-                                lines_per_page: restoreData.lines_per_page
-                              })
-                            })
+                      // 3. Create new session from snapshot data
+                      const createResponse = await fetch('/api/transcripts/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          lines: restoreData.lines,
+                          title_data: restoreData.title_data,
+                          media_blob_name: restoreData.media_blob_name, // Might be null in snapshot, but that's ok
+                          media_content_type: restoreData.media_content_type,
+                          audio_duration: restoreData.audio_duration,
+                          lines_per_page: restoreData.lines_per_page
+                        })
+                      })
 
-                            if (createResponse.ok) {
-                              const newSession = await createResponse.json()
-                              setSessionMeta(newSession)
-                              setLines(newSession.lines || [])
-                              setHistory([])
-                              setFuture([])
-                              setIsDirty(false)
-                              setActiveSessionId(newSession.session_id)
-                              lastFetchedId.current = newSession.session_id
-                              onSessionChange(newSession)
-                              setError('Session expired. Restored from latest autosave.')
-                              return
-                            }
-                          }
-                        }
+                      if (createResponse.ok) {
+                        const newSession = await createResponse.json()
+                        setSessionMeta(newSession)
+                        setLines(newSession.lines || [])
+                        setHistory([])
+                        setFuture([])
+                        setIsDirty(false)
+                        setActiveSessionId(newSession.session_id)
+                        lastFetchedId.current = newSession.session_id
+                        onSessionChange(newSession)
+                        setError('Session expired. Restored from latest autosave.')
+                        return
                       }
-                    } catch (recErr) {
-                      console.error('Recovery failed', recErr)
                     }
                   }
-                  // If no mediaId or recovery failed, and it was a 404 for a non-specific ID,
-                  // then treat it as no session found.
-                  if (!id) {
-                    setSessionMeta(null)
-                    setLines([])
-                    return
-                  }
                 }
-
-                const detail = await response.json().catch(() => ({}))
-                throw new Error(detail?.detail || 'Failed to load transcript session')
+              } catch (recErr) {
+                console.error('Recovery failed', recErr)
               }
-              const data: EditorSessionResponse = await response.json()
-              setSessionMeta(data)
-              setLines(data.lines || [])
-
-              // Persist MEDIA_ID for recovery
-              const mediaId = data.title_data?.MEDIA_ID
-              if (mediaId) {
-                localStorage.setItem('last_active_media_id', mediaId)
-              }
-
-              setHistory([])
-              setFuture([])
-              setIsDirty(false)
-              setActiveLineId(null)
-              setSelectedLineId(null)
-              setEditingField(null)
-              activeLineMarker.current = null
-              onSessionChange(data)
-
-              if (!id && data.session_id) {
-                lastFetchedId.current = data.session_id
-                setActiveSessionId(data.session_id)
-              } else {
-                lastFetchedId.current = id ?? undefined
-              }
-            } catch (err: any) {
-              setError(err.message || 'Failed to load transcript session')
-            } finally {
-              setLoading(false)
             }
-          },
-          [onSessionChange],
-        )
+            // If no mediaId or recovery failed, and it was a 404 for a non-specific ID,
+            // then treat it as no session found.
+            if (!id) {
+              setSessionMeta(null)
+              setLines([])
+              return
+            }
+          }
+
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to load transcript session')
+        }
+        const data: EditorSessionResponse = await response.json()
+        setSessionMeta(data)
+        setLines(data.lines || [])
+
+        // Persist MEDIA_ID for recovery
+        const mediaId = data.title_data?.MEDIA_ID
+        if (mediaId) {
+          localStorage.setItem('last_active_media_id', mediaId)
+        }
+
+        setHistory([])
+        setFuture([])
+        setIsDirty(false)
+        setActiveLineId(null)
+        setSelectedLineId(null)
+        setEditingField(null)
+        activeLineMarker.current = null
+        onSessionChange(data)
+
+        if (!id && data.session_id) {
+          lastFetchedId.current = data.session_id
+          setActiveSessionId(data.session_id)
+        } else {
+          lastFetchedId.current = id ?? undefined
+        }
+      } catch (err: any) {
+        setError(err.message || 'Failed to load transcript session')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [onSessionChange],
+  )
 
   useEffect(() => {
     if (!editingField) return
