@@ -118,7 +118,9 @@ def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
 
 
 def snapshot_media_key(session_data: dict) -> str:
-    key = session_data.get("media_blob_name") or session_data.get("session_id") or "unknown"
+    title_data = session_data.get("title_data") or {}
+    xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
+    key = session_data.get("media_blob_name") or xml_filename or session_data.get("session_id") or "unknown"
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
     return safe
 
