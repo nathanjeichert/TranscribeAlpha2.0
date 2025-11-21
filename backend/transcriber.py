@@ -802,9 +802,9 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
         },
     )
 
-    media_id = os.path.splitext(metadata.get("FILE_NAME", "deposition"))[0]
+    media_id = metadata.get("MEDIA_ID") or os.path.splitext(metadata.get("FILE_NAME", "deposition"))[0]
     depo_attrs = {
-        "mediaId": media_id,
+        "mediaId": str(media_id),
         "linesPerPage": str(lines_per_page),
     }
     if metadata.get("DATE"):

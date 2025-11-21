@@ -119,6 +119,10 @@ def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
 
 def snapshot_media_key(session_data: dict) -> str:
     title_data = session_data.get("title_data") or {}
+    # Priority 1: Explicit MEDIA_ID (from import or previous session)
+    if title_data.get("MEDIA_ID"):
+        return str(title_data["MEDIA_ID"])
+
     xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
 
     media_id_from_xml = None
@@ -133,13 +137,16 @@ def snapshot_media_key(session_data: dict) -> str:
         except Exception:
             media_id_from_xml = None
 
+    # Fallback chain: XML mediaId -> Filename -> Media Blob -> Session ID
     key = media_id_from_xml or xml_filename or session_data.get("media_blob_name") or session_data.get("session_id") or "unknown"
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
-    return safe
+    return str(key)
 
 
 def derive_media_key_from_payload(payload: dict) -> str:
     title_data = payload.get("title_data") or {}
+    if title_data.get("MEDIA_ID"):
+        return str(title_data["MEDIA_ID"])
+
     xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
 
     media_id_from_xml = None
@@ -155,8 +162,7 @@ def derive_media_key_from_payload(payload: dict) -> str:
             media_id_from_xml = None
 
     key = media_id_from_xml or xml_filename or payload.get("media_blob_name") or payload.get("session_id") or "unknown"
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
-    return safe
+    return str(key)
 
 
 def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:
@@ -1528,6 +1534,67 @@ async def get_latest_editor_session():
     return JSONResponse(build_session_response(session_data))
 
 
+@app.post("/api/transcripts/create")
+async def create_editor_session(payload: Dict = Body(...)):
+    """Create a new editor session from a JSON payload (e.g. recovering from a snapshot)."""
+    lines_payload = payload.get("lines") or []
+    title_data = payload.get("title_data") or {}
+    media_blob_name = payload.get("media_blob_name")
+    media_content_type = payload.get("media_content_type")
+    
+    # Ensure we have valid duration
+    try:
+        duration_seconds = float(payload.get("audio_duration") or 0)
+    except (TypeError, ValueError):
+        duration_seconds = 0.0
+        
+    lines_per_page = payload.get("lines_per_page") or DEFAULT_LINES_PER_PAGE
+    
+    # Reconstruct turns and artifacts
+    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
+    turns = construct_turns_from_lines(normalized_lines)
+    
+    if not turns and lines_payload:
+        # If we have lines but couldn't make turns, something is wrong, but we should try to proceed
+        pass
+        
+    docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
+        turns,
+        title_data,
+        duration_seconds,
+        lines_per_page,
+    )
+    
+    docx_b64 = base64.b64encode(docx_bytes).decode()
+    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+    
+    session_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc)
+    expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
+    
+    session_payload = {
+        "session_id": session_id,
+        "created_at": created_at.isoformat(),
+        "updated_at": created_at.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "title_data": title_data,
+        "audio_duration": duration_seconds,
+        "lines_per_page": lines_per_page,
+        "turns": serialize_transcript_turns(turns),
+        "lines": updated_lines_payload,
+        "docx_base64": docx_b64,
+        "oncue_xml_base64": oncue_b64,
+        "transcript_text": transcript_text,
+        "media_blob_name": media_blob_name,
+        "media_content_type": media_content_type,
+        "source": "recovery",
+        "clips": [],
+    }
+    
+    save_editor_session(session_id, session_payload)
+    return JSONResponse(build_session_response(session_payload))
+
+
 @app.post("/api/transcripts/{session_id}/snapshots")
 async def create_snapshot(session_id: str, payload: Optional[Dict] = Body(None)):
     session_data = load_editor_session(session_id)
@@ -2089,6 +2156,27 @@ async def import_oncue_transcript(
         "FILE_NAME": title_data.get("FILE_NAME") or xml_file.filename or "imported.xml",
     }
     title_data.update(overrides)
+
+    # Determine MEDIA_ID
+    # Priority: 1. Media File Name (raw) 2. XML mediaId attribute 3. XML File Name (raw)
+    media_id = None
+    if media_file and media_file.filename:
+        media_id = media_file.filename
+    else:
+        # Try to extract from XML root
+        try:
+            root = ET.fromstring(xml_text)
+            deposition = root.find(".//deposition")
+            if deposition is not None:
+                media_id = deposition.get("mediaId") or deposition.get("mediaID")
+        except Exception:
+            pass
+        
+        if not media_id and xml_file.filename:
+            media_id = xml_file.filename
+            
+    if media_id:
+        title_data["MEDIA_ID"] = str(media_id)
 
     duration_seconds = float(parsed["audio_duration"] or 0)
     lines_payload = parsed["lines"]
