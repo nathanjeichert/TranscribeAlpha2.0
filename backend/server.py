@@ -133,7 +133,28 @@ def snapshot_media_key(session_data: dict) -> str:
         except Exception:
             media_id_from_xml = None
 
-    key = session_data.get("media_blob_name") or media_id_from_xml or xml_filename or session_data.get("session_id") or "unknown"
+    key = media_id_from_xml or xml_filename or session_data.get("media_blob_name") or session_data.get("session_id") or "unknown"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
+    return safe
+
+
+def derive_media_key_from_payload(payload: dict) -> str:
+    title_data = payload.get("title_data") or {}
+    xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
+
+    media_id_from_xml = None
+    xml_b64 = payload.get("oncue_xml_base64")
+    if xml_b64:
+        try:
+            xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
+            root = ET.fromstring(xml_text)
+            deposition = root.find(".//deposition")
+            if deposition is not None:
+                media_id_from_xml = deposition.get("mediaId") or deposition.get("mediaID")
+        except Exception:
+            media_id_from_xml = None
+
+    key = media_id_from_xml or xml_filename or payload.get("media_blob_name") or payload.get("session_id") or "unknown"
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
     return safe
 
@@ -287,18 +308,18 @@ def list_snapshots_for_media(media_key: str) -> List[dict]:
             try:
                 metadata = blob.metadata or {}
                 created_at = metadata.get("created_at") or blob.time_created.isoformat()
-        items.append(
-            {
-                "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
-                "session_id": metadata.get("session_id"),
-                "media_key": metadata.get("media_key") or media_key,
-                "created_at": created_at,
-                "size": blob.size,
-                "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
-                "line_count": int(metadata.get("line_count") or 0),
-                "title_label": metadata.get("title_label") or "",
-            }
-        )
+                items.append(
+                    {
+                        "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
+                        "session_id": metadata.get("session_id"),
+                        "media_key": metadata.get("media_key") or media_key,
+                        "created_at": created_at,
+                        "size": blob.size,
+                        "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
+                        "line_count": int(metadata.get("line_count") or 0),
+                        "title_label": metadata.get("title_label") or "",
+                    }
+                )
             except Exception:
                 continue
     except Exception as exc:
@@ -1564,15 +1585,36 @@ async def list_all_snapshots():
             try:
                 metadata = blob.metadata or {}
                 created_at = metadata.get("created_at") or blob.time_created.isoformat()
+                actual_media_key = metadata.get("media_key") or os.path.basename(os.path.dirname(blob.name)).replace(SNAPSHOT_PREFIX.strip("/"), "") or "unknown"
+                media_key_for_restore = actual_media_key
+
+                title_label = metadata.get("title_label") or ""
+                saved_flag = metadata.get("saved") == "True" or metadata.get("saved") is True
+                line_count = int(metadata.get("line_count") or 0)
+
+                display_media_key = actual_media_key
+                # Derive display key from payload if metadata is missing or empty
+                if not display_media_key or display_media_key == "unknown":
+                    try:
+                        payload = json.loads(blob.download_as_text())
+                        display_media_key = derive_media_key_from_payload(payload)
+                        title_label = title_label or (payload.get("title_data") or {}).get("CASE_NAME") or (payload.get("title_data") or {}).get("FILE_NAME") or ""
+                        saved_flag = saved_flag or bool(payload.get("saved"))
+                        line_count = line_count or len(payload.get("lines") or [])
+                    except Exception:
+                        display_media_key = actual_media_key or "unknown"
+
                 items.append(
                     {
                         "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
                         "session_id": metadata.get("session_id"),
-                        "media_key": metadata.get("media_key"),
+                        "media_key": media_key_for_restore,
+                        "display_media_key": display_media_key,
                         "created_at": created_at,
                         "size": blob.size,
-                        "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
-                        "line_count": int(metadata.get("line_count") or 0),
+                        "saved": saved_flag,
+                        "line_count": line_count,
+                        "title_label": title_label,
                     }
                 )
             except Exception:
@@ -1581,7 +1623,7 @@ async def list_all_snapshots():
         items.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
         grouped: dict = {}
         for snap in items:
-            media_key = snap.get("media_key") or "unknown"
+            media_key = snap.get("display_media_key") or snap.get("media_key") or "unknown"
             grouped.setdefault(media_key, []).append(snap)
         trimmed: List[dict] = []
         for media_key, snaps in grouped.items():

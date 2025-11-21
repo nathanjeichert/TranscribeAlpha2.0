@@ -121,7 +121,7 @@ export default function TranscriptEditor({
   const [future, setFuture] = useState<EditorLine[][]>([])
   const [showSnapshots, setShowSnapshots] = useState(false)
   const [snapshots, setSnapshots] = useState<
-    { snapshot_id: string; created_at: string; media_key?: string | null; saved?: boolean; session_id?: string | null; title_label?: string }[]
+    { snapshot_id: string; created_at: string; media_key?: string | null; display_media_key?: string | null; saved?: boolean; session_id?: string | null; title_label?: string }[]
   >([])
   const [loadingSnapshots, setLoadingSnapshots] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
@@ -533,7 +533,7 @@ export default function TranscriptEditor({
       const snaps = (data?.snapshots as any[]) || []
       setSnapshots(snaps)
       if (snaps.length && !selectedMediaKey) {
-        setSelectedMediaKey(snaps[0].media_key || 'unknown')
+        setSelectedMediaKey(snaps[0].display_media_key || snaps[0].media_key || 'unknown')
       }
     } catch (err: any) {
       setSnapshotError(err.message || 'Failed to load snapshots')
@@ -809,7 +809,7 @@ export default function TranscriptEditor({
                       <ul>
                         {Object.entries(
                           snapshots.reduce((acc: Record<string, string>, snap) => {
-                            const key = snap.media_key || 'unknown'
+                            const key = snap.display_media_key || snap.media_key || 'unknown'
                             if (!acc[key]) {
                               const label = snap.title_label || key
                               acc[key] = label
@@ -835,7 +835,11 @@ export default function TranscriptEditor({
                     ) : (
                       <ul>
                         {snapshots
-                          .filter((snap) => (selectedMediaKey ? (snap.media_key || 'unknown') === selectedMediaKey : true))
+                          .filter((snap) =>
+                            selectedMediaKey
+                              ? (snap.display_media_key || snap.media_key || 'unknown') === selectedMediaKey
+                              : true,
+                          )
                           .map((snap) => (
                             <li
                               key={`${snap.media_key || 'current'}-${snap.snapshot_id}`}
@@ -846,7 +850,7 @@ export default function TranscriptEditor({
                                   {new Date(snap.created_at).toLocaleString()}
                                 </div>
                                 <div className="text-xs text-primary-600">
-                                  {(snap.title_label || snap.media_key || 'Transcript')} • {snap.saved ? 'Saved' : 'Autosave'}
+                                  {(snap.title_label || snap.display_media_key || snap.media_key || 'Transcript')} • {snap.saved ? 'Saved' : 'Autosave'}
                                 </div>
                               </div>
                               <button
