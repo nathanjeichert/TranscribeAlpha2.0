@@ -803,8 +803,10 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     )
 
     try:
-        with open(audio_path, "rb") as fh:
-            uploaded = client.files.upload(file=fh, mime_type=audio_mime, display_name=os.path.basename(audio_path))
+        uploaded = client.files.upload(
+            file=audio_path,
+            config=genai_types.UploadFileConfig(mime_type=audio_mime),
+        )
     except Exception as exc:
         logger.error("Failed to upload media to Gemini: %s", exc)
         raise HTTPException(status_code=502, detail="Uploading media to Gemini failed") from exc
@@ -813,9 +815,15 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         response = client.models.generate_content(
             model=model_name,
             contents=[
-                genai_types.Part.from_text(instructions),
-                genai_types.Part.from_text(f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"),
-                genai_types.Part.from_uri(uploaded.uri, uploaded.mime_type or audio_mime),
+                genai_types.Content(
+                    parts=[
+                        genai_types.Part.from_text(instructions),
+                        genai_types.Part.from_text(
+                            f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"
+                        ),
+                        genai_types.Part.from_uri(uploaded.uri, uploaded.mime_type or audio_mime),
+                    ]
+                )
             ],
             config=genai_types.GenerateContentConfig(
                 temperature=0.15,
