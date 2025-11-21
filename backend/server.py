@@ -803,7 +803,8 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     )
 
     try:
-        uploaded = client.files.upload(path=audio_path, mime_type=audio_mime)
+        with open(audio_path, "rb") as fh:
+            uploaded = client.files.upload(file=fh, mime_type=audio_mime, display_name=os.path.basename(audio_path))
     except Exception as exc:
         logger.error("Failed to upload media to Gemini: %s", exc)
         raise HTTPException(status_code=502, detail="Uploading media to Gemini failed") from exc
