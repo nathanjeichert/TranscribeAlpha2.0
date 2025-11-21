@@ -102,6 +102,7 @@ CLIP_SESSION_TTL_DAYS = int(os.getenv("CLIP_SESSION_TTL_DAYS", str(EDITOR_SESSIO
 SNAPSHOT_PREFIX = "editor_snapshots/"
 SNAPSHOT_TTL_DAYS = int(os.getenv("SNAPSHOT_TTL_DAYS", "14"))
 SNAPSHOT_PER_SESSION_LIMIT = int(os.getenv("SNAPSHOT_PER_SESSION_LIMIT", "40"))
+SNAPSHOT_PER_MEDIA_LIMIT = int(os.getenv("SNAPSHOT_PER_MEDIA_LIMIT", "10"))
 
 
 def _session_blob_name(session_id: str) -> str:
@@ -112,8 +113,14 @@ def _clip_blob_name(clip_id: str) -> str:
     return f"{CLIP_SESSION_PREFIX}{clip_id}.json"
 
 
-def _snapshot_blob_name(session_id: str, snapshot_id: str) -> str:
-    return f"{SNAPSHOT_PREFIX}{session_id}/{snapshot_id}.json"
+def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
+    return f"{SNAPSHOT_PREFIX}{media_key}/{snapshot_id}.json"
+
+
+def snapshot_media_key(session_data: dict) -> str:
+    key = session_data.get("media_blob_name") or session_data.get("session_id") or "unknown"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(key)).strip("-") or "unknown"
+    return safe
 
 
 def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:
@@ -222,39 +229,42 @@ def delete_clip_session(clip_id: str) -> None:
         logger.error("Failed to delete clip session %s: %s", clip_id, exc)
 
 
-def save_snapshot(session_id: str, snapshot_id: str, snapshot_data: dict) -> None:
+def save_snapshot(media_key: str, snapshot_id: str, snapshot_data: dict) -> None:
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = _snapshot_blob_name(session_id, snapshot_id)
+        blob_name = _snapshot_blob_name(media_key, snapshot_id)
         blob = bucket.blob(blob_name)
         blob.metadata = {
             "snapshot_id": snapshot_id,
-            "session_id": session_id,
+            "session_id": snapshot_data.get("session_id"),
+            "media_key": media_key,
             "created_at": snapshot_data.get("created_at"),
+            "saved": str(snapshot_data.get("saved", False)),
+            "line_count": str(snapshot_data.get("line_count", "")),
         }
         blob.upload_from_string(json.dumps(snapshot_data), content_type="application/json")
-        logger.info("Saved snapshot %s for session %s", snapshot_id, session_id)
+        logger.info("Saved snapshot %s for media key %s", snapshot_id, media_key)
     except Exception as exc:
-        logger.error("Failed to save snapshot %s for session %s: %s", snapshot_id, session_id, exc)
+        logger.error("Failed to save snapshot %s for media key %s: %s", snapshot_id, media_key, exc)
         raise
 
 
-def load_snapshot(session_id: str, snapshot_id: str) -> Optional[dict]:
+def load_snapshot(media_key: str, snapshot_id: str) -> Optional[dict]:
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(_snapshot_blob_name(session_id, snapshot_id))
+        blob = bucket.blob(_snapshot_blob_name(media_key, snapshot_id))
         if not blob.exists():
             return None
         raw = blob.download_as_text()
         return json.loads(raw)
     except Exception as exc:
-        logger.error("Failed to load snapshot %s for session %s: %s", snapshot_id, session_id, exc)
+        logger.error("Failed to load snapshot %s for media key %s: %s", snapshot_id, media_key, exc)
         return None
 
 
-def list_snapshots(session_id: str) -> List[dict]:
+def list_snapshots_for_media(media_key: str) -> List[dict]:
     bucket = storage_client.bucket(BUCKET_NAME)
-    prefix = f"{SNAPSHOT_PREFIX}{session_id}/"
+    prefix = f"{SNAPSHOT_PREFIX}{media_key}/"
     items: List[dict] = []
     try:
         for blob in bucket.list_blobs(prefix=prefix):
@@ -264,48 +274,64 @@ def list_snapshots(session_id: str) -> List[dict]:
                 items.append(
                     {
                         "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
-                        "session_id": session_id,
+                        "session_id": metadata.get("session_id"),
+                        "media_key": metadata.get("media_key") or media_key,
                         "created_at": created_at,
                         "size": blob.size,
+                        "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
+                        "line_count": int(metadata.get("line_count") or 0),
                     }
                 )
             except Exception:
                 continue
     except Exception as exc:
-        logger.error("Failed to list snapshots for session %s: %s", session_id, exc)
+        logger.error("Failed to list snapshots for media key %s: %s", media_key, exc)
     # Sort newest first
     items.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
     return items
 
 
-def prune_snapshots(session_id: str) -> None:
-    """Remove snapshots exceeding TTL or per-session limit."""
+def prune_snapshots(media_key: str) -> None:
+    """Remove snapshots exceeding TTL or per-media limit and TTL, preserving at least one saved."""
     try:
-        snapshots = list_snapshots(session_id)
+        snapshots = list_snapshots_for_media(media_key)
         bucket = storage_client.bucket(BUCKET_NAME)
         now = datetime.now(timezone.utc)
         # TTL prune
         for snap in snapshots:
             created = parse_iso_datetime(snap.get("created_at"))
             if created and created < now - timedelta(days=SNAPSHOT_TTL_DAYS):
-                blob = bucket.blob(_snapshot_blob_name(session_id, snap["snapshot_id"]))
+                blob = bucket.blob(_snapshot_blob_name(media_key, snap["snapshot_id"]))
                 try:
                     blob.delete()
                 except Exception:
                     logger.warning("Failed to delete expired snapshot %s", blob.name)
         # Reload list after TTL prune
-        snapshots = list_snapshots(session_id)
-        if len(snapshots) <= SNAPSHOT_PER_SESSION_LIMIT:
+        snapshots = list_snapshots_for_media(media_key)
+        if len(snapshots) <= SNAPSHOT_PER_MEDIA_LIMIT:
             return
-        # Prune oldest beyond limit
-        for snap in snapshots[SNAPSHOT_PER_SESSION_LIMIT:]:
-            blob = bucket.blob(_snapshot_blob_name(session_id, snap["snapshot_id"]))
+        # Ensure we keep at least one saved snapshot
+        saved = [s for s in snapshots if s.get("saved")]
+        newest_saved = saved[0] if saved else None
+        # Keep newest snapshots up to limit, but ensure newest_saved is included
+        keep: List[dict] = []
+        for snap in snapshots:
+            if len(keep) >= SNAPSHOT_PER_MEDIA_LIMIT:
+                break
+            keep.append(snap)
+        if newest_saved and all(s["snapshot_id"] != newest_saved["snapshot_id"] for s in keep):
+            keep[-1] = newest_saved  # replace oldest in keep with a saved snapshot
+        keep_ids = {s["snapshot_id"] for s in keep}
+        for snap in snapshots:
+            if snap["snapshot_id"] in keep_ids:
+                continue
+            blob = bucket.blob(_snapshot_blob_name(media_key, snap["snapshot_id"]))
             try:
                 blob.delete()
             except Exception:
                 logger.warning("Failed to delete excess snapshot %s", blob.name)
     except Exception as exc:
-        logger.error("Failed pruning snapshots for %s: %s", session_id, exc)
+        logger.error("Failed pruning snapshots for media %s: %s", media_key, exc)
 
 
 def session_is_expired(session_data: dict) -> bool:
@@ -871,12 +897,14 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
     created_at = datetime.now(timezone.utc).isoformat()
     return {
         "session_id": session_data.get("session_id"),
+        "media_key": snapshot_media_key(session_data),
         "created_at": created_at,
         "title_data": title_data,
         "audio_duration": audio_duration,
         "lines_per_page": lines_per_page,
         "lines": source_lines,
         "oncue_xml_base64": xml_b64,
+        "line_count": len(source_lines),
     }
 
 
@@ -1460,21 +1488,26 @@ async def create_snapshot(session_id: str, payload: Optional[Dict] = Body(None))
         delete_editor_session(session_id)
         raise HTTPException(status_code=404, detail="Editor session expired")
 
+    media_key = snapshot_media_key(session_data)
     override_lines = None
     override_title = None
+    saved_flag = False
     if payload:
         if isinstance(payload.get("lines"), list):
             override_lines = payload.get("lines")
         if isinstance(payload.get("title_data"), dict):
             override_title = payload.get("title_data")
+        if "saved" in payload:
+            saved_flag = bool(payload.get("saved"))
 
     snapshot_id = uuid.uuid4().hex
     snap_payload = build_snapshot_payload(session_data, lines_override=override_lines, title_override=override_title)
     snap_payload["snapshot_id"] = snapshot_id
     snap_payload["session_id"] = session_id
+    snap_payload["saved"] = saved_flag
 
-    save_snapshot(session_id, snapshot_id, snap_payload)
-    prune_snapshots(session_id)
+    save_snapshot(media_key, snapshot_id, snap_payload)
+    prune_snapshots(media_key)
 
     return JSONResponse({"snapshot_id": snapshot_id, "created_at": snap_payload["created_at"]})
 
@@ -1488,17 +1521,67 @@ async def list_session_snapshots(session_id: str):
         delete_editor_session(session_id)
         raise HTTPException(status_code=404, detail="Editor session expired")
 
-    prune_snapshots(session_id)
-    items = list_snapshots(session_id)
+    media_key = snapshot_media_key(session_data)
+    prune_snapshots(media_key)
+    items = list_snapshots_for_media(media_key)
     return JSONResponse({"snapshots": items})
 
 
 @app.get("/api/transcripts/{session_id}/snapshots/{snapshot_id}")
 async def get_snapshot(session_id: str, snapshot_id: str):
-    snapshot = load_snapshot(session_id, snapshot_id)
+    session_data = load_editor_session(session_id)
+    media_key = snapshot_media_key(session_data) if session_data else session_id
+    snapshot = load_snapshot(media_key, snapshot_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return JSONResponse(snapshot)
+
+
+@app.get("/api/transcripts/snapshots")
+async def list_all_snapshots():
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        items: List[dict] = []
+        for blob in bucket.list_blobs(prefix=SNAPSHOT_PREFIX):
+            try:
+                metadata = blob.metadata or {}
+                created_at = metadata.get("created_at") or blob.time_created.isoformat()
+                items.append(
+                    {
+                        "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
+                        "session_id": metadata.get("session_id"),
+                        "media_key": metadata.get("media_key"),
+                        "created_at": created_at,
+                        "size": blob.size,
+                        "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
+                        "line_count": int(metadata.get("line_count") or 0),
+                    }
+                )
+            except Exception:
+                continue
+        # Sort by created desc and trim per media bucket to limit
+        items.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
+        grouped: dict = {}
+        for snap in items:
+            media_key = snap.get("media_key") or "unknown"
+            grouped.setdefault(media_key, []).append(snap)
+        trimmed: List[dict] = []
+        for media_key, snaps in grouped.items():
+            # prune per media to limit while keeping at least one saved
+            saved = [s for s in snaps if s.get("saved")]
+            newest_saved = saved[0] if saved else None
+            keep = snaps[:SNAPSHOT_PER_MEDIA_LIMIT]
+            if newest_saved and all(s["snapshot_id"] != newest_saved["snapshot_id"] for s in keep):
+                if len(keep) >= SNAPSHOT_PER_MEDIA_LIMIT:
+                    keep[-1] = newest_saved
+                else:
+                    keep.append(newest_saved)
+            trimmed.extend(keep[:SNAPSHOT_PER_MEDIA_LIMIT])
+        trimmed.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
+        return JSONResponse({"snapshots": trimmed})
+    except Exception as exc:
+        logger.error("Failed to list all snapshots: %s", exc)
+        raise HTTPException(status_code=500, detail="Unable to list snapshots")
 
 
 @app.post("/api/transcripts/{session_id}/gemini-refine")

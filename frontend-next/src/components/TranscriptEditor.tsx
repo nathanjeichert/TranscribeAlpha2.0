@@ -34,6 +34,8 @@ export interface ClipSummary {
 
 export interface EditorSessionResponse {
   session_id?: string | null
+  media_blob_name?: string | null
+  media_content_type?: string | null
   title_data: Record<string, string>
   audio_duration: number
   lines_per_page: number
@@ -44,8 +46,6 @@ export interface EditorSessionResponse {
   docx_base64?: string | null
   oncue_xml_base64?: string | null
   transcript?: string | null
-  media_blob_name?: string | null
-  media_content_type?: string | null
   clips?: ClipSummary[]
 }
 
@@ -120,7 +120,9 @@ export default function TranscriptEditor({
   const [history, setHistory] = useState<EditorLine[][]>([])
   const [future, setFuture] = useState<EditorLine[][]>([])
   const [showSnapshots, setShowSnapshots] = useState(false)
-  const [snapshots, setSnapshots] = useState<{ snapshot_id: string; created_at: string }[]>([])
+  const [snapshots, setSnapshots] = useState<
+    { snapshot_id: string; created_at: string; media_key?: string | null; saved?: boolean; session_id?: string | null }[]
+  >([])
   const [loadingSnapshots, setLoadingSnapshots] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const lastSnapshotRef = useRef<number>(0)
@@ -319,6 +321,7 @@ export default function TranscriptEditor({
           body: JSON.stringify({
             lines,
             title_data: sessionMeta.title_data ?? {},
+            saved: false,
           }),
         })
         lastSnapshotRef.current = now
@@ -517,11 +520,12 @@ export default function TranscriptEditor({
   }, [future, cloneLines, lines])
 
   const loadSnapshots = useCallback(async () => {
-    if (!sessionMeta?.session_id) return
+    const currentSessionId = sessionMeta?.session_id
     setLoadingSnapshots(true)
     setSnapshotError(null)
     try {
-      const response = await fetch(`/api/transcripts/${sessionMeta.session_id}/snapshots`)
+      const endpoint = currentSessionId ? `/api/transcripts/${currentSessionId}/snapshots` : '/api/transcripts/snapshots'
+      const response = await fetch(endpoint)
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail?.detail || 'Failed to load snapshots')
@@ -536,11 +540,13 @@ export default function TranscriptEditor({
   }, [sessionMeta?.session_id])
 
   const handleRestoreSnapshot = useCallback(
-    async (snapshotId: string) => {
-      if (!sessionMeta?.session_id) return
+    async (snapshotId: string, mediaKey?: string | null) => {
+      const targetSessionId = sessionMeta?.session_id
+      const path = mediaKey ? `/api/transcripts/${mediaKey}/snapshots/${snapshotId}` : (targetSessionId ? `/api/transcripts/${targetSessionId}/snapshots/${snapshotId}` : null)
+      if (!path) return
       setSnapshotError(null)
       try {
-        const response = await fetch(`/api/transcripts/${sessionMeta.session_id}/snapshots/${snapshotId}`)
+        const response = await fetch(path)
         if (!response.ok) {
           const detail = await response.json().catch(() => ({}))
           throw new Error(detail?.detail || 'Failed to load snapshot')
@@ -549,11 +555,13 @@ export default function TranscriptEditor({
         const restoredLines: EditorLine[] = data.lines || []
         const nextMeta: EditorSessionResponse = {
           ...(sessionMeta || {}),
-          session_id: sessionMeta.session_id,
+          session_id: data.session_id ?? sessionMeta?.session_id ?? null,
           title_data: data.title_data ?? sessionMeta?.title_data ?? {},
           audio_duration: data.audio_duration ?? sessionMeta?.audio_duration ?? 0,
           lines_per_page: data.lines_per_page ?? sessionMeta?.lines_per_page ?? 25,
           oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta?.oncue_xml_base64 ?? null,
+          media_blob_name: sessionMeta?.media_blob_name ?? null,
+          media_content_type: sessionMeta?.media_content_type ?? null,
         }
         setLines(restoredLines)
         setSessionMeta(nextMeta)
@@ -607,6 +615,20 @@ export default function TranscriptEditor({
 
       onSaveComplete(data)
       onSessionChange(data)
+
+      try {
+        await fetch(`/api/transcripts/${targetSessionId}/snapshots`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lines,
+            title_data: sessionMeta?.title_data ?? {},
+            saved: true,
+          }),
+        })
+      } catch (err) {
+        /* non-blocking */
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to save editor session')
     } finally {
@@ -785,18 +807,20 @@ export default function TranscriptEditor({
                     <ul>
                       {snapshots.map((snap) => (
                         <li
-                          key={snap.snapshot_id}
+                          key={`${snap.media_key || 'current'}-${snap.snapshot_id}`}
                           className="flex items-center justify-between border-b border-primary-100 px-4 py-2 text-sm"
                         >
                           <div>
                             <div className="font-semibold text-primary-900">
                               {new Date(snap.created_at).toLocaleString()}
                             </div>
-                            <div className="text-xs text-primary-600">{snap.snapshot_id}</div>
+                            <div className="text-xs text-primary-600">
+                              {snap.media_key || sessionMeta?.media_blob_name || 'current'} • {snap.saved ? 'Saved' : 'Autosave'}
+                            </div>
                           </div>
                           <button
                             className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
-                            onClick={() => handleRestoreSnapshot(snap.snapshot_id)}
+                            onClick={() => handleRestoreSnapshot(snap.snapshot_id, snap.media_key)}
                           >
                             Restore
                           </button>
