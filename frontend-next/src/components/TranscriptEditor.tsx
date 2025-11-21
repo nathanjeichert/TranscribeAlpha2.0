@@ -112,6 +112,9 @@ export default function TranscriptEditor({
   const [importError, setImportError] = useState<string | null>(null)
   const [localMediaPreviewUrl, setLocalMediaPreviewUrl] = useState<string | null>(null)
   const [localMediaType, setLocalMediaType] = useState<string | undefined>(undefined)
+  const [renameFrom, setRenameFrom] = useState('')
+  const [renameTo, setRenameTo] = useState('')
+  const [renameFeedback, setRenameFeedback] = useState<string | null>(null)
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
@@ -310,6 +313,39 @@ export default function TranscriptEditor({
     setEditingField(null)
   }, [])
 
+  const handleRenameSpeaker = useCallback(
+    (event?: React.FormEvent) => {
+      if (event) {
+        event.preventDefault()
+      }
+      const source = renameFrom.trim()
+      const target = renameTo.trim()
+      if (!source || !target) {
+        setRenameFeedback('Enter both the current and new speaker names.')
+        return
+      }
+      const normalizedSource = source.toUpperCase()
+      const normalizedTarget = target.toUpperCase()
+      let changes = 0
+      setLines((prev) =>
+        prev.map((line) => {
+          if (line.speaker.trim().toUpperCase() === normalizedSource) {
+            changes += 1
+            return { ...line, speaker: normalizedTarget }
+          }
+          return line
+        }),
+      )
+      if (changes === 0) {
+        setRenameFeedback('No matching speaker labels were found.')
+        return
+      }
+      setIsDirty(true)
+      setRenameFeedback(`Renamed ${changes} line${changes === 1 ? '' : 's'}. Save to update exports.`)
+    },
+    [renameFrom, renameTo],
+  )
+
   const handleSave = useCallback(async () => {
     const targetSessionId = sessionMeta?.session_id ?? activeSessionId
     if (!targetSessionId) {
@@ -474,6 +510,55 @@ export default function TranscriptEditor({
                 </p>
                 <p>
                   <span className="font-semibold">Date:</span> {sessionInfo.DATE || '—'}
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-3 text-sm text-primary-700">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-medium text-primary-900">Rename Speaker</h3>
+                  <span className="text-[10px] uppercase tracking-wide text-primary-400">Find & Replace</span>
+                </div>
+                <p className="text-xs text-primary-600">Replace every instance of a speaker label across the transcript.</p>
+                {renameFeedback && (
+                  <div className="rounded border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-800">
+                    {renameFeedback}
+                  </div>
+                )}
+                <form className="space-y-3" onSubmit={handleRenameSpeaker}>
+                  <div className="grid grid-cols-1 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-primary-700">Current name</label>
+                      <input
+                        type="text"
+                        value={renameFrom}
+                        onChange={(event) => {
+                          setRenameFrom(event.target.value.toUpperCase())
+                          if (renameFeedback) setRenameFeedback(null)
+                        }}
+                        className="mt-1 w-full rounded border border-primary-200 px-3 py-2 text-xs uppercase text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                        placeholder="e.g., SPKR 01"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-primary-700">New name</label>
+                      <input
+                        type="text"
+                        value={renameTo}
+                        onChange={(event) => {
+                          setRenameTo(event.target.value.toUpperCase())
+                          if (renameFeedback) setRenameFeedback(null)
+                        }}
+                        className="mt-1 w-full rounded border border-primary-200 px-3 py-2 text-xs uppercase text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                        placeholder="e.g., WITNESS"
+                      />
+                    </div>
+                  </div>
+                  <button type="submit" className="btn-primary w-full text-sm" disabled={!lines.length}>
+                    Rename Speaker
+                  </button>
+                </form>
+                <p className="text-[11px] text-primary-500">
+                  After renaming, click Save Changes to regenerate the DOCX and XML downloads.
                 </p>
               </div>
 
