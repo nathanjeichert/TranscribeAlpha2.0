@@ -304,6 +304,8 @@ def prune_snapshots(session_id: str) -> None:
                 blob.delete()
             except Exception:
                 logger.warning("Failed to delete excess snapshot %s", blob.name)
+    except Exception as exc:
+        logger.error("Failed pruning snapshots for %s: %s", session_id, exc)
 
 
 def session_is_expired(session_data: dict) -> bool:
