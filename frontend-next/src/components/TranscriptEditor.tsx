@@ -544,7 +544,7 @@ export default function TranscriptEditor({
 
   const handleRestoreSnapshot = useCallback(
     async (snapshotId: string, mediaKey?: string | null) => {
-      const path = mediaKey ? `/api/snapshots/${mediaKey}/${snapshotId}` : null
+      const path = mediaKey ? `/api/snapshots/${mediaKey}/${snapshotId}` : !selectedMediaKey ? null : `/api/snapshots/${selectedMediaKey}/${snapshotId}`
       if (!path) return
       setSnapshotError(null)
       try {

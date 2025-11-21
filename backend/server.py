@@ -308,18 +308,28 @@ def list_snapshots_for_media(media_key: str) -> List[dict]:
             try:
                 metadata = blob.metadata or {}
                 created_at = metadata.get("created_at") or blob.time_created.isoformat()
-                items.append(
-                    {
-                        "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
-                        "session_id": metadata.get("session_id"),
-                        "media_key": metadata.get("media_key") or media_key,
-                        "created_at": created_at,
-                        "size": blob.size,
-                        "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
-                        "line_count": int(metadata.get("line_count") or 0),
-                        "title_label": metadata.get("title_label") or "",
-                    }
-                )
+                item = {
+                    "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
+                    "session_id": metadata.get("session_id"),
+                    "media_key": metadata.get("media_key") or media_key,
+                    "created_at": created_at,
+                    "size": blob.size,
+                    "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
+                    "line_count": int(metadata.get("line_count") or 0),
+                    "title_label": metadata.get("title_label") or "",
+                }
+                if not item["media_key"] or item["media_key"] == "unknown" or not item["title_label"]:
+                    try:
+                        payload = json.loads(blob.download_as_text())
+                        item["media_key"] = derive_media_key_from_payload(payload)
+                        if not item["title_label"]:
+                            t = payload.get("title_data") or {}
+                            item["title_label"] = t.get("CASE_NAME") or t.get("FILE_NAME") or ""
+                        if not item["line_count"]:
+                            item["line_count"] = len(payload.get("lines") or [])
+                    except Exception:
+                        pass
+                items.append(item)
             except Exception:
                 continue
     except Exception as exc:
@@ -1556,24 +1566,15 @@ async def list_session_snapshots(session_id: str):
     session_data = load_editor_session(session_id)
     if not session_data:
         raise HTTPException(status_code=404, detail="Editor session not found")
-    if session_is_expired(session_data):
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=404, detail="Editor session expired")
-
     media_key = snapshot_media_key(session_data)
-    prune_snapshots(media_key)
-    items = list_snapshots_for_media(media_key)
-    return JSONResponse({"snapshots": items})
+    return await list_snapshots_media_key(media_key)
 
 
 @app.get("/api/transcripts/{session_id}/snapshots/{snapshot_id}")
 async def get_snapshot(session_id: str, snapshot_id: str):
     session_data = load_editor_session(session_id)
     media_key = snapshot_media_key(session_data) if session_data else session_id
-    snapshot = load_snapshot(media_key, snapshot_id)
-    if not snapshot:
-        raise HTTPException(status_code=404, detail="Snapshot not found")
-    return JSONResponse(snapshot)
+    return await get_snapshot_by_media(media_key, snapshot_id)
 
 
 @app.get("/api/transcripts/snapshots")
@@ -1645,7 +1646,7 @@ async def list_all_snapshots():
 
 
 @app.get("/api/snapshots/{media_key}")
-async def list_snapshots_for_media_key(media_key: str):
+async def list_snapshots_media_key(media_key: str):
     prune_snapshots(media_key)
     return JSONResponse({"snapshots": list_snapshots_for_media(media_key)})
 
@@ -1655,6 +1656,8 @@ async def get_snapshot_by_media(media_key: str, snapshot_id: str):
     snapshot = load_snapshot(media_key, snapshot_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Snapshot not found")
+    if not snapshot.get("media_key"):
+        snapshot["media_key"] = derive_media_key_from_payload(snapshot)
     return JSONResponse(snapshot)
 
 
