@@ -785,7 +785,7 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         logger.error("google-generativeai not available: %s", exc)
         raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
 
-    configured_model = os.getenv("GEMINI_MODEL_NAME", "models/gemini-3.0-pro-preview")
+    configured_model = os.getenv("GEMINI_MODEL_NAME", "models/gemini-3-pro-preview")
     model_name = configured_model if configured_model.startswith("models/") else f"models/{configured_model}"
     try:
         genai.configure(api_key=api_key)
