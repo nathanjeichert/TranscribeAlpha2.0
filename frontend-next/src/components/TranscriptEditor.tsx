@@ -432,7 +432,7 @@ export default function TranscriptEditor({
     setSelectedLineId(newLineId)
     setEditingField({ lineId: newLineId, field: 'text', value: '' })
     setIsDirty(true)
-  }, [lines, selectedLineId, activeLineId, sessionMeta])
+  }, [lines, selectedLineId, activeLineId, sessionMeta, pushHistory])
 
   const handleDeleteUtterance = useCallback(() => {
     setDeleteError(null)
@@ -463,7 +463,7 @@ export default function TranscriptEditor({
     setLines(updated)
     setSelectedLineId(nextSelection)
     setIsDirty(true)
-  }, [lines, selectedLineId, activeLineId])
+  }, [lines, selectedLineId, activeLineId, pushHistory])
 
   const handleRenameSpeaker = useCallback(
     (event?: React.FormEvent) => {
@@ -562,6 +562,7 @@ export default function TranscriptEditor({
           oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta?.oncue_xml_base64 ?? null,
           media_blob_name: sessionMeta?.media_blob_name ?? null,
           media_content_type: sessionMeta?.media_content_type ?? null,
+          lines: restoredLines,
         }
         setLines(restoredLines)
         setSessionMeta(nextMeta)
