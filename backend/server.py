@@ -99,6 +99,10 @@ EDITOR_SESSION_TTL_DAYS = int(os.getenv("EDITOR_SESSION_TTL_DAYS", "7"))
 CLIP_SESSION_PREFIX = "clip_sessions/"
 CLIP_SESSION_TTL_DAYS = int(os.getenv("CLIP_SESSION_TTL_DAYS", str(EDITOR_SESSION_TTL_DAYS)))
 
+SNAPSHOT_PREFIX = "editor_snapshots/"
+SNAPSHOT_TTL_DAYS = int(os.getenv("SNAPSHOT_TTL_DAYS", "14"))
+SNAPSHOT_PER_SESSION_LIMIT = int(os.getenv("SNAPSHOT_PER_SESSION_LIMIT", "40"))
+
 
 def _session_blob_name(session_id: str) -> str:
     return f"{EDITOR_SESSION_PREFIX}{session_id}.json"
@@ -106,6 +110,10 @@ def _session_blob_name(session_id: str) -> str:
 
 def _clip_blob_name(clip_id: str) -> str:
     return f"{CLIP_SESSION_PREFIX}{clip_id}.json"
+
+
+def _snapshot_blob_name(session_id: str, snapshot_id: str) -> str:
+    return f"{SNAPSHOT_PREFIX}{session_id}/{snapshot_id}.json"
 
 
 def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:
@@ -212,6 +220,90 @@ def delete_clip_session(clip_id: str) -> None:
             logger.info("Deleted clip session %s", clip_id)
     except Exception as exc:
         logger.error("Failed to delete clip session %s: %s", clip_id, exc)
+
+
+def save_snapshot(session_id: str, snapshot_id: str, snapshot_data: dict) -> None:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob_name = _snapshot_blob_name(session_id, snapshot_id)
+        blob = bucket.blob(blob_name)
+        blob.metadata = {
+            "snapshot_id": snapshot_id,
+            "session_id": session_id,
+            "created_at": snapshot_data.get("created_at"),
+        }
+        blob.upload_from_string(json.dumps(snapshot_data), content_type="application/json")
+        logger.info("Saved snapshot %s for session %s", snapshot_id, session_id)
+    except Exception as exc:
+        logger.error("Failed to save snapshot %s for session %s: %s", snapshot_id, session_id, exc)
+        raise
+
+
+def load_snapshot(session_id: str, snapshot_id: str) -> Optional[dict]:
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_snapshot_blob_name(session_id, snapshot_id))
+        if not blob.exists():
+            return None
+        raw = blob.download_as_text()
+        return json.loads(raw)
+    except Exception as exc:
+        logger.error("Failed to load snapshot %s for session %s: %s", snapshot_id, session_id, exc)
+        return None
+
+
+def list_snapshots(session_id: str) -> List[dict]:
+    bucket = storage_client.bucket(BUCKET_NAME)
+    prefix = f"{SNAPSHOT_PREFIX}{session_id}/"
+    items: List[dict] = []
+    try:
+        for blob in bucket.list_blobs(prefix=prefix):
+            try:
+                metadata = blob.metadata or {}
+                created_at = metadata.get("created_at") or blob.time_created.isoformat()
+                items.append(
+                    {
+                        "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
+                        "session_id": session_id,
+                        "created_at": created_at,
+                        "size": blob.size,
+                    }
+                )
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.error("Failed to list snapshots for session %s: %s", session_id, exc)
+    # Sort newest first
+    items.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
+    return items
+
+
+def prune_snapshots(session_id: str) -> None:
+    """Remove snapshots exceeding TTL or per-session limit."""
+    try:
+        snapshots = list_snapshots(session_id)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        now = datetime.now(timezone.utc)
+        # TTL prune
+        for snap in snapshots:
+            created = parse_iso_datetime(snap.get("created_at"))
+            if created and created < now - timedelta(days=SNAPSHOT_TTL_DAYS):
+                blob = bucket.blob(_snapshot_blob_name(session_id, snap["snapshot_id"]))
+                try:
+                    blob.delete()
+                except Exception:
+                    logger.warning("Failed to delete expired snapshot %s", blob.name)
+        # Reload list after TTL prune
+        snapshots = list_snapshots(session_id)
+        if len(snapshots) <= SNAPSHOT_PER_SESSION_LIMIT:
+            return
+        # Prune oldest beyond limit
+        for snap in snapshots[SNAPSHOT_PER_SESSION_LIMIT:]:
+            blob = bucket.blob(_snapshot_blob_name(session_id, snap["snapshot_id"]))
+            try:
+                blob.delete()
+            except Exception:
+                logger.warning("Failed to delete excess snapshot %s", blob.name)
 
 
 def session_is_expired(session_data: dict) -> bool:
@@ -748,6 +840,41 @@ def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
         "lines": lines,
         "title_data": title_data,
         "audio_duration": duration_seconds,
+    }
+
+
+def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dict]] = None, title_override: Optional[dict] = None) -> dict:
+    """Create a lightweight snapshot payload with XML + lines only."""
+    xml_b64 = session_data.get("oncue_xml_base64")
+    title_data = title_override or session_data.get("title_data") or {}
+    lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+    audio_duration = float(session_data.get("audio_duration") or 0.0)
+    source_lines = lines_override if lines_override is not None else session_data.get("lines") or []
+
+    if not xml_b64:
+        # Rebuild XML from lines as a fallback
+        normalized_lines, audio_duration = normalize_line_payloads(source_lines, audio_duration)
+        turns = construct_turns_from_lines(normalized_lines)
+        if not turns:
+            raise HTTPException(status_code=400, detail="Unable to build snapshot XML from transcript lines")
+        _, oncue_xml, _, updated_lines = build_session_artifacts(
+            turns,
+            title_data,
+            audio_duration,
+            lines_per_page,
+        )
+        xml_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+        source_lines = updated_lines
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "session_id": session_data.get("session_id"),
+        "created_at": created_at,
+        "title_data": title_data,
+        "audio_duration": audio_duration,
+        "lines_per_page": lines_per_page,
+        "lines": source_lines,
+        "oncue_xml_base64": xml_b64,
     }
 
 
@@ -1320,6 +1447,56 @@ async def get_latest_editor_session():
     if not session_data:
         raise HTTPException(status_code=404, detail="No editor sessions available")
     return JSONResponse(build_session_response(session_data))
+
+
+@app.post("/api/transcripts/{session_id}/snapshots")
+async def create_snapshot(session_id: str, payload: Optional[Dict] = Body(None)):
+    session_data = load_editor_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Editor session not found")
+    if session_is_expired(session_data):
+        delete_editor_session(session_id)
+        raise HTTPException(status_code=404, detail="Editor session expired")
+
+    override_lines = None
+    override_title = None
+    if payload:
+        if isinstance(payload.get("lines"), list):
+            override_lines = payload.get("lines")
+        if isinstance(payload.get("title_data"), dict):
+            override_title = payload.get("title_data")
+
+    snapshot_id = uuid.uuid4().hex
+    snap_payload = build_snapshot_payload(session_data, lines_override=override_lines, title_override=override_title)
+    snap_payload["snapshot_id"] = snapshot_id
+    snap_payload["session_id"] = session_id
+
+    save_snapshot(session_id, snapshot_id, snap_payload)
+    prune_snapshots(session_id)
+
+    return JSONResponse({"snapshot_id": snapshot_id, "created_at": snap_payload["created_at"]})
+
+
+@app.get("/api/transcripts/{session_id}/snapshots")
+async def list_session_snapshots(session_id: str):
+    session_data = load_editor_session(session_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Editor session not found")
+    if session_is_expired(session_data):
+        delete_editor_session(session_id)
+        raise HTTPException(status_code=404, detail="Editor session expired")
+
+    prune_snapshots(session_id)
+    items = list_snapshots(session_id)
+    return JSONResponse({"snapshots": items})
+
+
+@app.get("/api/transcripts/{session_id}/snapshots/{snapshot_id}")
+async def get_snapshot(session_id: str, snapshot_id: str):
+    snapshot = load_snapshot(session_id, snapshot_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return JSONResponse(snapshot)
 
 
 @app.post("/api/transcripts/{session_id}/gemini-refine")

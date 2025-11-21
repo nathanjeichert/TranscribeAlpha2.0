@@ -119,6 +119,11 @@ export default function TranscriptEditor({
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [history, setHistory] = useState<EditorLine[][]>([])
   const [future, setFuture] = useState<EditorLine[][]>([])
+  const [showSnapshots, setShowSnapshots] = useState(false)
+  const [snapshots, setSnapshots] = useState<{ snapshot_id: string; created_at: string }[]>([])
+  const [loadingSnapshots, setLoadingSnapshots] = useState(false)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const lastSnapshotRef = useRef<number>(0)
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
@@ -300,6 +305,30 @@ export default function TranscriptEditor({
       }
     }
   }, [localMediaPreviewUrl])
+
+  useEffect(() => {
+    if (!sessionMeta?.session_id) return
+    const interval = setInterval(async () => {
+      if (!isDirty) return
+      try {
+        const now = Date.now()
+        if (now - lastSnapshotRef.current < 5000) return
+        await fetch(`/api/transcripts/${sessionMeta.session_id}/snapshots`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lines,
+            title_data: sessionMeta.title_data ?? {},
+          }),
+        })
+        lastSnapshotRef.current = now
+        setSnapshotError(null)
+      } catch (err: any) {
+        setSnapshotError(err.message || 'Snapshot save failed')
+      }
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [sessionMeta?.session_id, isDirty, lines, sessionMeta])
 
   const cloneLines = useCallback((source: EditorLine[]) => source.map((line) => ({ ...line })), [])
 
@@ -487,6 +516,59 @@ export default function TranscriptEditor({
     setIsDirty(true)
   }, [future, cloneLines, lines])
 
+  const loadSnapshots = useCallback(async () => {
+    if (!sessionMeta?.session_id) return
+    setLoadingSnapshots(true)
+    setSnapshotError(null)
+    try {
+      const response = await fetch(`/api/transcripts/${sessionMeta.session_id}/snapshots`)
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to load snapshots')
+      }
+      const data = await response.json()
+      setSnapshots((data?.snapshots as any[]) || [])
+    } catch (err: any) {
+      setSnapshotError(err.message || 'Failed to load snapshots')
+    } finally {
+      setLoadingSnapshots(false)
+    }
+  }, [sessionMeta?.session_id])
+
+  const handleRestoreSnapshot = useCallback(
+    async (snapshotId: string) => {
+      if (!sessionMeta?.session_id) return
+      setSnapshotError(null)
+      try {
+        const response = await fetch(`/api/transcripts/${sessionMeta.session_id}/snapshots/${snapshotId}`)
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to load snapshot')
+        }
+        const data = await response.json()
+        const restoredLines: EditorLine[] = data.lines || []
+        const nextMeta: EditorSessionResponse = {
+          ...(sessionMeta || {}),
+          session_id: sessionMeta.session_id,
+          title_data: data.title_data ?? sessionMeta?.title_data ?? {},
+          audio_duration: data.audio_duration ?? sessionMeta?.audio_duration ?? 0,
+          lines_per_page: data.lines_per_page ?? sessionMeta?.lines_per_page ?? 25,
+          oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta?.oncue_xml_base64 ?? null,
+        }
+        setLines(restoredLines)
+        setSessionMeta(nextMeta)
+        setHistory([])
+        setFuture([])
+        setIsDirty(true)
+        setSelectedLineId(null)
+        setShowSnapshots(false)
+      } catch (err: any) {
+        setSnapshotError(err.message || 'Failed to restore snapshot')
+      }
+    },
+    [sessionMeta, setSessionMeta],
+  )
+
   const handleSave = useCallback(async () => {
     const targetSessionId = sessionMeta?.session_id ?? activeSessionId
     if (!targetSessionId) {
@@ -611,6 +693,16 @@ export default function TranscriptEditor({
             </label>
             <div className="flex items-center gap-2">
               <button
+                className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50"
+                onClick={() => {
+                  setShowSnapshots(true)
+                  loadSnapshots()
+                }}
+                title="View autosaved snapshots from the last two weeks"
+              >
+                History
+              </button>
+              <button
                 className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50 disabled:opacity-60"
                 onClick={handleUndo}
                 disabled={!history.length}
@@ -658,9 +750,62 @@ export default function TranscriptEditor({
               {error}
             </div>
           )}
+          {snapshotError && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              {snapshotError}
+            </div>
+          )}
           {(addError || deleteError) && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
               {addError || deleteError}
+            </div>
+          )}
+
+          {showSnapshots && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+              <div className="w-full max-w-xl rounded-lg bg-white p-5 shadow-2xl">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-primary-900">Autosave History</h3>
+                    <p className="text-xs text-primary-600">Snapshots from the past 14 days (XML only).</p>
+                  </div>
+                  <button
+                    className="rounded border border-primary-300 px-2 py-1 text-sm text-primary-700 hover:bg-primary-100"
+                    onClick={() => setShowSnapshots(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="mt-3 max-h-80 overflow-y-auto rounded border border-primary-100">
+                  {loadingSnapshots ? (
+                    <div className="p-4 text-sm text-primary-600">Loading snapshots…</div>
+                  ) : snapshots.length === 0 ? (
+                    <div className="p-4 text-sm text-primary-600">No snapshots available yet.</div>
+                  ) : (
+                    <ul>
+                      {snapshots.map((snap) => (
+                        <li
+                          key={snap.snapshot_id}
+                          className="flex items-center justify-between border-b border-primary-100 px-4 py-2 text-sm"
+                        >
+                          <div>
+                            <div className="font-semibold text-primary-900">
+                              {new Date(snap.created_at).toLocaleString()}
+                            </div>
+                            <div className="text-xs text-primary-600">{snap.snapshot_id}</div>
+                          </div>
+                          <button
+                            className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
+                            onClick={() => handleRestoreSnapshot(snap.snapshot_id)}
+                          >
+                            Restore
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
