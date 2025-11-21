@@ -121,11 +121,12 @@ export default function TranscriptEditor({
   const [future, setFuture] = useState<EditorLine[][]>([])
   const [showSnapshots, setShowSnapshots] = useState(false)
   const [snapshots, setSnapshots] = useState<
-    { snapshot_id: string; created_at: string; media_key?: string | null; saved?: boolean; session_id?: string | null }[]
+    { snapshot_id: string; created_at: string; media_key?: string | null; saved?: boolean; session_id?: string | null; title_label?: string }[]
   >([])
   const [loadingSnapshots, setLoadingSnapshots] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const lastSnapshotRef = useRef<number>(0)
+  const [selectedMediaKey, setSelectedMediaKey] = useState<string | null>(null)
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
@@ -520,29 +521,30 @@ export default function TranscriptEditor({
   }, [future, cloneLines, lines])
 
   const loadSnapshots = useCallback(async () => {
-    const currentSessionId = sessionMeta?.session_id
     setLoadingSnapshots(true)
     setSnapshotError(null)
     try {
-      const endpoint = currentSessionId ? `/api/transcripts/${currentSessionId}/snapshots` : '/api/transcripts/snapshots'
-      const response = await fetch(endpoint)
+      const response = await fetch('/api/transcripts/snapshots')
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail?.detail || 'Failed to load snapshots')
       }
       const data = await response.json()
-      setSnapshots((data?.snapshots as any[]) || [])
+      const snaps = (data?.snapshots as any[]) || []
+      setSnapshots(snaps)
+      if (snaps.length && !selectedMediaKey) {
+        setSelectedMediaKey(snaps[0].media_key || 'unknown')
+      }
     } catch (err: any) {
       setSnapshotError(err.message || 'Failed to load snapshots')
     } finally {
       setLoadingSnapshots(false)
     }
-  }, [sessionMeta?.session_id])
+  }, [selectedMediaKey])
 
   const handleRestoreSnapshot = useCallback(
     async (snapshotId: string, mediaKey?: string | null) => {
-      const targetSessionId = sessionMeta?.session_id
-      const path = mediaKey ? `/api/transcripts/${mediaKey}/snapshots/${snapshotId}` : (targetSessionId ? `/api/transcripts/${targetSessionId}/snapshots/${snapshotId}` : null)
+      const path = mediaKey ? `/api/snapshots/${mediaKey}/${snapshotId}` : null
       if (!path) return
       setSnapshotError(null)
       try {
@@ -551,16 +553,16 @@ export default function TranscriptEditor({
           const detail = await response.json().catch(() => ({}))
           throw new Error(detail?.detail || 'Failed to load snapshot')
         }
-        const data = await response.json()
-        const restoredLines: EditorLine[] = data.lines || []
-        const nextMeta: EditorSessionResponse = {
-          ...(sessionMeta || {}),
+          const data = await response.json()
+          const restoredLines: EditorLine[] = data.lines || []
+          const nextMeta: EditorSessionResponse = {
+            ...(sessionMeta || {}),
           session_id: data.session_id ?? sessionMeta?.session_id ?? null,
-          title_data: data.title_data ?? sessionMeta?.title_data ?? {},
-          audio_duration: data.audio_duration ?? sessionMeta?.audio_duration ?? 0,
-          lines_per_page: data.lines_per_page ?? sessionMeta?.lines_per_page ?? 25,
-          oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta?.oncue_xml_base64 ?? null,
-          media_blob_name: sessionMeta?.media_blob_name ?? null,
+            title_data: data.title_data ?? sessionMeta?.title_data ?? {},
+            audio_duration: data.audio_duration ?? sessionMeta?.audio_duration ?? 0,
+            lines_per_page: data.lines_per_page ?? sessionMeta?.lines_per_page ?? 25,
+            oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta?.oncue_xml_base64 ?? null,
+            media_blob_name: sessionMeta?.media_blob_name ?? null,
           media_content_type: sessionMeta?.media_content_type ?? null,
           lines: restoredLines,
         }
@@ -786,11 +788,11 @@ export default function TranscriptEditor({
 
           {showSnapshots && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-              <div className="w-full max-w-xl rounded-lg bg-white p-5 shadow-2xl">
+              <div className="w-full max-w-5xl rounded-lg bg-white p-5 shadow-2xl">
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-lg font-semibold text-primary-900">Autosave History</h3>
-                    <p className="text-xs text-primary-600">Snapshots from the past 14 days (XML only).</p>
+                    <p className="text-xs text-primary-600">Grouped by transcript (media). Snapshots from the past 14 days.</p>
                   </div>
                   <button
                     className="rounded border border-primary-300 px-2 py-1 text-sm text-primary-700 hover:bg-primary-100"
@@ -799,36 +801,65 @@ export default function TranscriptEditor({
                     Close
                   </button>
                 </div>
-                <div className="mt-3 max-h-80 overflow-y-auto rounded border border-primary-100">
-                  {loadingSnapshots ? (
-                    <div className="p-4 text-sm text-primary-600">Loading snapshots…</div>
-                  ) : snapshots.length === 0 ? (
-                    <div className="p-4 text-sm text-primary-600">No snapshots available yet.</div>
-                  ) : (
-                    <ul>
-                      {snapshots.map((snap) => (
-                        <li
-                          key={`${snap.media_key || 'current'}-${snap.snapshot_id}`}
-                          className="flex items-center justify-between border-b border-primary-100 px-4 py-2 text-sm"
-                        >
-                          <div>
-                            <div className="font-semibold text-primary-900">
-                              {new Date(snap.created_at).toLocaleString()}
-                            </div>
-                            <div className="text-xs text-primary-600">
-                              {snap.media_key || sessionMeta?.media_blob_name || 'current'} • {snap.saved ? 'Saved' : 'Autosave'}
-                            </div>
-                          </div>
-                          <button
-                            className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
-                            onClick={() => handleRestoreSnapshot(snap.snapshot_id, snap.media_key)}
+                <div className="mt-3 grid grid-cols-[220px_1fr] gap-4">
+                  <div className="max-h-80 overflow-y-auto rounded border border-primary-100">
+                    {loadingSnapshots ? (
+                      <div className="p-4 text-sm text-primary-600">Loading transcripts…</div>
+                    ) : (
+                      <ul>
+                        {Object.entries(
+                          snapshots.reduce((acc: Record<string, string>, snap) => {
+                            const key = snap.media_key || 'unknown'
+                            if (!acc[key]) {
+                              const label = snap.title_label || key
+                              acc[key] = label
+                            }
+                            return acc
+                          }, {} as Record<string, string>),
+                        ).map(([key, label]) => (
+                          <li
+                            key={key}
+                            className={`cursor-pointer px-4 py-2 text-sm ${selectedMediaKey === key ? 'bg-primary-100 font-semibold' : ''}`}
+                            onClick={() => setSelectedMediaKey(key)}
                           >
-                            Restore
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                            <div className="text-primary-900">{label || key}</div>
+                            <div className="text-[11px] text-primary-500">{key}</div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="max-h-80 overflow-y-auto rounded border border-primary-100">
+                    {loadingSnapshots ? (
+                      <div className="p-4 text-sm text-primary-600">Loading snapshots…</div>
+                    ) : (
+                      <ul>
+                        {snapshots
+                          .filter((snap) => (selectedMediaKey ? (snap.media_key || 'unknown') === selectedMediaKey : true))
+                          .map((snap) => (
+                            <li
+                              key={`${snap.media_key || 'current'}-${snap.snapshot_id}`}
+                              className="flex items-center justify-between border-b border-primary-100 px-4 py-2 text-sm"
+                            >
+                              <div>
+                                <div className="font-semibold text-primary-900">
+                                  {new Date(snap.created_at).toLocaleString()}
+                                </div>
+                                <div className="text-xs text-primary-600">
+                                  {(snap.title_label || snap.media_key || 'Transcript')} • {snap.saved ? 'Saved' : 'Autosave'}
+                                </div>
+                              </div>
+                              <button
+                                className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
+                                onClick={() => handleRestoreSnapshot(snap.snapshot_id, snap.media_key || selectedMediaKey)}
+                              >
+                                Restore
+                              </button>
+                            </li>
+                          ))}
+                      </ul>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

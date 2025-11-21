@@ -241,6 +241,7 @@ def save_snapshot(media_key: str, snapshot_id: str, snapshot_data: dict) -> None
             "created_at": snapshot_data.get("created_at"),
             "saved": str(snapshot_data.get("saved", False)),
             "line_count": str(snapshot_data.get("line_count", "")),
+            "title_label": snapshot_data.get("title_label", ""),
         }
         blob.upload_from_string(json.dumps(snapshot_data), content_type="application/json")
         logger.info("Saved snapshot %s for media key %s", snapshot_id, media_key)
@@ -271,17 +272,18 @@ def list_snapshots_for_media(media_key: str) -> List[dict]:
             try:
                 metadata = blob.metadata or {}
                 created_at = metadata.get("created_at") or blob.time_created.isoformat()
-                items.append(
-                    {
-                        "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
-                        "session_id": metadata.get("session_id"),
-                        "media_key": metadata.get("media_key") or media_key,
-                        "created_at": created_at,
-                        "size": blob.size,
-                        "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
-                        "line_count": int(metadata.get("line_count") or 0),
-                    }
-                )
+        items.append(
+            {
+                "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
+                "session_id": metadata.get("session_id"),
+                "media_key": metadata.get("media_key") or media_key,
+                "created_at": created_at,
+                "size": blob.size,
+                "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
+                "line_count": int(metadata.get("line_count") or 0),
+                "title_label": metadata.get("title_label") or "",
+            }
+        )
             except Exception:
                 continue
     except Exception as exc:
@@ -900,6 +902,7 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
         "media_key": snapshot_media_key(session_data),
         "created_at": created_at,
         "title_data": title_data,
+        "title_label": title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or "",
         "audio_duration": audio_duration,
         "lines_per_page": lines_per_page,
         "lines": source_lines,
@@ -1582,6 +1585,20 @@ async def list_all_snapshots():
     except Exception as exc:
         logger.error("Failed to list all snapshots: %s", exc)
         raise HTTPException(status_code=500, detail="Unable to list snapshots")
+
+
+@app.get("/api/snapshots/{media_key}")
+async def list_snapshots_for_media_key(media_key: str):
+    prune_snapshots(media_key)
+    return JSONResponse({"snapshots": list_snapshots_for_media(media_key)})
+
+
+@app.get("/api/snapshots/{media_key}/{snapshot_id}")
+async def get_snapshot_by_media(media_key: str, snapshot_id: str):
+    snapshot = load_snapshot(media_key, snapshot_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return JSONResponse(snapshot)
 
 
 @app.post("/api/transcripts/{session_id}/gemini-refine")
