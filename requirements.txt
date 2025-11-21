@@ -9,4 +9,4 @@ pydub>=0.25.1
 pydantic>=2.5.0
 assemblyai>=0.30.0
 packaging>=23.0
-google-generativeai>=0.9.0
+google-genai>=1.52.0

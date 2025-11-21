@@ -780,16 +780,16 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types as genai_types
     except Exception as exc:
-        logger.error("google-generativeai not available: %s", exc)
+        logger.error("google-genai not available: %s", exc)
         raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
 
     configured_model = os.getenv("GEMINI_MODEL_NAME", "models/gemini-3-pro-preview")
     model_name = configured_model if configured_model.startswith("models/") else f"models/{configured_model}"
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
+        client = genai.Client(api_key=api_key)
     except Exception as exc:
         logger.error("Failed to initialize Gemini client: %s", exc)
         raise HTTPException(status_code=500, detail="Unable to initialize Gemini client") from exc
@@ -803,19 +803,20 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     )
 
     try:
-        uploaded = genai.upload_file(path=audio_path, mime_type=audio_mime)
+        uploaded = client.files.upload(path=audio_path, mime_type=audio_mime)
     except Exception as exc:
         logger.error("Failed to upload media to Gemini: %s", exc)
         raise HTTPException(status_code=502, detail="Uploading media to Gemini failed") from exc
 
     try:
-        response = model.generate_content(
-            [
-                instructions,
-                f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}",
-                uploaded,
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                genai_types.Part.from_text(instructions),
+                genai_types.Part.from_text(f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"),
+                genai_types.Part.from_uri(uploaded.uri, uploaded.mime_type or audio_mime),
             ],
-            generation_config=genai.types.GenerationConfig(
+            config=genai_types.GenerateContentConfig(
                 temperature=0.15,
                 response_mime_type="application/json",
             ),
@@ -824,17 +825,17 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     except Exception as exc:
         logger.error("Gemini generation failed: %s", exc)
         try:
-            genai.delete_file(uploaded.name)
+            client.files.delete(name=uploaded.name)
         except Exception:
             pass
         raise HTTPException(status_code=502, detail="Gemini transcript refinement failed") from exc
 
     try:
-        genai.delete_file(uploaded.name)
+        client.files.delete(name=uploaded.name)
     except Exception:
         pass
 
-    raw_text = getattr(response, "text", None)
+    raw_text = getattr(response, "text", None) or getattr(response, "output_text", None)
     if not raw_text and getattr(response, "candidates", None):
         try:
             raw_text = response.candidates[0].content.parts[0].text
