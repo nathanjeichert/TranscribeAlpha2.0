@@ -117,6 +117,8 @@ export default function TranscriptEditor({
   const [renameFeedback, setRenameFeedback] = useState<string | null>(null)
   const [addError, setAddError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [history, setHistory] = useState<EditorLine[][]>([])
+  const [future, setFuture] = useState<EditorLine[][]>([])
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
@@ -166,6 +168,8 @@ export default function TranscriptEditor({
         const data: EditorSessionResponse = await response.json()
         setSessionMeta(data)
         setLines(data.lines || [])
+        setHistory([])
+        setFuture([])
         setIsDirty(false)
         setActiveLineId(null)
         setSelectedLineId(null)
@@ -297,6 +301,16 @@ export default function TranscriptEditor({
     }
   }, [localMediaPreviewUrl])
 
+  const cloneLines = useCallback((source: EditorLine[]) => source.map((line) => ({ ...line })), [])
+
+  const pushHistory = useCallback(
+    (snapshot: EditorLine[]) => {
+      setHistory((prev) => [...prev.slice(-49), cloneLines(snapshot)])
+      setFuture([])
+    },
+    [cloneLines],
+  )
+
   const beginEdit = useCallback((line: EditorLine, field: 'speaker' | 'text') => {
     setEditingField({
       lineId: line.id,
@@ -307,9 +321,10 @@ export default function TranscriptEditor({
 
   const commitEdit = useCallback(() => {
     if (!editingField) return
+    pushHistory(lines)
     handleLineFieldChange(editingField.lineId, editingField.field, editingField.value)
     setEditingField(null)
-  }, [editingField, handleLineFieldChange])
+  }, [editingField, handleLineFieldChange, lines, pushHistory])
 
   const cancelEdit = useCallback(() => {
     setEditingField(null)
@@ -322,6 +337,8 @@ export default function TranscriptEditor({
       setAddError('No lines available to insert after.')
       return
     }
+
+    pushHistory(lines)
 
     const minDuration = 0.2
     const targetId = selectedLineId ?? activeLineId ?? lines[lines.length - 1]?.id
@@ -407,6 +424,8 @@ export default function TranscriptEditor({
       return
     }
 
+    pushHistory(lines)
+
     const nextSelection = lines[targetIndex + 1]?.id || lines[targetIndex - 1]?.id || null
     const updated = lines.filter((line) => line.id !== targetId)
     setLines(updated)
@@ -425,6 +444,7 @@ export default function TranscriptEditor({
         setRenameFeedback('Enter both the current and new speaker names.')
         return
       }
+      pushHistory(lines)
       const normalizedSource = source.toUpperCase()
       const normalizedTarget = target.toUpperCase()
       let changes = 0
@@ -444,8 +464,28 @@ export default function TranscriptEditor({
       setIsDirty(true)
       setRenameFeedback(`Renamed ${changes} line${changes === 1 ? '' : 's'}. Save to update exports.`)
     },
-    [renameFrom, renameTo],
+    [renameFrom, renameTo, lines, pushHistory],
   )
+
+  const handleUndo = useCallback(() => {
+    if (!history.length) return
+    const previous = history[history.length - 1]
+    setHistory((prev) => prev.slice(0, prev.length - 1))
+    setFuture((prev) => [cloneLines(lines), ...prev])
+    setLines(previous)
+    setSelectedLineId(null)
+    setIsDirty(true)
+  }, [history, cloneLines, lines])
+
+  const handleRedo = useCallback(() => {
+    if (!future.length) return
+    const [next, ...rest] = future
+    setFuture(rest)
+    setHistory((prev) => [...prev.slice(-49), cloneLines(lines)])
+    setLines(next)
+    setSelectedLineId(null)
+    setIsDirty(true)
+  }, [future, cloneLines, lines])
 
   const handleSave = useCallback(async () => {
     const targetSessionId = sessionMeta?.session_id ?? activeSessionId
@@ -480,6 +520,8 @@ export default function TranscriptEditor({
       setSelectedLineId(null)
       setEditingField(null)
       activeLineMarker.current = null
+      setHistory([])
+      setFuture([])
 
       onSaveComplete(data)
       onSessionChange(data)
@@ -517,6 +559,8 @@ export default function TranscriptEditor({
         const data: EditorSessionResponse = await response.json()
         setSessionMeta(data)
         setLines(data.lines || [])
+        setHistory([])
+        setFuture([])
         setIsDirty(false)
         setActiveLineId(null)
         setSelectedLineId(null)
@@ -566,6 +610,22 @@ export default function TranscriptEditor({
               Auto-scroll
             </label>
             <div className="flex items-center gap-2">
+              <button
+                className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50 disabled:opacity-60"
+                onClick={handleUndo}
+                disabled={!history.length}
+                title="Undo last edit"
+              >
+                Undo
+              </button>
+              <button
+                className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50 disabled:opacity-60"
+                onClick={handleRedo}
+                disabled={!future.length}
+                title="Redo"
+              >
+                Redo
+              </button>
               <button
                 className="rounded-lg border-2 border-primary-300 bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-900 shadow-sm hover:border-primary-500 hover:bg-primary-100"
                 onClick={handleAddUtterance}
