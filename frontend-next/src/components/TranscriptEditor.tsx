@@ -115,6 +115,7 @@ export default function TranscriptEditor({
   const [renameFrom, setRenameFrom] = useState('')
   const [renameTo, setRenameTo] = useState('')
   const [renameFeedback, setRenameFeedback] = useState<string | null>(null)
+  const [addError, setAddError] = useState<string | null>(null)
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
@@ -313,6 +314,75 @@ export default function TranscriptEditor({
     setEditingField(null)
   }, [])
 
+  const handleAddUtterance = useCallback(() => {
+    setAddError(null)
+    if (!lines.length) {
+      setAddError('No lines available to insert after.')
+      return
+    }
+
+    const minDuration = 0.2
+    const targetId = selectedLineId ?? activeLineId ?? lines[lines.length - 1]?.id
+    const targetIndex = lines.findIndex((line) => line.id === targetId)
+    if (targetIndex < 0) {
+      setAddError('Select a line to insert after.')
+      return
+    }
+
+    const currentLine = lines[targetIndex]
+    const nextLine = lines[targetIndex + 1]
+    const nextStart = nextLine ? Number(nextLine.start) : null
+    const currentStart = Number(currentLine.start) || 0
+    const currentEnd = Number(currentLine.end) || currentStart
+
+    let newStart = currentEnd
+    let newEnd: number
+    let updatedCurrentEnd = currentEnd
+
+    if (nextLine && nextStart !== null && !Number.isNaN(nextStart)) {
+      const gap = nextStart - currentEnd
+      if (gap >= 2) {
+        newStart = currentEnd
+        newEnd = nextStart
+        if (newEnd - newStart < minDuration) {
+          newEnd = newStart + minDuration
+        }
+      } else {
+        const duration = Math.max(currentEnd - currentStart, minDuration * 2)
+        updatedCurrentEnd = currentStart + duration / 2
+        newStart = updatedCurrentEnd
+        newEnd = Math.min(currentStart + duration, nextStart)
+        if (newEnd - newStart < minDuration) {
+          newEnd = newStart + minDuration
+        }
+      }
+    } else {
+      const fallbackDuration = Math.max((sessionMeta?.audio_duration ?? 0) - currentEnd, minDuration)
+      newStart = currentEnd
+      newEnd = newStart + fallbackDuration
+    }
+
+    const newLineId = `new-${Date.now()}`
+    const updatedLines = [...lines]
+    updatedLines[targetIndex] = {
+      ...currentLine,
+      end: updatedCurrentEnd,
+    }
+    updatedLines.splice(targetIndex + 1, 0, {
+      id: newLineId,
+      speaker: currentLine.speaker,
+      text: '',
+      start: newStart,
+      end: newEnd,
+      is_continuation: false,
+    })
+
+    setLines(updatedLines)
+    setSelectedLineId(newLineId)
+    setEditingField({ lineId: newLineId, field: 'text', value: '' })
+    setIsDirty(true)
+  }, [lines, selectedLineId, activeLineId, sessionMeta])
+
   const handleRenameSpeaker = useCallback(
     (event?: React.FormEvent) => {
       if (event) {
@@ -464,8 +534,23 @@ export default function TranscriptEditor({
               />
               Auto-scroll
             </label>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-lg border-2 border-primary-300 bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-900 shadow-sm hover:border-primary-500 hover:bg-primary-100"
+                onClick={handleAddUtterance}
+                title="Insert a new utterance after the selected line. If there's a 2s gap before the next line, the new entry fills it; otherwise it takes the second half of the selected line's timing."
+              >
+                Add Utterance
+              </button>
+              <span
+                className="cursor-help rounded-full border border-primary-300 px-2 py-0.5 text-xs font-bold text-primary-800"
+                title="Adds a line after the highlighted row. If a 2+ second gap exists before the next line, it fills the gap. Otherwise, it splits the selected line and gives the second half to the new speaker."
+              >
+                ?
+              </span>
+            </div>
             <button className="btn-primary px-4 py-2" onClick={handleSave} disabled={saving || !sessionMeta || !isDirty}>
-              {saving ? 'Saving…' : 'Save Changes'}
+              {saving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
         </div>
@@ -473,6 +558,11 @@ export default function TranscriptEditor({
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               {error}
+            </div>
+          )}
+          {addError && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              {addError}
             </div>
           )}
 
