@@ -116,6 +116,7 @@ export default function TranscriptEditor({
   const [renameTo, setRenameTo] = useState('')
   const [renameFeedback, setRenameFeedback] = useState<string | null>(null)
   const [addError, setAddError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
@@ -316,6 +317,7 @@ export default function TranscriptEditor({
 
   const handleAddUtterance = useCallback(() => {
     setAddError(null)
+    setDeleteError(null)
     if (!lines.length) {
       setAddError('No lines available to insert after.')
       return
@@ -382,6 +384,35 @@ export default function TranscriptEditor({
     setEditingField({ lineId: newLineId, field: 'text', value: '' })
     setIsDirty(true)
   }, [lines, selectedLineId, activeLineId, sessionMeta])
+
+  const handleDeleteUtterance = useCallback(() => {
+    setDeleteError(null)
+    setAddError(null)
+    if (!lines.length) {
+      setDeleteError('No lines to delete.')
+      return
+    }
+    const targetId = selectedLineId ?? activeLineId
+    if (!targetId) {
+      setDeleteError('Select a line to delete.')
+      return
+    }
+    const targetIndex = lines.findIndex((line) => line.id === targetId)
+    if (targetIndex < 0) {
+      setDeleteError('Select a line to delete.')
+      return
+    }
+    if (lines.length === 1) {
+      setDeleteError('At least one utterance must remain.')
+      return
+    }
+
+    const nextSelection = lines[targetIndex + 1]?.id || lines[targetIndex - 1]?.id || null
+    const updated = lines.filter((line) => line.id !== targetId)
+    setLines(updated)
+    setSelectedLineId(nextSelection)
+    setIsDirty(true)
+  }, [lines, selectedLineId, activeLineId])
 
   const handleRenameSpeaker = useCallback(
     (event?: React.FormEvent) => {
@@ -548,6 +579,13 @@ export default function TranscriptEditor({
               >
                 ?
               </span>
+              <button
+                className="rounded-lg border-2 border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 shadow-sm hover:border-red-300 hover:bg-red-100"
+                onClick={handleDeleteUtterance}
+                title="Delete the selected utterance. At least one line must remain."
+              >
+                Delete Utterance
+              </button>
             </div>
             <button className="btn-primary px-4 py-2" onClick={handleSave} disabled={saving || !sessionMeta || !isDirty}>
               {saving ? 'Saving...' : 'Save Changes'}
@@ -560,14 +598,43 @@ export default function TranscriptEditor({
               {error}
             </div>
           )}
-          {addError && (
+          {(addError || deleteError) && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              {addError}
+              {addError || deleteError}
             </div>
           )}
 
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
             <div className="space-y-4">
+              {effectiveMediaUrl ? (
+                <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-2">
+                  <p className="text-sm font-medium text-primary-900">Media Preview</p>
+                  {isVideo ? (
+                    <video
+                      key={effectiveMediaUrl}
+                      ref={videoRef}
+                      controls
+                      preload="metadata"
+                      className="w-full rounded-lg border border-primary-200 shadow"
+                      src={effectiveMediaUrl}
+                    />
+                  ) : (
+                    <audio
+                      key={effectiveMediaUrl}
+                      ref={audioRef}
+                      controls
+                      preload="metadata"
+                      className="w-full"
+                      src={effectiveMediaUrl}
+                    />
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-primary-300 p-4 text-sm text-primary-500">
+                  Upload media to enable playback controls.
+                </div>
+              )}
+
               <div className="rounded-lg border border-primary-200 bg-primary-50 p-4 text-sm text-primary-700 space-y-2">
                 <div className="flex justify-between">
                   <span className="font-medium text-primary-900">Updated</span>
@@ -648,35 +715,6 @@ export default function TranscriptEditor({
                   </button>
                 </form>
               </div>
-
-              {effectiveMediaUrl ? (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-primary-900">Media Preview</p>
-                  {isVideo ? (
-                    <video
-                      key={effectiveMediaUrl}
-                      ref={videoRef}
-                      controls
-                      preload="metadata"
-                      className="w-full rounded-lg border border-primary-200 shadow"
-                      src={effectiveMediaUrl}
-                    />
-                  ) : (
-                    <audio
-                      key={effectiveMediaUrl}
-                      ref={audioRef}
-                      controls
-                      preload="metadata"
-                      className="w-full"
-                      src={effectiveMediaUrl}
-                    />
-                  )}
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-primary-300 p-4 text-sm text-primary-500">
-                  Upload media to enable playback controls.
-                </div>
-              )}
 
               <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-3">
                 <h3 className="text-sm font-medium text-primary-900">Import Existing Transcript</h3>
