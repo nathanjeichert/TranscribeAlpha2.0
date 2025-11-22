@@ -369,10 +369,9 @@ export default function TranscribeForm() {
   }, [editorSessionId, handleSessionChange])
 
   const tabClasses = (tab: AppTab) =>
-    `px-4 py-2 rounded-lg font-medium transition ${
-      activeTab === tab
-        ? 'bg-primary-900 text-white shadow-lg'
-        : 'bg-primary-100 text-primary-600 hover:bg-primary-200'
+    `px-4 py-2 rounded-lg font-medium transition ${activeTab === tab
+      ? 'bg-primary-900 text-white shadow-lg'
+      : 'bg-primary-100 text-primary-600 hover:bg-primary-200'
     }`
 
   const transcriptSegments =
@@ -720,6 +719,7 @@ export default function TranscribeForm() {
         {activeTab === 'editor' && (
           <TranscriptEditor
             sessionId={editorSessionId}
+            initialMediaId={sessionDetails?.title_data?.MEDIA_ID ?? sessionDetails?.media_blob_name}
             mediaUrl={mediaPreviewUrl || undefined}
             mediaType={mediaContentType ?? selectedFile?.type}
             docxBase64={result?.docx_base64}

@@ -53,6 +53,7 @@ export type EditorSaveResponse = EditorSessionResponse
 
 interface TranscriptEditorProps {
   sessionId?: string | null
+  initialMediaId?: string | null
   mediaUrl?: string
   mediaType?: string
   docxBase64?: string | null
@@ -78,6 +79,7 @@ const secondsToLabel = (seconds: number) => {
 
 export default function TranscriptEditor({
   sessionId,
+  initialMediaId,
   mediaUrl,
   mediaType,
   docxBase64,
@@ -169,19 +171,21 @@ export default function TranscriptEditor({
         if (!response.ok) {
           // Session expired or not found - attempt recovery if we have a media ID
           if (response.status === 404) {
-            const lastMediaId = localStorage.getItem('last_active_media_id')
-            if (lastMediaId) {
-              console.log('Session expired, attempting recovery for media:', lastMediaId)
+            // PRIORITIZE initialMediaId passed from parent, fallback to localStorage
+            const recoveryMediaId = initialMediaId || localStorage.getItem('last_active_media_id')
+
+            if (recoveryMediaId) {
+              console.log('Session expired, attempting recovery for media:', recoveryMediaId)
               try {
                 // 1. List snapshots for this media
-                const snapResponse = await fetch(`/api/snapshots/${encodeURIComponent(lastMediaId)}`)
+                const snapResponse = await fetch(`/api/snapshots/${encodeURIComponent(recoveryMediaId)}`)
                 if (snapResponse.ok) {
                   const snapData = await snapResponse.json()
                   const snapshots = snapData.snapshots || []
                   if (snapshots.length > 0) {
                     // 2. Get the latest snapshot
                     const latestSnap = snapshots[0]
-                    const restoreResponse = await fetch(`/api/snapshots/${encodeURIComponent(lastMediaId)}/${latestSnap.snapshot_id}`)
+                    const restoreResponse = await fetch(`/api/snapshots/${encodeURIComponent(recoveryMediaId)}/${latestSnap.snapshot_id}`)
                     if (restoreResponse.ok) {
                       const restoreData = await restoreResponse.json()
 
@@ -209,7 +213,8 @@ export default function TranscriptEditor({
                         setActiveSessionId(newSession.session_id)
                         lastFetchedId.current = newSession.session_id
                         onSessionChange(newSession)
-                        setError('Session expired. Restored from latest autosave.')
+                        // Silent recovery - user doesn't need to know session ID changed
+                        // setError('Session expired. Restored from latest autosave.') 
                         return
                       }
                     }
