@@ -34,6 +34,7 @@ export interface ClipSummary {
 
 export interface EditorSessionResponse {
   session_id?: string | null
+  media_key?: string | null
   media_blob_name?: string | null
   media_content_type?: string | null
   title_data: Record<string, string>
@@ -810,7 +811,7 @@ export default function TranscriptEditor({
         setSelectedLineId(null)
         setEditingField(null)
         activeLineMarker.current = null
-        const importedMediaKey = data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
+        const importedMediaKey = data.media_key ?? data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
         if (importedMediaKey) {
           setMediaKey(importedMediaKey)
         }

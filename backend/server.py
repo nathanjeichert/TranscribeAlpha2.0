@@ -688,6 +688,7 @@ def build_session_artifacts(
 def build_session_response(session_data: dict) -> dict:
     return {
         "session_id": session_data.get("session_id"),
+        "media_key": session_data.get("media_key"),  # Include media_key for new storage system
         "title_data": session_data.get("title_data", {}),
         "audio_duration": session_data.get("audio_duration", 0.0),
         "lines_per_page": session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
@@ -1804,11 +1805,15 @@ async def save_transcript_by_media_key(media_key: str, request: Request):
 async def list_transcript_history_by_media_key(media_key: str):
     """List all snapshots for a media_key."""
     try:
+        logger.info(f"Fetching history for media_key: {media_key}")
         bucket = storage_client.bucket(BUCKET_NAME)
         prefix = f"transcripts/{media_key}/history/"
+        logger.info(f"Looking for snapshots at prefix: {prefix}")
 
         snapshots = []
+        blob_count = 0
         for blob in bucket.list_blobs(prefix=prefix):
+            blob_count += 1
             try:
                 data = json.loads(blob.download_as_string())
                 # Support both old 'saved' and new 'is_manual_save' flags
@@ -1820,8 +1825,11 @@ async def list_transcript_history_by_media_key(media_key: str):
                     "line_count": data.get("line_count", 0),
                     "title_label": data.get("title_label", "Transcript"),
                 })
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to parse snapshot blob {blob.name}: {e}")
                 continue
+
+        logger.info(f"Found {blob_count} blobs, {len(snapshots)} valid snapshots")
 
         # Sort newest first
         snapshots.sort(key=lambda x: x["created_at"] or "", reverse=True)
@@ -2565,8 +2573,11 @@ async def import_oncue_transcript(
     if "MEDIA_ID" not in title_data:
         title_data["MEDIA_ID"] = media_key
 
+    logger.info(f"Import using media_key: {media_key}")
+
     session_payload = {
         "session_id": session_id,
+        "media_key": media_key,  # Include for new storage system
         "created_at": created_at.isoformat(),
         "updated_at": created_at.isoformat(),
         "expires_at": expires_at.isoformat(),
