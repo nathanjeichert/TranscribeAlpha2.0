@@ -231,6 +231,143 @@ def delete_editor_session(session_id: str) -> None:
         logger.error("Failed to delete editor session %s: %s", session_id, e)
 
 
+# New media-key-based storage functions
+def save_current_transcript(media_key: str, transcript_data: dict) -> None:
+    """Save current working state for a transcript using media_key as identifier."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob_name = f"transcripts/{media_key}/current.json"
+        blob = bucket.blob(blob_name)
+
+        # Set TTL metadata
+        created_at = transcript_data.get("created_at", datetime.now(timezone.utc).isoformat())
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+
+        blob.metadata = {
+            "media_key": media_key,
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": transcript_data.get("user_id", "anonymous"),
+        }
+        blob.upload_from_string(json.dumps(transcript_data), content_type="application/json")
+        logger.info("Saved current transcript for media_key %s", media_key)
+    except Exception as e:
+        logger.error("Failed to save current transcript for %s: %s", media_key, e)
+        raise
+
+
+def load_current_transcript(media_key: str) -> Optional[dict]:
+    """Load current working state, with fallback to latest snapshot."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+
+        # Try loading current.json
+        blob = bucket.blob(f"transcripts/{media_key}/current.json")
+        if blob.exists():
+            data = json.loads(blob.download_as_string())
+
+            # Check expiration
+            expires_at_str = blob.metadata.get("expires_at") if blob.metadata else None
+            if expires_at_str:
+                try:
+                    expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
+                    if datetime.now(timezone.utc) > expires_at:
+                        # Expired, delete and fall through to history
+                        blob.delete()
+                        logger.info("Deleted expired current transcript for %s", media_key)
+                    else:
+                        return data
+                except ValueError:
+                    # If we can't parse expiration, return the data anyway
+                    return data
+
+        # Fallback: Load latest snapshot from history
+        return load_latest_snapshot_for_media(media_key)
+
+    except Exception as e:
+        logger.error("Failed to load transcript for %s: %s", media_key, e)
+        return None
+
+
+def load_latest_snapshot_for_media(media_key: str, prefer_manual_save: bool = True) -> Optional[dict]:
+    """Load most recent snapshot, prioritizing manual saves."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = f"transcripts/{media_key}/history/"
+        blobs = list(bucket.list_blobs(prefix=prefix))
+
+        if not blobs:
+            return None
+
+        # Separate manual saves from auto-saves
+        manual_saves = []
+        auto_saves = []
+
+        for blob in blobs:
+            try:
+                data = json.loads(blob.download_as_string())
+                if data.get("is_manual_save"):
+                    manual_saves.append((blob.time_created, data))
+                else:
+                    auto_saves.append((blob.time_created, data))
+            except:
+                continue
+
+        # Return newest manual save if exists and preferred
+        if prefer_manual_save and manual_saves:
+            manual_saves.sort(key=lambda x: x[0], reverse=True)
+            return manual_saves[0][1]
+
+        # Otherwise return newest overall
+        all_snapshots = manual_saves + auto_saves
+        if all_snapshots:
+            all_snapshots.sort(key=lambda x: x[0], reverse=True)
+            return all_snapshots[0][1]
+
+        return None
+
+    except Exception as e:
+        logger.error("Failed to load snapshot for %s: %s", media_key, e)
+        return None
+
+
+def list_all_transcripts(user_id: str = "anonymous") -> List[dict]:
+    """List all transcripts for a user, grouped by media_key."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = "transcripts/"
+
+        # Find all current.json files
+        transcripts = []
+        for blob in bucket.list_blobs(prefix=prefix):
+            if blob.name.endswith("/current.json"):
+                try:
+                    # Check user_id in metadata (for future auth)
+                    blob_user = blob.metadata.get("user_id", "anonymous") if blob.metadata else "anonymous"
+                    if blob_user != user_id:
+                        continue
+
+                    data = json.loads(blob.download_as_string())
+                    media_key = blob.name.split("/")[1]  # Extract from path
+
+                    title_data = data.get("title_data", {})
+                    transcripts.append({
+                        "media_key": media_key,
+                        "title_label": title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or media_key,
+                        "updated_at": blob.updated.isoformat() if blob.updated else None,
+                        "line_count": len(data.get("lines", [])),
+                    })
+                except:
+                    continue
+
+        return sorted(transcripts, key=lambda x: x["updated_at"] or "", reverse=True)
+
+    except Exception as e:
+        logger.error("Failed to list transcripts: %s", e)
+        return []
+
+
 def save_clip_session(clip_id: str, clip_data: dict) -> None:
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
@@ -345,47 +482,77 @@ def list_snapshots_for_media(media_key: str) -> List[dict]:
     return items
 
 
-def prune_snapshots(media_key: str) -> None:
-    """Remove snapshots exceeding TTL or per-media limit and TTL, preserving at least one saved."""
+def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
+    """Prune snapshots to keep newest 10, preserving newest manual save."""
     try:
-        snapshots = list_snapshots_for_media(media_key)
         bucket = storage_client.bucket(BUCKET_NAME)
-        now = datetime.now(timezone.utc)
-        # TTL prune
-        for snap in snapshots:
-            created = parse_iso_datetime(snap.get("created_at"))
-            if created and created < now - timedelta(days=SNAPSHOT_TTL_DAYS):
-                blob = bucket.blob(_snapshot_blob_name(media_key, snap["snapshot_id"]))
+
+        # Support both old and new storage paths during migration
+        old_prefix = f"{SNAPSHOT_PREFIX}{media_key}/"
+        new_prefix = f"transcripts/{media_key}/history/"
+
+        blobs = list(bucket.list_blobs(prefix=new_prefix))
+        if not blobs:
+            # Fallback to old path for backwards compatibility
+            blobs = list(bucket.list_blobs(prefix=old_prefix))
+
+        # Phase 1: Delete expired snapshots (14+ days old)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=SNAPSHOT_TTL_DAYS)
+        for blob in blobs[:]:
+            if blob.time_created and blob.time_created < cutoff:
                 try:
                     blob.delete()
+                    blobs.remove(blob)
                 except Exception:
                     logger.warning("Failed to delete expired snapshot %s", blob.name)
-        # Reload list after TTL prune
-        snapshots = list_snapshots_for_media(media_key)
-        if len(snapshots) <= SNAPSHOT_PER_MEDIA_LIMIT:
+
+        # Phase 2: Enforce per-media limit (10 snapshots)
+        if len(blobs) <= SNAPSHOT_PER_MEDIA_LIMIT:
             return
-        # Ensure we keep at least one saved snapshot
-        saved = [s for s in snapshots if s.get("saved")]
-        newest_saved = saved[0] if saved else None
-        # Keep newest snapshots up to limit, but ensure newest_saved is included
-        keep: List[dict] = []
-        for snap in snapshots:
-            if len(keep) >= SNAPSHOT_PER_MEDIA_LIMIT:
-                break
-            keep.append(snap)
-        if newest_saved and all(s["snapshot_id"] != newest_saved["snapshot_id"] for s in keep):
-            keep[-1] = newest_saved  # replace oldest in keep with a saved snapshot
-        keep_ids = {s["snapshot_id"] for s in keep}
-        for snap in snapshots:
-            if snap["snapshot_id"] in keep_ids:
-                continue
-            blob = bucket.blob(_snapshot_blob_name(media_key, snap["snapshot_id"]))
+
+        # Load all snapshot data to check is_manual_save flag
+        snapshot_info = []
+        for blob in blobs:
             try:
-                blob.delete()
-            except Exception:
-                logger.warning("Failed to delete excess snapshot %s", blob.name)
+                data = json.loads(blob.download_as_string())
+                # Support both old 'saved' flag and new 'is_manual_save' flag
+                is_manual = data.get("is_manual_save", data.get("saved", False))
+                snapshot_info.append({
+                    "blob": blob,
+                    "created_at": blob.time_created,
+                    "is_manual_save": is_manual,
+                })
+            except:
+                continue
+
+        # Sort by creation time (newest first)
+        snapshot_info.sort(key=lambda x: x["created_at"], reverse=True)
+
+        # Find newest manual save
+        newest_manual_save = next(
+            (s for s in snapshot_info if s["is_manual_save"]),
+            None
+        )
+
+        # Keep newest N snapshots
+        to_keep = snapshot_info[:SNAPSHOT_PER_MEDIA_LIMIT]
+
+        # Ensure newest manual save is included
+        if newest_manual_save and newest_manual_save not in to_keep:
+            # Replace oldest kept snapshot with the manual save
+            to_keep[-1] = newest_manual_save
+
+        # Delete everything not in to_keep
+        keep_blob_names = {s["blob"].name for s in to_keep}
+        for s in snapshot_info:
+            if s["blob"].name not in keep_blob_names:
+                try:
+                    s["blob"].delete()
+                except Exception:
+                    logger.warning("Failed to delete excess snapshot %s", s["blob"].name)
+
     except Exception as exc:
-        logger.error("Failed pruning snapshots for media %s: %s", media_key, exc)
+        logger.error("Snapshot pruning failed for %s: %s", media_key, exc)
 
 
 def session_is_expired(session_data: dict) -> bool:
@@ -925,13 +1092,17 @@ def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
     }
 
 
-def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dict]] = None, title_override: Optional[dict] = None) -> dict:
-    """Create a lightweight snapshot payload with XML + lines only."""
+def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dict]] = None, title_override: Optional[dict] = None, is_manual_save: bool = False) -> dict:
+    """Create a snapshot payload with XML + lines + media references."""
     xml_b64 = session_data.get("oncue_xml_base64")
     title_data = title_override or session_data.get("title_data") or {}
     lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
     audio_duration = float(session_data.get("audio_duration") or 0.0)
     source_lines = lines_override if lines_override is not None else session_data.get("lines") or []
+
+    # CRITICAL FIX: Always include media references for playback recovery
+    media_blob_name = session_data.get("media_blob_name")
+    media_content_type = session_data.get("media_content_type")
 
     if not xml_b64:
         # Rebuild XML from lines as a fallback
@@ -960,6 +1131,11 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
         "lines": source_lines,
         "oncue_xml_base64": xml_b64,
         "line_count": len(source_lines),
+        "is_manual_save": is_manual_save,
+        "user_id": session_data.get("user_id", "anonymous"),  # Auth-ready
+        # CRITICAL: Include media references for playback recovery
+        "media_blob_name": media_blob_name,
+        "media_content_type": media_content_type,
     }
 
 
@@ -1407,6 +1583,9 @@ async def transcribe(
             # Comma-separated format
             speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
 
+    # Generate stable MEDIA_ID for this transcript
+    media_id = uuid.uuid4().hex
+
     title_data = {
         "CASE_NAME": case_name,
         "CASE_NUMBER": case_number,
@@ -1416,6 +1595,7 @@ async def transcribe(
         "LOCATION": location,
         "FILE_NAME": file.filename,
         "FILE_DURATION": "Calculating...",
+        "MEDIA_ID": media_id,  # Stable identifier for this transcript
     }
 
     # Upload media for editor playback
@@ -1473,14 +1653,13 @@ async def transcribe(
     docx_b64 = base64.b64encode(docx_bytes).decode()
     oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
-    session_id = uuid.uuid4().hex
+    # Use MEDIA_ID as the stable identifier
+    media_key = media_id
     created_at = datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
 
-    session_payload = {
-        "session_id": session_id,
+    transcript_data = {
+        "media_key": media_key,
         "created_at": created_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
         "title_data": title_data,
         "audio_duration": float(duration_seconds or 0),
         "lines_per_page": DEFAULT_LINES_PER_PAGE,
@@ -1492,21 +1671,41 @@ async def transcribe(
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
         "updated_at": created_at.isoformat(),
+        "user_id": "anonymous",  # Will come from auth later
         "clips": [],
     }
 
     try:
+        # Save as current state
+        save_current_transcript(media_key, transcript_data)
+
+        # Also create initial snapshot (manual save)
+        snapshot_id = uuid.uuid4().hex
+        snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
+        snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
+
+        # Keep old session-based storage for backwards compatibility during migration
+        session_id = uuid.uuid4().hex
+        expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
+        session_payload = {
+            **transcript_data,
+            "session_id": session_id,
+            "expires_at": expires_at.isoformat(),
+        }
         save_editor_session(session_id, session_payload)
+
     except Exception as e:
-        logger.error("Failed to store editor session: %s", e)
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=500, detail="Unable to persist editor session")
+        logger.error("Failed to store transcript: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to persist transcript")
 
     response_data = {
         "transcript": transcript_text,
         "docx_base64": docx_b64,
         "oncue_xml_base64": oncue_b64,
-        "editor_session_id": session_id,
+        "media_key": media_key,  # Return media_key as primary identifier
+        "editor_session_id": session_id,  # Keep for backwards compatibility
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
     }
@@ -1514,6 +1713,151 @@ async def transcribe(
     return JSONResponse(response_data)
 
 
+# New media-key-based API endpoints
+@app.get("/api/transcripts")
+async def list_transcripts_endpoint(user_id: str = "anonymous"):
+    """List all transcripts for browsing."""
+    try:
+        transcripts = list_all_transcripts(user_id)
+        return JSONResponse(content={"transcripts": transcripts})
+    except Exception as e:
+        logger.error(f"Failed to list transcripts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/transcripts/by-key/{media_key:path}")
+async def get_transcript_by_media_key(media_key: str):
+    """Get current transcript state or latest snapshot by media_key."""
+    try:
+        data = load_current_transcript(media_key)
+        if not data:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        return JSONResponse(content=data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load transcript {media_key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/transcripts/by-key/{media_key:path}")
+async def save_transcript_by_media_key(media_key: str, request: Request):
+    """Save transcript changes (auto-save or manual save)."""
+    try:
+        payload = await request.json()
+
+        lines = payload.get("lines", [])
+        title_data = payload.get("title_data", {})
+        is_manual_save = payload.get("is_manual_save", False)
+        user_id = payload.get("user_id", "anonymous")
+
+        # Load existing or create new
+        existing = load_current_transcript(media_key) or {}
+
+        # Update with new data
+        transcript_data = {
+            **existing,
+            "media_key": media_key,
+            "lines": lines,
+            "title_data": title_data,
+            "user_id": user_id,
+            "created_at": existing.get("created_at", datetime.now(timezone.utc).isoformat()),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "audio_duration": payload.get("audio_duration", existing.get("audio_duration", 0.0)),
+            "lines_per_page": payload.get("lines_per_page", existing.get("lines_per_page", DEFAULT_LINES_PER_PAGE)),
+            "media_blob_name": payload.get("media_blob_name", existing.get("media_blob_name")),
+            "media_content_type": payload.get("media_content_type", existing.get("media_content_type")),
+        }
+
+        # Regenerate DOCX and XML
+        turns = existing.get("turns", [])
+        try:
+            docx_bytes = create_docx(lines, title_data)
+            transcript_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
+
+            xml_content = generate_oncue_xml(turns, lines, title_data, transcript_data.get("media_blob_name"))
+            transcript_data["oncue_xml_base64"] = base64.b64encode(xml_content.encode("utf-8")).decode("ascii")
+        except Exception as e:
+            logger.warning(f"Failed to regenerate documents: {e}")
+
+        # Save current state
+        save_current_transcript(media_key, transcript_data)
+
+        # Also create snapshot in history
+        snapshot_id = uuid.uuid4().hex
+        snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=is_manual_save)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
+        snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
+
+        # Prune old snapshots
+        prune_snapshots(media_key, user_id)
+
+        return JSONResponse(content=transcript_data)
+
+    except Exception as e:
+        logger.error(f"Save failed for {media_key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/transcripts/by-key/{media_key:path}/history")
+async def list_transcript_history_by_media_key(media_key: str):
+    """List all snapshots for a media_key."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = f"transcripts/{media_key}/history/"
+
+        snapshots = []
+        for blob in bucket.list_blobs(prefix=prefix):
+            try:
+                data = json.loads(blob.download_as_string())
+                # Support both old 'saved' and new 'is_manual_save' flags
+                is_manual = data.get("is_manual_save", data.get("saved", False))
+                snapshots.append({
+                    "snapshot_id": blob.name.split("/")[-1].replace(".json", ""),
+                    "created_at": data.get("created_at"),
+                    "is_manual_save": is_manual,
+                    "line_count": data.get("line_count", 0),
+                    "title_label": data.get("title_label", "Transcript"),
+                })
+            except:
+                continue
+
+        # Sort newest first
+        snapshots.sort(key=lambda x: x["created_at"] or "", reverse=True)
+
+        return JSONResponse(content={"snapshots": snapshots})
+
+    except Exception as e:
+        logger.error(f"Failed to list history for {media_key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/transcripts/by-key/{media_key:path}/restore/{snapshot_id}")
+async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str):
+    """Restore a specific snapshot as current state."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
+
+        if not blob.exists():
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+
+        snapshot_data = json.loads(blob.download_as_string())
+
+        # Save as current
+        save_current_transcript(media_key, snapshot_data)
+
+        return JSONResponse(content=snapshot_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to restore snapshot {snapshot_id} for {media_key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Old session-based endpoints (kept for backwards compatibility)
 @app.get("/api/transcripts/{session_id}")
 async def get_editor_session(session_id: str):
     session_data = load_editor_session(session_id)

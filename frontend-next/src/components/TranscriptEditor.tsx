@@ -77,6 +77,50 @@ const secondsToLabel = (seconds: number) => {
     .padStart(3, '0')}`
 }
 
+// localStorage helpers for cross-page state persistence
+interface LocalStorageTranscriptState {
+  mediaKey: string
+  lines: EditorLine[]
+  titleData: Record<string, string>
+  mediaBlobName?: string | null
+  mediaContentType?: string | null
+  audioDuration: number
+  linesPerPage: number
+  lastSaved: string
+}
+
+const STORAGE_KEY_PREFIX = 'transcript_state_'
+
+function saveToLocalStorage(mediaKey: string, state: LocalStorageTranscriptState) {
+  try {
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${mediaKey}`,
+      JSON.stringify(state)
+    )
+  } catch (err) {
+    console.error('Failed to save to localStorage:', err)
+  }
+}
+
+function loadFromLocalStorage(mediaKey: string): LocalStorageTranscriptState | null {
+  try {
+    const data = localStorage.getItem(`${STORAGE_KEY_PREFIX}${mediaKey}`)
+    if (!data) return null
+    return JSON.parse(data)
+  } catch (err) {
+    console.error('Failed to load from localStorage:', err)
+    return null
+  }
+}
+
+function clearLocalStorage(mediaKey: string) {
+  try {
+    localStorage.removeItem(`${STORAGE_KEY_PREFIX}${mediaKey}`)
+  } catch (err) {
+    console.error('Failed to clear localStorage:', err)
+  }
+}
+
 export default function TranscriptEditor({
   sessionId,
   initialMediaId,
@@ -1173,7 +1217,7 @@ export default function TranscriptEditor({
                       const isSelected = selectedLineId === line.id
                       const rowClasses = [
                         'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm',
-                        isActive ? 'bg-yellow-100' : 'bg-white hover:bg-primary-200',
+                        isActive ? 'bg-yellow-200' : 'bg-white hover:bg-primary-200',
                         isSelected ? 'ring-2 ring-primary-300' : '',
                       ]
                       return (
