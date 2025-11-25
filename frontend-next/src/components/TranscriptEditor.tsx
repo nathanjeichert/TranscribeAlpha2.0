@@ -139,7 +139,7 @@ export default function TranscriptEditor({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId ?? null)
+  const [mediaKey, setMediaKey] = useState<string | null>(initialMediaId ?? null)
   const [activeLineId, setActiveLineId] = useState<string | null>(null)
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -205,91 +205,50 @@ export default function TranscriptEditor({
     [lines],
   )
 
-  const fetchSession = useCallback(
-    async (id?: string | null) => {
+  const fetchTranscript = useCallback(
+    async (key?: string | null) => {
+      const targetKey = key || initialMediaId
+      if (!targetKey) {
+        setError('No media key provided')
+        return
+      }
+
       setLoading(true)
       setError(null)
+
       try {
-        const endpoint = id ? `/api/transcripts/${id}` : '/api/transcripts/latest'
-        const response = await fetch(endpoint)
+        // Try loading from server first
+        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(targetKey)}`)
+
         if (!response.ok) {
-          // Session expired or not found - attempt recovery if we have a media ID
           if (response.status === 404) {
-            // PRIORITIZE initialMediaId passed from parent, fallback to localStorage
-            const recoveryMediaId = initialMediaId || localStorage.getItem('last_active_media_id')
-
-            if (recoveryMediaId) {
-              console.log('Session expired, attempting recovery for media:', recoveryMediaId)
-              try {
-                // 1. List snapshots for this media
-                const snapResponse = await fetch(`/api/snapshots/${encodeURIComponent(recoveryMediaId)}`)
-                if (snapResponse.ok) {
-                  const snapData = await snapResponse.json()
-                  const snapshots = snapData.snapshots || []
-                  if (snapshots.length > 0) {
-                    // 2. Get the latest snapshot
-                    const latestSnap = snapshots[0]
-                    const restoreResponse = await fetch(`/api/snapshots/${encodeURIComponent(recoveryMediaId)}/${latestSnap.snapshot_id}`)
-                    if (restoreResponse.ok) {
-                      const restoreData = await restoreResponse.json()
-
-                      // 3. Create new session from snapshot data
-                      const createResponse = await fetch('/api/transcripts/create', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          lines: restoreData.lines,
-                          title_data: restoreData.title_data,
-                          media_blob_name: restoreData.media_blob_name, // Might be null in snapshot, but that's ok
-                          media_content_type: restoreData.media_content_type,
-                          audio_duration: restoreData.audio_duration,
-                          lines_per_page: restoreData.lines_per_page
-                        })
-                      })
-
-                      if (createResponse.ok) {
-                        const newSession = await createResponse.json()
-                        setSessionMeta(newSession)
-                        setLines(newSession.lines || [])
-                        setHistory([])
-                        setFuture([])
-                        setIsDirty(false)
-                        setActiveSessionId(newSession.session_id)
-                        lastFetchedId.current = newSession.session_id
-                        onSessionChange(newSession)
-                        // Silent recovery - user doesn't need to know session ID changed
-                        // setError('Session expired. Restored from latest autosave.') 
-                        return
-                      }
-                    }
-                  }
-                }
-              } catch (recErr) {
-                console.error('Recovery failed', recErr)
-              }
-            }
-            // If no mediaId or recovery failed, and it was a 404 for a non-specific ID,
-            // then treat it as no session found.
-            if (!id) {
-              setSessionMeta(null)
-              setLines([])
+            // Try localStorage fallback
+            const cached = loadFromLocalStorage(targetKey)
+            if (cached) {
+              setLines(cached.lines)
+              setSessionMeta({
+                title_data: cached.titleData,
+                audio_duration: cached.audioDuration,
+                lines_per_page: cached.linesPerPage,
+                lines: cached.lines,
+                media_blob_name: cached.mediaBlobName,
+                media_content_type: cached.mediaContentType,
+              } as EditorSessionResponse)
+              setMediaKey(targetKey)
+              setError('Loaded from local cache. Save to sync with server.')
+              setLoading(false)
               return
             }
           }
 
           const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to load transcript session')
+          throw new Error(detail?.detail || 'Failed to load transcript')
         }
+
         const data: EditorSessionResponse = await response.json()
         setSessionMeta(data)
         setLines(data.lines || [])
-
-        // Persist MEDIA_ID for recovery
-        const mediaId = data.title_data?.MEDIA_ID
-        if (mediaId) {
-          localStorage.setItem('last_active_media_id', mediaId)
-        }
-
+        setMediaKey(targetKey)
         setHistory([])
         setFuture([])
         setIsDirty(false)
@@ -299,19 +258,25 @@ export default function TranscriptEditor({
         activeLineMarker.current = null
         onSessionChange(data)
 
-        if (!id && data.session_id) {
-          lastFetchedId.current = data.session_id
-          setActiveSessionId(data.session_id)
-        } else {
-          lastFetchedId.current = id ?? undefined
-        }
+        // Save to localStorage for offline access
+        saveToLocalStorage(targetKey, {
+          mediaKey: targetKey,
+          lines: data.lines || [],
+          titleData: data.title_data ?? {},
+          mediaBlobName: data.media_blob_name,
+          mediaContentType: data.media_content_type,
+          audioDuration: data.audio_duration,
+          linesPerPage: data.lines_per_page,
+          lastSaved: new Date().toISOString(),
+        })
+
       } catch (err: any) {
-        setError(err.message || 'Failed to load transcript session')
+        setError(err.message || 'Failed to load transcript')
       } finally {
         setLoading(false)
       }
     },
-    [onSessionChange],
+    [initialMediaId, onSessionChange],
   )
 
   // Track the current editing session to avoid re-selecting text on every keystroke
@@ -412,30 +377,74 @@ export default function TranscriptEditor({
     }
   }, [localMediaPreviewUrl])
 
+  // beforeunload handler for cross-page persistence
   useEffect(() => {
-    if (!sessionMeta?.session_id) return
+    const handleBeforeUnload = () => {
+      if (mediaKey && sessionMeta) {
+        saveToLocalStorage(mediaKey, {
+          mediaKey,
+          lines,
+          titleData: sessionMeta.title_data ?? {},
+          mediaBlobName: sessionMeta.media_blob_name,
+          mediaContentType: sessionMeta.media_content_type,
+          audioDuration: sessionMeta.audio_duration,
+          linesPerPage: sessionMeta.lines_per_page,
+          lastSaved: new Date().toISOString(),
+        })
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [mediaKey, lines, sessionMeta])
+
+  useEffect(() => {
+    if (!mediaKey || !sessionMeta) return
+
     const interval = setInterval(async () => {
       if (!isDirty) return
+
       try {
         const now = Date.now()
-        if (now - lastSnapshotRef.current < 5000) return
-        await fetch(`/api/transcripts/${sessionMeta.session_id}/snapshots`, {
-          method: 'POST',
+        if (now - lastSnapshotRef.current < 5000) return  // Debounce
+
+        // Auto-save creates both current state AND snapshot
+        await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}`, {
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             lines,
             title_data: sessionMeta.title_data ?? {},
-            saved: false,
+            is_manual_save: false,  // Auto-save flag
+            audio_duration: sessionMeta.audio_duration,
+            lines_per_page: sessionMeta.lines_per_page,
+            media_blob_name: sessionMeta.media_blob_name,
+            media_content_type: sessionMeta.media_content_type,
           }),
         })
+
         lastSnapshotRef.current = now
         setSnapshotError(null)
+
+        // Also save to localStorage
+        saveToLocalStorage(mediaKey, {
+          mediaKey,
+          lines,
+          titleData: sessionMeta.title_data ?? {},
+          mediaBlobName: sessionMeta.media_blob_name,
+          mediaContentType: sessionMeta.media_content_type,
+          audioDuration: sessionMeta.audio_duration,
+          linesPerPage: sessionMeta.lines_per_page,
+          lastSaved: new Date().toISOString(),
+        })
+
       } catch (err: any) {
-        setSnapshotError(err.message || 'Snapshot save failed')
+        setSnapshotError(err.message || 'Auto-save failed')
       }
-    }, 30000)
+    }, 60000)  // Changed from 30000 to 60000 (1 minute)
+
     return () => clearInterval(interval)
-  }, [sessionMeta?.session_id, isDirty, lines, sessionMeta])
+  }, [mediaKey, sessionMeta, isDirty, lines])
 
   const cloneLines = useCallback((source: EditorLine[]) => source.map((line) => ({ ...line })), [])
 
@@ -626,49 +635,58 @@ export default function TranscriptEditor({
   const loadSnapshots = useCallback(async () => {
     setLoadingSnapshots(true)
     setSnapshotError(null)
+
     try {
-      const response = await fetch('/api/transcripts/snapshots')
+      if (!mediaKey) {
+        throw new Error('No media key available')
+      }
+
+      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/history`)
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to load snapshots')
+        throw new Error(detail?.detail || 'Failed to load history')
       }
+
       const data = await response.json()
-      const snaps = (data?.snapshots as any[]) || []
-      setSnapshots(snaps)
-      if (snaps.length && !selectedMediaKey) {
-        setSelectedMediaKey(snaps[0].display_media_key || snaps[0].media_key || 'unknown')
-      }
+      setSnapshots(data.snapshots || [])
+
     } catch (err: any) {
-      setSnapshotError(err.message || 'Failed to load snapshots')
+      setSnapshotError(err.message || 'Failed to load history')
     } finally {
       setLoadingSnapshots(false)
     }
-  }, [selectedMediaKey])
+  }, [mediaKey])
 
   const handleRestoreSnapshot = useCallback(
-    async (snapshotId: string, mediaKey?: string | null) => {
-      const path = mediaKey ? `/api/snapshots/${mediaKey}/${snapshotId}` : !selectedMediaKey ? null : `/api/snapshots/${selectedMediaKey}/${snapshotId}`
-      if (!path) return
+    async (snapshotId: string) => {
+      if (!mediaKey) return
+
       setSnapshotError(null)
+
       try {
-        const response = await fetch(path)
+        const response = await fetch(
+          `/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/restore/${snapshotId}`,
+          { method: 'POST' }
+        )
+
         if (!response.ok) {
           const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to load snapshot')
+          throw new Error(detail?.detail || 'Failed to restore snapshot')
         }
+
         const data = await response.json()
         const restoredLines: EditorLine[] = data.lines || []
+
         const nextMeta: EditorSessionResponse = {
-          ...(sessionMeta || {}),
-          session_id: data.session_id ?? sessionMeta?.session_id ?? null,
-          title_data: data.title_data ?? sessionMeta?.title_data ?? {},
-          audio_duration: data.audio_duration ?? sessionMeta?.audio_duration ?? 0,
-          lines_per_page: data.lines_per_page ?? sessionMeta?.lines_per_page ?? 25,
-          oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta?.oncue_xml_base64 ?? null,
-          media_blob_name: sessionMeta?.media_blob_name ?? null,
-          media_content_type: sessionMeta?.media_content_type ?? null,
+          title_data: data.title_data ?? {},
+          audio_duration: data.audio_duration ?? 0,
+          lines_per_page: data.lines_per_page ?? 25,
+          oncue_xml_base64: data.oncue_xml_base64 ?? null,
+          media_blob_name: data.media_blob_name ?? null,  // FIXED: Now included
+          media_content_type: data.media_content_type ?? null,  // FIXED: Now included
           lines: restoredLines,
         }
+
         setLines(restoredLines)
         setSessionMeta(nextMeta)
         setHistory([])
@@ -676,55 +694,53 @@ export default function TranscriptEditor({
         setIsDirty(true)
         setSelectedLineId(null)
         setShowSnapshots(false)
+
+        // Save to localStorage
+        saveToLocalStorage(mediaKey, {
+          mediaKey,
+          lines: restoredLines,
+          titleData: nextMeta.title_data,
+          mediaBlobName: nextMeta.media_blob_name,
+          mediaContentType: nextMeta.media_content_type,
+          audioDuration: nextMeta.audio_duration,
+          linesPerPage: nextMeta.lines_per_page,
+          lastSaved: new Date().toISOString(),
+        })
+
       } catch (err: any) {
         setSnapshotError(err.message || 'Failed to restore snapshot')
       }
     },
-    [sessionMeta, setSessionMeta],
+    [mediaKey],
   )
 
   const handleSave = useCallback(async () => {
-    const targetSessionId = sessionMeta?.session_id ?? activeSessionId
-    if (!targetSessionId) {
-      setError('No transcript session available to save.')
+    if (!mediaKey) {
+      setError('No media key available to save.')
       return
     }
+
     setSaving(true)
     setError(null)
+
     try {
-      let response = await fetch(`/api/transcripts/${targetSessionId}`, {
+      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           lines,
           title_data: sessionMeta?.title_data ?? {},
-          media_blob_name: sessionMeta?.media_blob_name ?? null,
-          media_content_type: sessionMeta?.media_content_type ?? null,
+          is_manual_save: true,  // Manual save flag
+          audio_duration: sessionMeta?.audio_duration ?? 0,
+          lines_per_page: sessionMeta?.lines_per_page ?? 25,
+          media_blob_name: sessionMeta?.media_blob_name,
+          media_content_type: sessionMeta?.media_content_type,
         }),
       })
 
-      // Recovery: If session not found (404), create a new one with current state
-      if (response.status === 404) {
-        console.log('Session expired during save. Creating new session...')
-        response = await fetch('/api/transcripts/create', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lines,
-            title_data: sessionMeta?.title_data ?? {},
-            media_blob_name: sessionMeta?.media_blob_name ?? null,
-            media_content_type: sessionMeta?.media_content_type ?? null,
-            audio_duration: sessionMeta?.audio_duration ?? 0,
-            lines_per_page: sessionMeta?.lines_per_page ?? 25
-          })
-        })
-      }
-
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to save editor session')
+        throw new Error(detail?.detail || 'Failed to save')
       }
 
       const data: EditorSaveResponse = await response.json()
@@ -738,37 +754,27 @@ export default function TranscriptEditor({
       setHistory([])
       setFuture([])
 
-      // If we recovered (ID changed), update state and URL
-      if (data.session_id && data.session_id !== targetSessionId) {
-        setActiveSessionId(data.session_id)
-        lastFetchedId.current = data.session_id
-        // Update URL without reload
-        window.history.replaceState(null, '', `/editor?session=${data.session_id}`)
-        setError('Session expired. Saved as new session.')
-      }
+      // Save to localStorage
+      saveToLocalStorage(mediaKey, {
+        mediaKey,
+        lines: data.lines || [],
+        titleData: data.title_data ?? {},
+        mediaBlobName: data.media_blob_name,
+        mediaContentType: data.media_content_type,
+        audioDuration: data.audio_duration,
+        linesPerPage: data.lines_per_page,
+        lastSaved: new Date().toISOString(),
+      })
 
       onSaveComplete(data)
       onSessionChange(data)
 
-      try {
-        await fetch(`/api/transcripts/${data.session_id}/snapshots`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lines,
-            title_data: sessionMeta?.title_data ?? {},
-            saved: true,
-          }),
-        })
-      } catch (err) {
-        /* non-blocking */
-      }
     } catch (err: any) {
-      setError(err.message || 'Failed to save editor session')
+      setError(err.message || 'Failed to save')
     } finally {
       setSaving(false)
     }
-  }, [sessionMeta, activeSessionId, lines, onSaveComplete, onSessionChange])
+  }, [mediaKey, lines, sessionMeta, onSaveComplete, onSessionChange])
 
   const handleImport = useCallback(
     async (event: React.FormEvent) => {

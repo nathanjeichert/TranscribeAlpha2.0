@@ -18,7 +18,7 @@ interface TranscriptResponse {
   transcript: string
   docx_base64: string
   oncue_xml_base64: string
-  editor_session_id?: string
+  media_key?: string
   media_blob_name?: string | null
   media_content_type?: string | null
 }
@@ -38,7 +38,7 @@ export default function TranscribeForm() {
 
   const [activeTab, setActiveTab] = useState<AppTab>('transcribe')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [editorSessionId, setEditorSessionId] = useState<string | null>(null)
+  const [mediaKey, setMediaKey] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<TranscriptResponse | null>(null)
@@ -53,10 +53,9 @@ export default function TranscribeForm() {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const syncEditorSession = useCallback(
+  const syncTranscriptState = useCallback(
     (raw: {
-      session_id?: string | null
-      editor_session_id?: string | null
+      media_key?: string | null
       docx_base64?: string | null
       oncue_xml_base64?: string | null
       transcript?: string | null
@@ -64,14 +63,14 @@ export default function TranscribeForm() {
       media_content_type?: string | null
       full_session?: EditorSessionResponse
     }) => {
-      const sessionIdValue = raw.session_id ?? raw.editor_session_id ?? null
+      const mediaKeyValue = raw.media_key ?? null
 
-      setEditorSessionId(sessionIdValue)
+      setMediaKey(mediaKeyValue)
       setResult((prev) => ({
         transcript: raw.transcript ?? prev?.transcript ?? '',
         docx_base64: raw.docx_base64 ?? prev?.docx_base64 ?? '',
         oncue_xml_base64: raw.oncue_xml_base64 ?? prev?.oncue_xml_base64 ?? '',
-        editor_session_id: sessionIdValue ?? undefined,
+        media_key: mediaKeyValue ?? undefined,
         media_blob_name: raw.media_blob_name ?? prev?.media_blob_name,
         media_content_type: raw.media_content_type ?? prev?.media_content_type,
       }))
@@ -100,87 +99,12 @@ export default function TranscribeForm() {
     }
   }, [mediaPreviewUrl, mediaIsLocal])
 
-  useEffect(() => {
-    let cancelled = false
-
-    const loadLatestSession = async () => {
-      try {
-        const response = await fetch('/api/transcripts/latest')
-        if (!response.ok) {
-          return
-        }
-        const data: EditorSessionResponse = await response.json()
-        if (cancelled) return
-        if (data.session_id) {
-          syncEditorSession({
-            session_id: data.session_id,
-            docx_base64: data.docx_base64 ?? undefined,
-            oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
-            transcript: data.transcript ?? undefined,
-            media_blob_name: data.media_blob_name ?? undefined,
-            media_content_type: data.media_content_type ?? undefined,
-            full_session: data,
-          })
-        }
-      } catch (err) {
-        console.warn('Failed to load latest transcript session', err)
-      }
-    }
-
-    loadLatestSession()
-
-    return () => {
-      cancelled = true
-    }
-  }, [syncEditorSession])
-
-  useEffect(() => {
-    if (!editorSessionId) {
-      setSessionDetails(null)
-      return
-    }
-    if (sessionDetails?.session_id === editorSessionId) {
-      return
-    }
-
-    let cancelled = false
-
-    const loadSession = async () => {
-      try {
-        const response = await fetch(`/api/transcripts/${editorSessionId}`)
-        if (!response.ok) {
-          return
-        }
-        const data: EditorSessionResponse = await response.json()
-        if (cancelled) return
-        syncEditorSession({
-          session_id: data.session_id,
-          docx_base64: data.docx_base64 ?? undefined,
-          oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
-          transcript: data.transcript ?? undefined,
-          media_blob_name: data.media_blob_name ?? undefined,
-          media_content_type: data.media_content_type ?? undefined,
-          full_session: data,
-        })
-      } catch (err) {
-        if (!cancelled) {
-          console.warn('Failed to load session details', err)
-        }
-      }
-    }
-
-    loadSession()
-
-    return () => {
-      cancelled = true
-    }
-  }, [editorSessionId, sessionDetails?.session_id, syncEditorSession])
-
   const handleSessionChange = useCallback(
     (session: EditorSessionResponse) => {
       setSessionDetails(session)
-      syncEditorSession({
-        session_id: session.session_id,
+      const mediaKeyValue = session.title_data?.MEDIA_ID ?? session.media_blob_name ?? null
+      syncTranscriptState({
+        media_key: mediaKeyValue,
         docx_base64: session.docx_base64 ?? undefined,
         oncue_xml_base64: session.oncue_xml_base64 ?? undefined,
         transcript: session.transcript ?? undefined,
@@ -189,7 +113,7 @@ export default function TranscribeForm() {
         full_session: session,
       })
     },
-    [syncEditorSession],
+    [syncTranscriptState],
   )
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -211,7 +135,7 @@ export default function TranscribeForm() {
     setSelectedFile(file)
     setError('')
     setResult(null)
-    setEditorSessionId(null)
+    setMediaKey(null)
     setSessionDetails(null)
     setActiveTab('transcribe')
 
@@ -233,7 +157,7 @@ export default function TranscribeForm() {
     setProgress(0)
     setError('')
     setResult(null)
-    setEditorSessionId(null)
+    setMediaKey(null)
     setSessionDetails(null)
 
     const progressInterval = setInterval(() => {
@@ -261,8 +185,8 @@ export default function TranscribeForm() {
       }
 
       const data: TranscriptResponse = await response.json()
-      syncEditorSession({
-        session_id: data.editor_session_id ?? null,
+      syncTranscriptState({
+        media_key: data.media_key ?? null,
         docx_base64: data.docx_base64,
         oncue_xml_base64: data.oncue_xml_base64,
         transcript: data.transcript,
@@ -275,7 +199,7 @@ export default function TranscribeForm() {
       }
       setProgress(100)
 
-      if (useGeminiPolish && (data.editor_session_id ?? editorSessionId)) {
+      if (useGeminiPolish && (data.media_key ?? mediaKey)) {
         await handleGeminiRefine()
       }
     } catch (err: any) {
@@ -332,8 +256,9 @@ export default function TranscribeForm() {
 
   const handleEditorSave = (data: EditorSaveResponse) => {
     setSessionDetails(data)
-    syncEditorSession({
-      session_id: data.session_id,
+    const mediaKeyValue = data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
+    syncTranscriptState({
+      media_key: mediaKeyValue,
       docx_base64: data.docx_base64 ?? undefined,
       oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
       transcript: data.transcript ?? undefined,
@@ -344,14 +269,14 @@ export default function TranscribeForm() {
   }
 
   const handleGeminiRefine = useCallback(async () => {
-    if (!editorSessionId) {
-      setGeminiError('No transcript session available for Gemini.')
+    if (!mediaKey) {
+      setGeminiError('No transcript available for Gemini.')
       return
     }
     setGeminiBusy(true)
     setGeminiError(null)
     try {
-      const response = await fetch(`/api/transcripts/${editorSessionId}/gemini-refine`, {
+      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/gemini-refine`, {
         method: 'POST',
       })
       if (!response.ok) {
@@ -366,7 +291,7 @@ export default function TranscribeForm() {
     } finally {
       setGeminiBusy(false)
     }
-  }, [editorSessionId, handleSessionChange])
+  }, [mediaKey, handleSessionChange])
 
   const tabClasses = (tab: AppTab) =>
     `px-4 py-2 rounded-lg font-medium transition ${activeTab === tab
@@ -412,7 +337,7 @@ export default function TranscribeForm() {
 
         {activeTab === 'transcribe' && (
           <div className="space-y-8">
-            {editorSessionId && (
+            {mediaKey && (
               <div className="card border border-amber-300 bg-amber-50/50">
                 <div className="card-body flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
@@ -694,8 +619,8 @@ export default function TranscribeForm() {
                       <button
                         type="button"
                         className="btn-outline"
-                        onClick={() => editorSessionId && setActiveTab('editor')}
-                        disabled={!editorSessionId}
+                        onClick={() => mediaKey && setActiveTab('editor')}
+                        disabled={!mediaKey}
                       >
                         Open Editor
                       </button>
@@ -718,8 +643,8 @@ export default function TranscribeForm() {
 
         {activeTab === 'editor' && (
           <TranscriptEditor
-            sessionId={editorSessionId}
-            initialMediaId={sessionDetails?.title_data?.MEDIA_ID ?? sessionDetails?.media_blob_name}
+            sessionId={null}
+            initialMediaId={mediaKey ?? sessionDetails?.title_data?.MEDIA_ID ?? sessionDetails?.media_blob_name}
             mediaUrl={mediaPreviewUrl || undefined}
             mediaType={mediaContentType ?? selectedFile?.type}
             docxBase64={result?.docx_base64}
@@ -734,7 +659,7 @@ export default function TranscribeForm() {
         {activeTab === 'clip' && (
           <ClipCreator
             session={sessionDetails}
-            sessionId={editorSessionId}
+            sessionId={null}
             mediaUrl={clipMediaUrl}
             mediaType={clipMediaType}
             onSessionRefresh={handleSessionChange}
