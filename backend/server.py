@@ -2560,6 +2560,11 @@ async def import_oncue_transcript(
     created_at = datetime.now(timezone.utc)
     expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
 
+    # Use MEDIA_ID as the media_key for the new storage system
+    media_key = title_data.get("MEDIA_ID") or uuid.uuid4().hex
+    if "MEDIA_ID" not in title_data:
+        title_data["MEDIA_ID"] = media_key
+
     session_payload = {
         "session_id": session_id,
         "created_at": created_at.isoformat(),
@@ -2579,6 +2584,40 @@ async def import_oncue_transcript(
         "clips": [],
     }
 
+    try:
+        # Save to new media_key-based storage for history feature
+        transcript_data = {
+            "media_key": media_key,
+            "created_at": created_at.isoformat(),
+            "updated_at": created_at.isoformat(),
+            "title_data": title_data,
+            "audio_duration": duration_seconds,
+            "lines_per_page": DEFAULT_LINES_PER_PAGE,
+            "turns": serialize_transcript_turns(turns),
+            "lines": line_payloads,
+            "docx_base64": docx_b64,
+            "oncue_xml_base64": oncue_b64,
+            "transcript_text": transcript_text,
+            "media_blob_name": media_blob_name,
+            "media_content_type": media_content_type,
+            "user_id": "anonymous",
+            "clips": [],
+        }
+        save_current_transcript(media_key, transcript_data)
+
+        # Create initial snapshot (manual save) for history feature
+        snapshot_id = uuid.uuid4().hex
+        snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
+        snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
+        logger.info(f"Created initial snapshot for imported transcript: {media_key}")
+
+    except Exception as e:
+        logger.error("Failed to save imported transcript to new storage: %s", e)
+        # Continue anyway - old session storage is still saved below
+
+    # Keep old session-based storage for backwards compatibility
     save_editor_session(session_id, session_payload)
 
     response_payload = build_session_response(session_payload)
