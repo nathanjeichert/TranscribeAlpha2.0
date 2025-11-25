@@ -91,6 +91,8 @@ interface LocalStorageTranscriptState {
 }
 
 const STORAGE_KEY_PREFIX = 'transcript_state_'
+const AUTO_SHIFT_STORAGE_KEY = 'editor_auto_shift_next'
+const AUTO_SHIFT_PADDING_SECONDS = 0.01
 
 function saveToLocalStorage(mediaKey: string, state: LocalStorageTranscriptState) {
   try {
@@ -145,6 +147,7 @@ export default function TranscriptEditor({
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
   const [editingField, setEditingField] = useState<{ lineId: string; field: 'speaker' | 'text'; value: string } | null>(null)
+  const [autoShiftNextLine, setAutoShiftNextLine] = useState(true)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -334,26 +337,44 @@ export default function TranscriptEditor({
 
   const handleLineFieldChange = useCallback(
     (lineId: string, field: keyof EditorLine, value: string | number) => {
-      setLines((prev) =>
-        prev.map((line) =>
+      setLines((prev) => {
+        const normalizedValue =
+          field === 'speaker' || field === 'text'
+            ? typeof value === 'string'
+              ? value
+              : value.toString()
+            : typeof value === 'number'
+              ? value
+              : parseFloat(value as string) || 0
+
+        const nextLines = prev.map((line) =>
           line.id === lineId
             ? {
               ...line,
-              [field]:
-                field === 'speaker' || field === 'text'
-                  ? typeof value === 'string'
-                    ? value
-                    : value.toString()
-                  : typeof value === 'number'
-                    ? value
-                    : parseFloat(value as string) || 0,
+              [field]: normalizedValue,
             }
             : line,
-        ),
-      )
+        )
+
+        if (field === 'end' && autoShiftNextLine) {
+          const targetIndex = nextLines.findIndex((line) => line.id === lineId)
+          if (targetIndex >= 0 && nextLines[targetIndex + 1]) {
+            const targetLine = nextLines[targetIndex]
+            const followingLine = nextLines[targetIndex + 1]
+            const numericEnd =
+              typeof normalizedValue === 'number'
+                ? normalizedValue
+                : parseFloat(normalizedValue as string) || targetLine.end
+            const adjustedStart = Math.max(0, parseFloat((numericEnd + AUTO_SHIFT_PADDING_SECONDS).toFixed(3)))
+            nextLines[targetIndex + 1] = { ...followingLine, start: adjustedStart }
+          }
+        }
+
+        return nextLines
+      })
       setIsDirty(true)
     },
-    [],
+    [autoShiftNextLine],
   )
 
   const playLine = useCallback(
@@ -475,6 +496,27 @@ export default function TranscriptEditor({
   const cancelEdit = useCallback(() => {
     setEditingField(null)
   }, [])
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(AUTO_SHIFT_STORAGE_KEY)
+      if (stored === 'true') {
+        setAutoShiftNextLine(true)
+      } else if (stored === 'false') {
+        setAutoShiftNextLine(false)
+      }
+    } catch (err) {
+      console.error('Failed to load auto-shift preference:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_SHIFT_STORAGE_KEY, autoShiftNextLine ? 'true' : 'false')
+    } catch (err) {
+      console.error('Failed to save auto-shift preference:', err)
+    }
+  }, [autoShiftNextLine])
 
   const handleAddUtterance = useCallback(() => {
     setAddError(null)
@@ -854,6 +896,18 @@ export default function TranscriptEditor({
                 onChange={(event) => setAutoScroll(event.target.checked)}
               />
               Auto-scroll
+            </label>
+            <label
+              className="flex items-center gap-2 text-sm text-white"
+              title="When enabled, changing a line's end time snaps the next line's start time so it begins immediately after the edit."
+            >
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={autoShiftNextLine}
+                onChange={(event) => setAutoShiftNextLine(event.target.checked)}
+              />
+              Auto-Shift Next Line
             </label>
             <div className="flex items-center gap-2">
               <button
