@@ -270,6 +270,10 @@ export default function TranscriptEditor({
     [onSessionChange],
   )
 
+  // Track the current editing session to avoid re-selecting text on every keystroke
+  const editingLineId = editingField?.lineId
+  const editingFieldName = editingField?.field
+
   useEffect(() => {
     if (!editingField) return
     if (editInputRef.current) {
@@ -278,7 +282,7 @@ export default function TranscriptEditor({
         ; (editInputRef.current as HTMLInputElement).select()
       }
     }
-  }, [editingField])
+  }, [editingLineId, editingFieldName]) // Only run when lineId or field changes, not when value changes
 
   useEffect(() => {
     const player = effectiveMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
@@ -1169,7 +1173,7 @@ export default function TranscriptEditor({
                       const isSelected = selectedLineId === line.id
                       const rowClasses = [
                         'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm',
-                        isActive ? 'bg-yellow-100' : 'bg-white hover:bg-primary-50',
+                        isActive ? 'bg-yellow-100' : 'bg-white hover:bg-primary-200',
                         isSelected ? 'ring-2 ring-primary-300' : '',
                       ]
                       return (
