@@ -14,16 +14,19 @@ interface FormData {
   speaker_names: string
 }
 
-interface TranscriptResponse {
-  transcript: string
-  docx_base64: string
-  oncue_xml_base64: string
-  media_key?: string
-  media_blob_name?: string | null
-  media_content_type?: string | null
+type TranscriptData = EditorSessionResponse & {
+  transcript?: string | null
+  transcript_text?: string | null
 }
 
-type AppTab = 'transcribe' | 'editor' | 'clip'
+interface TranscriptListItem {
+  media_key: string
+  title_label: string
+  updated_at?: string | null
+  line_count?: number
+}
+
+type AppTab = 'transcribe' | 'editor' | 'clip' | 'history'
 
 export default function TranscribeForm() {
   const [formData, setFormData] = useState<FormData>({
@@ -39,56 +42,66 @@ export default function TranscribeForm() {
   const [activeTab, setActiveTab] = useState<AppTab>('transcribe')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [mediaKey, setMediaKey] = useState<string | null>(null)
+  const [transcriptData, setTranscriptData] = useState<TranscriptData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [result, setResult] = useState<TranscriptResponse | null>(null)
   const [error, setError] = useState<string>('')
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string>('')
   const [mediaContentType, setMediaContentType] = useState<string | undefined>(undefined)
   const [mediaIsLocal, setMediaIsLocal] = useState(false)
-  const [sessionDetails, setSessionDetails] = useState<EditorSessionResponse | null>(null)
+  const [showHistoryList, setShowHistoryList] = useState(false)
+  const [historyItems, setHistoryItems] = useState<TranscriptListItem[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
   const [geminiBusy, setGeminiBusy] = useState(false)
   const [geminiError, setGeminiError] = useState<string | null>(null)
   const [useGeminiPolish, setUseGeminiPolish] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const syncTranscriptState = useCallback(
-    (raw: {
-      media_key?: string | null
-      docx_base64?: string | null
-      oncue_xml_base64?: string | null
-      transcript?: string | null
-      media_blob_name?: string | null
-      media_content_type?: string | null
-      full_session?: EditorSessionResponse
-    }) => {
-      const mediaKeyValue = raw.media_key ?? null
-
-      setMediaKey(mediaKeyValue)
-      setResult((prev) => ({
-        transcript: raw.transcript ?? prev?.transcript ?? '',
-        docx_base64: raw.docx_base64 ?? prev?.docx_base64 ?? '',
-        oncue_xml_base64: raw.oncue_xml_base64 ?? prev?.oncue_xml_base64 ?? '',
-        media_key: mediaKeyValue ?? undefined,
-        media_blob_name: raw.media_blob_name ?? prev?.media_blob_name,
-        media_content_type: raw.media_content_type ?? prev?.media_content_type,
-      }))
-
-      if (raw.full_session) {
-        setSessionDetails(raw.full_session)
+  const updateMediaPreview = useCallback(
+    (blobName?: string | null, contentType?: string | null) => {
+      if (!blobName) return
+      if (mediaPreviewUrl && mediaIsLocal) {
+        URL.revokeObjectURL(mediaPreviewUrl)
       }
-
-      if (raw.media_blob_name) {
-        if (mediaPreviewUrl && mediaIsLocal) {
-          URL.revokeObjectURL(mediaPreviewUrl)
-        }
-        setMediaPreviewUrl(`/api/media/${raw.media_blob_name}`)
-        setMediaContentType(raw.media_content_type ?? undefined)
-        setMediaIsLocal(false)
-      }
+      setMediaPreviewUrl(`/api/media/${blobName}`)
+      setMediaContentType(contentType ?? undefined)
+      setMediaIsLocal(false)
     },
     [mediaIsLocal, mediaPreviewUrl],
+  )
+
+  const hydrateTranscript = useCallback(
+    (data: TranscriptData) => {
+      setTranscriptData((previous) => {
+        const merged: TranscriptData = {
+          ...(previous ?? {}),
+          ...data,
+          docx_base64: data.docx_base64 ?? previous?.docx_base64,
+          oncue_xml_base64: data.oncue_xml_base64 ?? previous?.oncue_xml_base64,
+          media_blob_name: data.media_blob_name ?? previous?.media_blob_name,
+          media_content_type: data.media_content_type ?? previous?.media_content_type,
+          audio_duration: data.audio_duration ?? previous?.audio_duration ?? 0,
+          lines_per_page: data.lines_per_page ?? previous?.lines_per_page ?? 25,
+          title_data: data.title_data ?? previous?.title_data ?? {},
+          lines: data.lines ?? previous?.lines ?? [],
+          clips: data.clips ?? previous?.clips ?? [],
+          transcript: data.transcript ?? data.transcript_text ?? previous?.transcript ?? previous?.transcript_text ?? null,
+          transcript_text: data.transcript_text ?? data.transcript ?? previous?.transcript_text ?? previous?.transcript ?? null,
+        }
+        return merged
+      })
+
+      const resolvedKey = data.media_key ?? data.title_data?.MEDIA_ID ?? null
+      setMediaKey(resolvedKey ?? null)
+      setError('')
+
+      if (data.media_blob_name) {
+        updateMediaPreview(data.media_blob_name, data.media_content_type ?? undefined)
+      }
+    },
+    [updateMediaPreview],
   )
 
   useEffect(() => {
@@ -101,19 +114,9 @@ export default function TranscribeForm() {
 
   const handleSessionChange = useCallback(
     (session: EditorSessionResponse) => {
-      setSessionDetails(session)
-      const mediaKeyValue = session.title_data?.MEDIA_ID ?? session.media_blob_name ?? null
-      syncTranscriptState({
-        media_key: mediaKeyValue,
-        docx_base64: session.docx_base64 ?? undefined,
-        oncue_xml_base64: session.oncue_xml_base64 ?? undefined,
-        transcript: session.transcript ?? undefined,
-        media_blob_name: session.media_blob_name ?? undefined,
-        media_content_type: session.media_content_type ?? undefined,
-        full_session: session,
-      })
+      hydrateTranscript(session as TranscriptData)
     },
-    [syncTranscriptState],
+    [hydrateTranscript],
   )
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -134,9 +137,8 @@ export default function TranscribeForm() {
 
     setSelectedFile(file)
     setError('')
-    setResult(null)
+    setTranscriptData(null)
     setMediaKey(null)
-    setSessionDetails(null)
     setActiveTab('transcribe')
 
     const previewUrl = URL.createObjectURL(file)
@@ -144,6 +146,63 @@ export default function TranscribeForm() {
     setMediaContentType(file.type)
     setMediaIsLocal(true)
   }
+
+  const fetchTranscriptByKey = useCallback(
+    async (key: string) => {
+      try {
+        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`)
+        if (!response.ok) {
+          if (response.status === 404) {
+            try {
+              localStorage.removeItem('active_media_key')
+            } catch {
+              /* ignore */
+            }
+          }
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to load transcript')
+        }
+        const data: TranscriptData = await response.json()
+        hydrateTranscript(data)
+        return data
+      } catch (err: any) {
+        throw new Error(err?.message || 'Failed to load transcript')
+      }
+    },
+    [hydrateTranscript],
+  )
+
+  const fetchHistory = useCallback(async () => {
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const response = await fetch('/api/transcripts')
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to load sessions')
+      }
+      const payload = await response.json()
+      setHistoryItems(payload.transcripts || [])
+    } catch (err: any) {
+      setHistoryError(err?.message || 'Failed to load sessions')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [])
+
+  const handleSelectHistoryItem = useCallback(
+    async (key: string) => {
+      setHistoryError(null)
+      try {
+        await fetchTranscriptByKey(key)
+        setActiveTab('editor')
+        setShowHistoryList(false)
+      } catch (err: any) {
+        setHistoryError(err?.message || 'Failed to restore session')
+      }
+    },
+    [fetchTranscriptByKey],
+  )
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -156,9 +215,8 @@ export default function TranscribeForm() {
     setIsLoading(true)
     setProgress(0)
     setError('')
-    setResult(null)
+    setTranscriptData(null)
     setMediaKey(null)
-    setSessionDetails(null)
 
     const progressInterval = setInterval(() => {
       setProgress((prev) => {
@@ -184,19 +242,8 @@ export default function TranscribeForm() {
         throw new Error(errorData.detail || 'Transcription failed')
       }
 
-      const data: TranscriptResponse = await response.json()
-      syncTranscriptState({
-        media_key: data.media_key ?? null,
-        docx_base64: data.docx_base64,
-        oncue_xml_base64: data.oncue_xml_base64,
-        transcript: data.transcript,
-        media_blob_name: data.media_blob_name ?? undefined,
-        media_content_type: data.media_content_type ?? undefined,
-      })
-      if (data.media_blob_name) {
-        setMediaIsLocal(false)
-        setMediaContentType(data.media_content_type ?? undefined)
-      }
+      const data: TranscriptData = await response.json()
+      hydrateTranscript(data)
       setProgress(100)
 
       if (useGeminiPolish && (data.media_key ?? mediaKey)) {
@@ -255,17 +302,7 @@ export default function TranscribeForm() {
   }
 
   const handleEditorSave = (data: EditorSaveResponse) => {
-    setSessionDetails(data)
-    const mediaKeyValue = data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
-    syncTranscriptState({
-      media_key: mediaKeyValue,
-      docx_base64: data.docx_base64 ?? undefined,
-      oncue_xml_base64: data.oncue_xml_base64 ?? undefined,
-      transcript: data.transcript ?? undefined,
-      media_blob_name: data.media_blob_name ?? undefined,
-      media_content_type: data.media_content_type ?? undefined,
-      full_session: data,
-    })
+    hydrateTranscript(data as TranscriptData)
   }
 
   const handleGeminiRefine = useCallback(async () => {
@@ -283,15 +320,15 @@ export default function TranscribeForm() {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail?.detail || 'Gemini refinement failed')
       }
-      const data: EditorSessionResponse = await response.json()
-      handleSessionChange(data)
+      const data: TranscriptData = await response.json()
+      hydrateTranscript(data)
       setActiveTab('editor')
     } catch (err: any) {
       setGeminiError(err.message || 'Gemini refinement failed')
     } finally {
       setGeminiBusy(false)
     }
-  }, [mediaKey, handleSessionChange])
+  }, [mediaKey, hydrateTranscript])
 
   const tabClasses = (tab: AppTab) =>
     `px-4 py-2 rounded-lg font-medium transition ${activeTab === tab
@@ -299,19 +336,53 @@ export default function TranscribeForm() {
       : 'bg-primary-100 text-primary-600 hover:bg-primary-200'
     }`
 
-  const transcriptSegments =
-    result?.transcript.split('\n\n').filter((segment) => segment.trim()).length ?? 0
+  const resolvedTranscriptText = transcriptData?.transcript ?? transcriptData?.transcript_text ?? ''
+  const transcriptSegments = resolvedTranscriptText.split('\n\n').filter((segment) => segment.trim()).length ?? 0
 
   const previewContentType = mediaContentType ?? selectedFile?.type ?? ''
   const isVideoPreview = previewContentType.startsWith('video/')
   const clipMediaUrl =
     (mediaIsLocal && mediaPreviewUrl) ||
-    (sessionDetails?.media_blob_name ? `/api/media/${sessionDetails.media_blob_name}` : mediaPreviewUrl || undefined)
+    (transcriptData?.media_blob_name ? `/api/media/${transcriptData.media_blob_name}` : mediaPreviewUrl || undefined)
   const clipMediaType =
     (mediaIsLocal ? mediaContentType ?? selectedFile?.type : undefined) ??
-    sessionDetails?.media_content_type ??
+    transcriptData?.media_content_type ??
     mediaContentType ??
     selectedFile?.type
+
+  useEffect(() => {
+    const storedKey = typeof window !== 'undefined' ? localStorage.getItem('active_media_key') : null
+    if (storedKey) {
+      fetchTranscriptByKey(storedKey)
+        .then(() => setActiveTab('editor'))
+        .catch(() => {
+          try {
+            localStorage.removeItem('active_media_key')
+          } catch {
+            /* ignore */
+          }
+        })
+    }
+  }, [fetchTranscriptByKey])
+
+  useEffect(() => {
+    const key = transcriptData?.media_key ?? mediaKey
+    try {
+      if (key) {
+        localStorage.setItem('active_media_key', key)
+      } else {
+        localStorage.removeItem('active_media_key')
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [transcriptData?.media_key, mediaKey])
+
+  useEffect(() => {
+    if (activeTab === 'history' && showHistoryList) {
+      fetchHistory()
+    }
+  }, [activeTab, showHistoryList, fetchHistory])
 
   return (
     <div className="min-h-screen bg-primary-50">
@@ -326,6 +397,9 @@ export default function TranscribeForm() {
         <div className="flex justify-center mb-10 gap-4">
           <button className={tabClasses('transcribe')} onClick={() => setActiveTab('transcribe')}>
             Transcription
+          </button>
+          <button className={tabClasses('history')} onClick={() => { setActiveTab('history'); setShowHistoryList(true) }}>
+            Sessions
           </button>
           <button className={tabClasses('editor')} onClick={() => setActiveTab('editor')}>
             Editor
@@ -545,7 +619,7 @@ export default function TranscribeForm() {
               )}
             </form>
 
-            {result && (
+            {transcriptData && (
               <div className="space-y-6">
                 {mediaPreviewUrl && (
                   <div className="card">
@@ -592,22 +666,28 @@ export default function TranscribeForm() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <button
-                        onClick={() =>
-                          downloadFile(
-                            result.docx_base64,
-                            generateFilename('transcript', '.docx'),
-                            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                          )
-                        }
+                        onClick={() => {
+                          if (transcriptData.docx_base64) {
+                            downloadFile(
+                              transcriptData.docx_base64,
+                              generateFilename('transcript', '.docx'),
+                              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            )
+                          }
+                        }}
                         className="btn-primary text-center py-3"
+                        disabled={!transcriptData.docx_base64}
                       >
                         📄 Download DOCX
                       </button>
                       <button
-                        onClick={() =>
-                          downloadFile(result.oncue_xml_base64, generateFilename('transcript', '.xml'), 'application/xml')
-                        }
+                        onClick={() => {
+                          if (transcriptData.oncue_xml_base64) {
+                            downloadFile(transcriptData.oncue_xml_base64, generateFilename('transcript', '.xml'), 'application/xml')
+                          }
+                        }}
                         className="btn-primary text-center py-3"
+                        disabled={!transcriptData.oncue_xml_base64}
                       >
                         📋 Download OnCue XML
                       </button>
@@ -625,30 +705,90 @@ export default function TranscribeForm() {
                         Open Editor
                       </button>
                     </div>
-                    <div>
-                      <h3 className="font-medium text-primary-900 mb-3">Transcript Preview:</h3>
-                      <div className="bg-primary-50 rounded-lg p-4 max-h-64 overflow-y-auto">
-                        <pre className="whitespace-pre-wrap text-sm text-primary-800 font-mono">
-                          {result.transcript.substring(0, 1000)}
-                          {result.transcript.length > 1000 && '...'}
-                        </pre>
+                      <div>
+                        <h3 className="font-medium text-primary-900 mb-3">Transcript Preview:</h3>
+                        <div className="bg-primary-50 rounded-lg p-4 max-h-64 overflow-y-auto">
+                          <pre className="whitespace-pre-wrap text-sm text-primary-800 font-mono">
+                          {resolvedTranscriptText.substring(0, 1000)}
+                          {resolvedTranscriptText.length > 1000 && '...'}
+                          </pre>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
               </div>
             )}
           </div>
         )}
 
+        {activeTab === 'history' && (
+          <div className="space-y-6">
+            <div className="card">
+              <div className="card-header flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-medium">Session History</h2>
+                  <p className="text-sm text-primary-100">Resume a saved transcript session by clicking below.</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    className="btn-outline text-sm"
+                    onClick={() => {
+                      const next = !showHistoryList
+                      setShowHistoryList(next)
+                      if (next) fetchHistory()
+                    }}
+                  >
+                    {showHistoryList ? 'Hide Sessions' : 'Show Sessions'}
+                  </button>
+                  <button className="btn-primary text-sm" onClick={fetchHistory} disabled={historyLoading}>
+                    {historyLoading ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+              <div className="card-body space-y-4">
+                {historyError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{historyError}</div>}
+                {showHistoryList && (
+                  <>
+                    {historyLoading ? (
+                      <div className="text-sm text-primary-700">Loading sessions…</div>
+                    ) : historyItems.length === 0 ? (
+                      <div className="text-sm text-primary-700">No sessions found yet. Upload media to create one.</div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {historyItems.map((item) => (
+                          <button
+                            key={item.media_key}
+                            className="w-full rounded-lg border border-primary-200 bg-white px-4 py-3 text-left shadow-sm hover:border-primary-400 hover:bg-primary-50"
+                            onClick={() => handleSelectHistoryItem(item.media_key)}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-semibold text-primary-900">
+                                {item.title_label || 'Untitled transcript'}
+                              </div>
+                              <div className="text-[11px] text-primary-500">
+                                {item.updated_at ? new Date(item.updated_at).toLocaleString() : '—'}
+                              </div>
+                            </div>
+                            <div className="text-xs text-primary-500 mt-1">Key: {item.media_key}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'editor' && (
           <TranscriptEditor
-            sessionId={null}
-            initialMediaId={mediaKey ?? sessionDetails?.title_data?.MEDIA_ID ?? sessionDetails?.media_blob_name}
+            mediaKey={mediaKey}
+            initialData={transcriptData}
             mediaUrl={mediaPreviewUrl || undefined}
             mediaType={mediaContentType ?? selectedFile?.type}
-            docxBase64={result?.docx_base64}
-            xmlBase64={result?.oncue_xml_base64}
+            docxBase64={transcriptData?.docx_base64 ?? undefined}
+            xmlBase64={transcriptData?.oncue_xml_base64 ?? undefined}
             onDownload={downloadFile}
             buildFilename={generateFilename}
             onSessionChange={handleSessionChange}
@@ -658,8 +798,8 @@ export default function TranscribeForm() {
 
         {activeTab === 'clip' && (
           <ClipCreator
-            session={sessionDetails}
-            sessionId={null}
+            session={transcriptData}
+            mediaKey={mediaKey}
             mediaUrl={clipMediaUrl}
             mediaType={clipMediaType}
             onSessionRefresh={handleSessionChange}

@@ -5,7 +5,7 @@ import type { EditorSessionResponse, ClipSummary } from '@/components/Transcript
 
 interface ClipCreatorProps {
   session: EditorSessionResponse | null
-  sessionId: string | null
+  mediaKey: string | null
   mediaUrl?: string
   mediaType?: string
   onSessionRefresh: (session: EditorSessionResponse) => void
@@ -115,7 +115,7 @@ const cardSectionTitle = (label: string) => (
 
 export default function ClipCreator({
   session,
-  sessionId,
+  mediaKey,
   mediaUrl,
   mediaType,
   onSessionRefresh,
@@ -436,7 +436,7 @@ export default function ClipCreator({
   )
 
   const handleCreateClip = useCallback(async () => {
-    if (!sessionId || !session) {
+    if (!mediaKey || !session) {
       setCreationError('Load or generate a transcript before creating clips.')
       return
     }
@@ -453,7 +453,7 @@ export default function ClipCreator({
     }
 
     const payload = {
-      session_id: sessionId,
+      media_key: mediaKey,
       clip_label: clipName.trim() || undefined,
       start_line_id: startLine.id,
       end_line_id: endLine.id,
@@ -491,8 +491,8 @@ export default function ClipCreator({
       setActiveClip(clip)
       setCreationMessage('Clip created successfully. Downloads are ready below.')
 
-      if (data.session) {
-        const refreshedSession = data.session as EditorSessionResponse
+      const refreshedSession = (data.transcript || data.session) as EditorSessionResponse | undefined
+      if (refreshedSession) {
         onSessionRefresh(refreshedSession)
         const nextCount = Array.isArray(refreshedSession.clips) ? refreshedSession.clips.length + 1 : 1
         setClipName(`Clip ${nextCount}`)
@@ -503,7 +503,7 @@ export default function ClipCreator({
     } finally {
       setIsSubmitting(false)
     }
-  }, [clipName, lines, onSessionRefresh, selectedRange, selectionMode, session, sessionId])
+  }, [clipName, lines, mediaKey, onSessionRefresh, selectedRange, selectionMode, session])
 
   const handleImportTranscript = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -642,7 +642,7 @@ export default function ClipCreator({
     )
   }
 
-  const hasSession = Boolean(sessionId && session)
+  const hasSession = Boolean(mediaKey && session)
   const hasLines = hasSession && lines.length > 0
 
   return (

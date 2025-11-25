@@ -53,8 +53,8 @@ export interface EditorSessionResponse {
 export type EditorSaveResponse = EditorSessionResponse
 
 interface TranscriptEditorProps {
-  sessionId?: string | null
-  initialMediaId?: string | null
+  mediaKey?: string | null
+  initialData?: EditorSessionResponse | null
   mediaUrl?: string
   mediaType?: string
   docxBase64?: string | null
@@ -125,8 +125,8 @@ function clearLocalStorage(mediaKey: string) {
 }
 
 export default function TranscriptEditor({
-  sessionId,
-  initialMediaId,
+  mediaKey: initialMediaKey,
+  initialData,
   mediaUrl,
   mediaType,
   docxBase64,
@@ -136,13 +136,13 @@ export default function TranscriptEditor({
   onSessionChange,
   onSaveComplete,
 }: TranscriptEditorProps) {
-  const [lines, setLines] = useState<EditorLine[]>([])
-  const [sessionMeta, setSessionMeta] = useState<EditorSessionResponse | null>(null)
+  const [lines, setLines] = useState<EditorLine[]>(initialData?.lines ?? [])
+  const [sessionMeta, setSessionMeta] = useState<EditorSessionResponse | null>(initialData ?? null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
-  const [mediaKey, setMediaKey] = useState<string | null>(initialMediaId ?? null)
+  const [activeMediaKey, setActiveMediaKey] = useState<string | null>(initialData?.media_key ?? initialMediaKey ?? null)
   const [activeLineId, setActiveLineId] = useState<string | null>(null)
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
@@ -153,7 +153,6 @@ export default function TranscriptEditor({
   const audioRef = useRef<HTMLAudioElement>(null)
   const editInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const lastFetchedId = useRef<string | undefined>(undefined)
   const activeLineMarker = useRef<string | null>(null)
 
   const [importXmlFile, setImportXmlFile] = useState<File | null>(null)
@@ -211,7 +210,7 @@ export default function TranscriptEditor({
 
   const fetchTranscript = useCallback(
     async (key?: string | null) => {
-      const targetKey = key || initialMediaId
+      const targetKey = key || activeMediaKey || initialMediaKey
       if (!targetKey) {
         setError('No media key provided')
         return
@@ -238,7 +237,8 @@ export default function TranscriptEditor({
                 media_blob_name: cached.mediaBlobName,
                 media_content_type: cached.mediaContentType,
               } as EditorSessionResponse)
-              setMediaKey(targetKey)
+              setActiveMediaKey(targetKey)
+              setSelectedMediaKey(targetKey)
               setError('Loaded from local cache. Save to sync with server.')
               setLoading(false)
               return
@@ -252,7 +252,8 @@ export default function TranscriptEditor({
         const data: EditorSessionResponse = await response.json()
         setSessionMeta(data)
         setLines(data.lines || [])
-        setMediaKey(targetKey)
+        setActiveMediaKey(targetKey)
+        setSelectedMediaKey(targetKey)
         setHistory([])
         setFuture([])
         setIsDirty(false)
@@ -280,8 +281,32 @@ export default function TranscriptEditor({
         setLoading(false)
       }
     },
-    [initialMediaId, onSessionChange],
+    [activeMediaKey, initialMediaKey, onSessionChange],
   )
+
+  useEffect(() => {
+    if (!initialData) return
+    setSessionMeta(initialData)
+    setLines(initialData.lines ?? [])
+    const resolvedKey = initialData.media_key ?? initialMediaKey ?? activeMediaKey ?? null
+    setActiveMediaKey(resolvedKey)
+    setSelectedMediaKey(resolvedKey)
+    setHistory([])
+    setFuture([])
+    setIsDirty(false)
+    setActiveLineId(null)
+    setSelectedLineId(null)
+    setEditingField(null)
+    setSnapshotError(null)
+    activeLineMarker.current = null
+  }, [initialData, initialMediaKey, activeMediaKey])
+
+  useEffect(() => {
+    if (initialData || sessionMeta) return
+    if (initialMediaKey || activeMediaKey) {
+      fetchTranscript(initialMediaKey || activeMediaKey)
+    }
+  }, [initialData, sessionMeta, initialMediaKey, activeMediaKey, fetchTranscript])
 
   // Track the current editing session to avoid re-selecting text on every keystroke
   const editingLineId = editingField?.lineId
@@ -402,9 +427,9 @@ export default function TranscriptEditor({
   // beforeunload handler for cross-page persistence
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (mediaKey && sessionMeta) {
-        saveToLocalStorage(mediaKey, {
-          mediaKey,
+      if (activeMediaKey && sessionMeta) {
+        saveToLocalStorage(activeMediaKey, {
+          mediaKey: activeMediaKey,
           lines,
           titleData: sessionMeta.title_data ?? {},
           mediaBlobName: sessionMeta.media_blob_name,
@@ -418,10 +443,10 @@ export default function TranscriptEditor({
 
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [mediaKey, lines, sessionMeta])
+  }, [activeMediaKey, lines, sessionMeta])
 
   useEffect(() => {
-    if (!mediaKey || !sessionMeta) return
+    if (!activeMediaKey || !sessionMeta) return
 
     const interval = setInterval(async () => {
       if (!isDirty) return
@@ -431,7 +456,7 @@ export default function TranscriptEditor({
         if (now - lastSnapshotRef.current < 5000) return  // Debounce
 
         // Auto-save creates both current state AND snapshot
-        await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}`, {
+        await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -449,8 +474,8 @@ export default function TranscriptEditor({
         setSnapshotError(null)
 
         // Also save to localStorage
-        saveToLocalStorage(mediaKey, {
-          mediaKey,
+        saveToLocalStorage(activeMediaKey, {
+          mediaKey: activeMediaKey,
           lines,
           titleData: sessionMeta.title_data ?? {},
           mediaBlobName: sessionMeta.media_blob_name,
@@ -466,7 +491,7 @@ export default function TranscriptEditor({
     }, 60000)  // Changed from 30000 to 60000 (1 minute)
 
     return () => clearInterval(interval)
-  }, [mediaKey, sessionMeta, isDirty, lines])
+  }, [activeMediaKey, sessionMeta, isDirty, lines])
 
   const cloneLines = useCallback((source: EditorLine[]) => source.map((line) => ({ ...line })), [])
 
@@ -680,11 +705,11 @@ export default function TranscriptEditor({
     setSnapshotError(null)
 
     try {
-      if (!mediaKey) {
+      if (!activeMediaKey) {
         throw new Error('No media key available')
       }
 
-      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/history`)
+      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}/history`)
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail?.detail || 'Failed to load history')
@@ -698,17 +723,17 @@ export default function TranscriptEditor({
     } finally {
       setLoadingSnapshots(false)
     }
-  }, [mediaKey])
+  }, [activeMediaKey])
 
   const handleRestoreSnapshot = useCallback(
     async (snapshotId: string) => {
-      if (!mediaKey) return
+      if (!activeMediaKey) return
 
       setSnapshotError(null)
 
       try {
         const response = await fetch(
-          `/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/restore/${snapshotId}`,
+          `/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}/restore/${snapshotId}`,
           { method: 'POST' }
         )
 
@@ -732,6 +757,9 @@ export default function TranscriptEditor({
 
         setLines(restoredLines)
         setSessionMeta(nextMeta)
+        const resolvedKey = data.media_key ?? activeMediaKey
+        setActiveMediaKey(resolvedKey)
+        setSelectedMediaKey(resolvedKey)
         setHistory([])
         setFuture([])
         setIsDirty(true)
@@ -739,8 +767,8 @@ export default function TranscriptEditor({
         setShowSnapshots(false)
 
         // Save to localStorage
-        saveToLocalStorage(mediaKey, {
-          mediaKey,
+        saveToLocalStorage(resolvedKey, {
+          mediaKey: resolvedKey,
           lines: restoredLines,
           titleData: nextMeta.title_data,
           mediaBlobName: nextMeta.media_blob_name,
@@ -754,12 +782,16 @@ export default function TranscriptEditor({
         setSnapshotError(err.message || 'Failed to restore snapshot')
       }
     },
-    [mediaKey],
+    [activeMediaKey],
   )
 
   const handleSave = useCallback(async () => {
-    if (!mediaKey) {
+    if (!activeMediaKey) {
       setError('No media key available to save.')
+      return
+    }
+    if (!sessionMeta) {
+      setError('No transcript available to save.')
       return
     }
 
@@ -767,7 +799,7 @@ export default function TranscriptEditor({
     setError(null)
 
     try {
-      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}`, {
+      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -789,6 +821,7 @@ export default function TranscriptEditor({
       const data: EditorSaveResponse = await response.json()
       setSessionMeta(data)
       setLines(data.lines || [])
+      setActiveMediaKey(data.media_key ?? activeMediaKey)
       setIsDirty(false)
       setActiveLineId(null)
       setSelectedLineId(null)
@@ -798,8 +831,8 @@ export default function TranscriptEditor({
       setFuture([])
 
       // Save to localStorage
-      saveToLocalStorage(mediaKey, {
-        mediaKey,
+      saveToLocalStorage(data.media_key ?? activeMediaKey, {
+        mediaKey: data.media_key ?? activeMediaKey!,
         lines: data.lines || [],
         titleData: data.title_data ?? {},
         mediaBlobName: data.media_blob_name,
@@ -817,7 +850,7 @@ export default function TranscriptEditor({
     } finally {
       setSaving(false)
     }
-  }, [mediaKey, lines, sessionMeta, onSaveComplete, onSessionChange])
+  }, [activeMediaKey, lines, sessionMeta, onSaveComplete, onSessionChange])
 
   const handleImport = useCallback(
     async (event: React.FormEvent) => {
@@ -855,7 +888,8 @@ export default function TranscriptEditor({
         activeLineMarker.current = null
         const importedMediaKey = data.media_key ?? data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
         if (importedMediaKey) {
-          setMediaKey(importedMediaKey)
+          setActiveMediaKey(importedMediaKey)
+          setSelectedMediaKey(importedMediaKey)
         }
         onSessionChange(data)
         setImportXmlFile(null)
@@ -871,7 +905,7 @@ export default function TranscriptEditor({
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
-  const transcriptText = sessionMeta?.transcript ?? ''
+  const transcriptText = sessionMeta?.transcript ?? sessionMeta?.transcript_text ?? ''
 
   const sessionInfo = sessionMeta?.title_data ?? {}
   const expiresLabel = sessionMeta?.expires_at ? new Date(sessionMeta.expires_at).toLocaleString() : '—'
@@ -883,9 +917,6 @@ export default function TranscriptEditor({
         <div className="card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-medium">Manual Sync Editor</h2>
-            {sessionMeta?.session_id && (
-              <p className="text-sm text-primary-100">Session: {sessionMeta.session_id}</p>
-            )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm text-white">
@@ -1036,20 +1067,23 @@ export default function TranscriptEditor({
                           .map((snap) => (
                             <li
                               key={`${snap.media_key || 'current'}-${snap.snapshot_id}`}
-                              className="flex items-center justify-between border-b border-primary-100 px-4 py-2 text-sm"
-                            >
-                              <div>
-                                <div className="font-semibold text-primary-900">
-                                  {new Date(snap.created_at).toLocaleString()}
-                                </div>
-                                <div className="text-xs text-primary-600">
-                                  {(snap.title_label || snap.display_media_key || snap.media_key || 'Transcript')} • {snap.saved ? 'Saved' : 'Autosave'}
-                                </div>
+                            className="flex items-center justify-between border-b border-primary-100 px-4 py-2 text-sm"
+                          >
+                            <div>
+                              <div className="font-semibold text-primary-900">
+                                {snap.title_label || snap.display_media_key || snap.media_key || 'Transcript'}
                               </div>
-                              <button
-                                className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
-                                onClick={() => handleRestoreSnapshot(snap.snapshot_id)}
-                              >
+                              <div className="text-xs text-primary-600">
+                                {new Date(snap.created_at).toLocaleString()}
+                              </div>
+                              <div className="text-xs text-primary-500">
+                                {snap.saved ? 'Saved version' : 'Autosave'}
+                              </div>
+                            </div>
+                            <button
+                              className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
+                              onClick={() => handleRestoreSnapshot(snap.snapshot_id)}
+                            >
                                 Restore
                               </button>
                             </li>

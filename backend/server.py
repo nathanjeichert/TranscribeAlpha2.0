@@ -93,7 +93,6 @@ DEFAULT_LINES_PER_PAGE = 25
 # Track last cleanup time for periodic cleanup
 last_cleanup_time = datetime.now()
 
-EDITOR_SESSION_PREFIX = "editor_sessions/"
 EDITOR_SESSION_TTL_DAYS = int(os.getenv("EDITOR_SESSION_TTL_DAYS", "7"))
 
 CLIP_SESSION_PREFIX = "clip_sessions/"
@@ -103,10 +102,6 @@ SNAPSHOT_PREFIX = "editor_snapshots/"
 SNAPSHOT_TTL_DAYS = int(os.getenv("SNAPSHOT_TTL_DAYS", "14"))
 SNAPSHOT_PER_SESSION_LIMIT = int(os.getenv("SNAPSHOT_PER_SESSION_LIMIT", "40"))
 SNAPSHOT_PER_MEDIA_LIMIT = int(os.getenv("SNAPSHOT_PER_MEDIA_LIMIT", "10"))
-
-
-def _session_blob_name(session_id: str) -> str:
-    return f"{EDITOR_SESSION_PREFIX}{session_id}.json"
 
 
 def _clip_blob_name(clip_id: str) -> str:
@@ -119,6 +114,8 @@ def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
 
 def snapshot_media_key(session_data: dict) -> str:
     title_data = session_data.get("title_data") or {}
+    if session_data.get("media_key"):
+        return str(session_data["media_key"])
     # Priority 1: Explicit MEDIA_ID (from import or previous session)
     if title_data.get("MEDIA_ID"):
         return str(title_data["MEDIA_ID"])
@@ -138,12 +135,14 @@ def snapshot_media_key(session_data: dict) -> str:
             media_id_from_xml = None
 
     # Fallback chain: XML mediaId -> Filename -> Media Blob -> Session ID
-    key = media_id_from_xml or xml_filename or session_data.get("media_blob_name") or session_data.get("session_id") or "unknown"
+    key = media_id_from_xml or xml_filename or session_data.get("media_blob_name") or "unknown"
     return str(key)
 
 
 def derive_media_key_from_payload(payload: dict) -> str:
     title_data = payload.get("title_data") or {}
+    if payload.get("media_key"):
+        return str(payload["media_key"])
     if title_data.get("MEDIA_ID"):
         return str(title_data["MEDIA_ID"])
 
@@ -161,7 +160,7 @@ def derive_media_key_from_payload(payload: dict) -> str:
         except Exception:
             media_id_from_xml = None
 
-    key = media_id_from_xml or xml_filename or payload.get("media_blob_name") or payload.get("session_id") or "unknown"
+    key = media_id_from_xml or xml_filename or payload.get("media_blob_name") or "unknown"
     return str(key)
 
 
@@ -184,51 +183,6 @@ def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:
             turn_dict["words"] = sanitized_words
         serialized.append(turn_dict)
     return serialized
-
-
-def save_editor_session(session_id: str, session_data: dict) -> None:
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = _session_blob_name(session_id)
-        blob = bucket.blob(blob_name)
-        blob.metadata = {
-            "session_id": session_id,
-            "created_at": session_data["created_at"],
-            "expires_at": session_data["expires_at"],
-            "updated_at": session_data.get("updated_at", session_data["created_at"]),
-        }
-        blob.upload_from_string(json.dumps(session_data), content_type="application/json")
-        logger.info("Saved editor session %s", session_id)
-    except Exception as e:
-        logger.error("Failed to save editor session %s: %s", session_id, e)
-        raise
-
-
-def load_editor_session(session_id: str) -> Optional[dict]:
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = _session_blob_name(session_id)
-        blob = bucket.blob(blob_name)
-        if not blob.exists():
-            return None
-        raw = blob.download_as_text()
-        session_data = json.loads(raw)
-        return session_data
-    except Exception as e:
-        logger.error("Failed to load editor session %s: %s", session_id, e)
-        return None
-
-
-def delete_editor_session(session_id: str) -> None:
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = _session_blob_name(session_id)
-        blob = bucket.blob(blob_name)
-        if blob.exists():
-            blob.delete()
-            logger.info("Deleted editor session %s", session_id)
-    except Exception as e:
-        logger.error("Failed to delete editor session %s: %s", session_id, e)
 
 
 # New media-key-based storage functions
@@ -266,6 +220,8 @@ def load_current_transcript(media_key: str) -> Optional[dict]:
         blob = bucket.blob(f"transcripts/{media_key}/current.json")
         if blob.exists():
             data = json.loads(blob.download_as_string())
+            if not data.get("media_key"):
+                data["media_key"] = media_key
 
             # Check expiration
             expires_at_str = blob.metadata.get("expires_at") if blob.metadata else None
@@ -317,13 +273,19 @@ def load_latest_snapshot_for_media(media_key: str, prefer_manual_save: bool = Tr
         # Return newest manual save if exists and preferred
         if prefer_manual_save and manual_saves:
             manual_saves.sort(key=lambda x: x[0], reverse=True)
-            return manual_saves[0][1]
+            snapshot = manual_saves[0][1]
+            if not snapshot.get("media_key"):
+                snapshot["media_key"] = media_key
+            return snapshot
 
         # Otherwise return newest overall
         all_snapshots = manual_saves + auto_saves
         if all_snapshots:
             all_snapshots.sort(key=lambda x: x[0], reverse=True)
-            return all_snapshots[0][1]
+            snapshot = all_snapshots[0][1]
+            if not snapshot.get("media_key"):
+                snapshot["media_key"] = media_key
+            return snapshot
 
         return None
 
@@ -374,7 +336,7 @@ def save_clip_session(clip_id: str, clip_data: dict) -> None:
         blob = bucket.blob(_clip_blob_name(clip_id))
         blob.metadata = {
             "clip_id": clip_id,
-            "parent_session_id": clip_data.get("parent_session_id"),
+            "parent_media_key": clip_data.get("parent_media_key"),
             "created_at": clip_data.get("created_at"),
             "expires_at": clip_data.get("expires_at"),
         }
@@ -415,7 +377,6 @@ def save_snapshot(media_key: str, snapshot_id: str, snapshot_data: dict) -> None
         blob = bucket.blob(blob_name)
         blob.metadata = {
             "snapshot_id": snapshot_id,
-            "session_id": snapshot_data.get("session_id"),
             "media_key": media_key,
             "created_at": snapshot_data.get("created_at"),
             "saved": str(snapshot_data.get("saved", False)),
@@ -486,6 +447,7 @@ def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
     """Prune snapshots to keep newest 10, preserving newest manual save."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
+        limit = 10
 
         # Support both old and new storage paths during migration
         old_prefix = f"{SNAPSHOT_PREFIX}{media_key}/"
@@ -507,7 +469,7 @@ def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
                     logger.warning("Failed to delete expired snapshot %s", blob.name)
 
         # Phase 2: Enforce per-media limit (10 snapshots)
-        if len(blobs) <= SNAPSHOT_PER_MEDIA_LIMIT:
+        if len(blobs) <= limit:
             return
 
         # Load all snapshot data to check is_manual_save flag
@@ -526,7 +488,7 @@ def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
                 continue
 
         # Sort by creation time (newest first)
-        snapshot_info.sort(key=lambda x: x["created_at"], reverse=True)
+        snapshot_info.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
         # Find newest manual save
         newest_manual_save = next(
@@ -535,17 +497,28 @@ def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
         )
 
         # Keep newest N snapshots
-        to_keep = snapshot_info[:SNAPSHOT_PER_MEDIA_LIMIT]
+        to_keep = snapshot_info[:limit]
 
         # Ensure newest manual save is included
         if newest_manual_save and newest_manual_save not in to_keep:
             # Replace oldest kept snapshot with the manual save
             to_keep[-1] = newest_manual_save
 
+        # Deduplicate and sort keep list again newest first
+        keep_blob_names = []
+        deduped_keep = []
+        for item in to_keep:
+            name = item["blob"].name
+            if name in keep_blob_names:
+                continue
+            keep_blob_names.append(name)
+            deduped_keep.append(item)
+        deduped_keep.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
         # Delete everything not in to_keep
-        keep_blob_names = {s["blob"].name for s in to_keep}
+        keep_names_set = {s["blob"].name for s in deduped_keep}
         for s in snapshot_info:
-            if s["blob"].name not in keep_blob_names:
+            if s["blob"].name not in keep_names_set:
                 try:
                     s["blob"].delete()
                 except Exception:
@@ -553,51 +526,6 @@ def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
 
     except Exception as exc:
         logger.error("Snapshot pruning failed for %s: %s", media_key, exc)
-
-
-def session_is_expired(session_data: dict) -> bool:
-    expires_at = session_data.get("expires_at")
-    if not expires_at:
-        return False
-    try:
-        expires_dt = datetime.fromisoformat(expires_at)
-    except ValueError:
-        try:
-            expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        except ValueError:
-            return False
-    return expires_dt < datetime.now(timezone.utc)
-
-
-def cleanup_expired_editor_sessions():
-    """Delete editor sessions older than the configured TTL."""
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        now = datetime.now(timezone.utc)
-        deleted = 0
-        for blob in bucket.list_blobs(prefix=EDITOR_SESSION_PREFIX):
-            try:
-                raw = blob.download_as_text()
-                session_data = json.loads(raw)
-            except Exception:
-                continue
-            expires_at = session_data.get("expires_at")
-            if not expires_at:
-                continue
-            try:
-                expires_dt = datetime.fromisoformat(expires_at)
-            except ValueError:
-                try:
-                    expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-            if expires_dt < now:
-                blob.delete()
-                deleted += 1
-        if deleted:
-            logger.info("Cleanup removed %s expired editor sessions", deleted)
-    except Exception as e:
-        logger.error("Error during editor session cleanup: %s", e)
 
 
 def cleanup_expired_clip_sessions():
@@ -683,26 +611,6 @@ def build_session_artifacts(
     line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
     transcript_text = format_transcript_text(turns)
     return docx_bytes, oncue_xml, transcript_text, serialize_line_entries(line_entries)
-
-
-def build_session_response(session_data: dict) -> dict:
-    return {
-        "session_id": session_data.get("session_id"),
-        "media_key": session_data.get("media_key"),  # Include media_key for new storage system
-        "title_data": session_data.get("title_data", {}),
-        "audio_duration": session_data.get("audio_duration", 0.0),
-        "lines_per_page": session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
-        "lines": session_data.get("lines", []),
-        "created_at": session_data.get("created_at"),
-        "updated_at": session_data.get("updated_at"),
-        "expires_at": session_data.get("expires_at"),
-        "docx_base64": session_data.get("docx_base64"),
-        "oncue_xml_base64": session_data.get("oncue_xml_base64"),
-        "transcript": session_data.get("transcript_text"),
-        "media_blob_name": session_data.get("media_blob_name"),
-        "media_content_type": session_data.get("media_content_type"),
-        "clips": session_data.get("clips", []),
-    }
 
 
 def ensure_session_clip_list(session_data: dict) -> List[dict]:
@@ -978,40 +886,6 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
     return turns
 
 
-def load_latest_editor_session() -> Optional[dict]:
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        latest_session = None
-        latest_ts = None
-        for blob in bucket.list_blobs(prefix=EDITOR_SESSION_PREFIX):
-            try:
-                raw = blob.download_as_text()
-                session_data = json.loads(raw)
-            except Exception:
-                continue
-
-            if session_is_expired(session_data):
-                try:
-                    blob.delete()
-                except Exception:
-                    pass
-                continue
-
-            updated_at_str = session_data.get("updated_at") or session_data.get("created_at")
-            updated_at = parse_iso_datetime(updated_at_str)
-            if not updated_at:
-                continue
-
-            if latest_ts is None or updated_at > latest_ts:
-                latest_ts = updated_at
-                latest_session = session_data
-
-        return latest_session
-    except Exception as e:
-        logger.error("Failed to load latest editor session: %s", e)
-        return None
-
-
 def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
     try:
         root = ET.fromstring(xml_text)
@@ -1122,7 +996,6 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
 
     created_at = datetime.now(timezone.utc).isoformat()
     return {
-        "session_id": session_data.get("session_id"),
         "media_key": snapshot_media_key(session_data),
         "created_at": created_at,
         "title_data": title_data,
@@ -1526,7 +1399,6 @@ async def startup_event():
     """Run cleanup on startup and log Cloud Storage status"""
     logger.info("Starting TranscribeAlpha with Cloud Storage enabled")
     cleanup_old_files()
-    cleanup_expired_editor_sessions()
     cleanup_expired_clip_sessions()
 
 
@@ -1585,8 +1457,7 @@ async def transcribe(
             speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
 
     # Generate stable MEDIA_ID for this transcript
-    media_id = uuid.uuid4().hex
-
+    media_key = uuid.uuid4().hex
     title_data = {
         "CASE_NAME": case_name,
         "CASE_NUMBER": case_number,
@@ -1596,7 +1467,7 @@ async def transcribe(
         "LOCATION": location,
         "FILE_NAME": file.filename,
         "FILE_DURATION": "Calculating...",
-        "MEDIA_ID": media_id,  # Stable identifier for this transcript
+        "MEDIA_ID": media_key,  # Stable identifier for this transcript
     }
 
     # Upload media for editor playback
@@ -1654,8 +1525,6 @@ async def transcribe(
     docx_b64 = base64.b64encode(docx_bytes).decode()
     oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
-    # Use MEDIA_ID as the stable identifier
-    media_key = media_id
     created_at = datetime.now(timezone.utc)
 
     transcript_data = {
@@ -1669,6 +1538,7 @@ async def transcribe(
         "docx_base64": docx_b64,
         "oncue_xml_base64": oncue_b64,
         "transcript_text": transcript_text,
+        "transcript": transcript_text,
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
         "updated_at": created_at.isoformat(),
@@ -1687,28 +1557,13 @@ async def transcribe(
         snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
         snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
 
-        # Keep old session-based storage for backwards compatibility during migration
-        session_id = uuid.uuid4().hex
-        expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
-        session_payload = {
-            **transcript_data,
-            "session_id": session_id,
-            "expires_at": expires_at.isoformat(),
-        }
-        save_editor_session(session_id, session_payload)
-
     except Exception as e:
         logger.error("Failed to store transcript: %s", e)
         raise HTTPException(status_code=500, detail="Unable to persist transcript")
 
     response_data = {
+        **transcript_data,
         "transcript": transcript_text,
-        "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
-        "media_key": media_key,  # Return media_key as primary identifier
-        "editor_session_id": session_id,  # Keep for backwards compatibility
-        "media_blob_name": media_blob_name,
-        "media_content_type": media_content_type,
     }
 
     return JSONResponse(response_data)
@@ -1771,13 +1626,21 @@ async def save_transcript_by_media_key(media_key: str, request: Request):
         }
 
         # Regenerate DOCX and XML
-        turns = existing.get("turns", [])
         try:
-            docx_bytes = create_docx(lines, title_data)
+            normalized_lines, normalized_duration = normalize_line_payloads(lines, float(transcript_data.get("audio_duration") or 0.0))
+            turns = construct_turns_from_lines(normalized_lines)
+            docx_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
+                turns,
+                title_data,
+                normalized_duration,
+                transcript_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
+            )
+            transcript_data["lines"] = updated_lines
+            transcript_data["audio_duration"] = normalized_duration
             transcript_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
-
-            xml_content = generate_oncue_xml(turns, lines, title_data, transcript_data.get("media_blob_name"))
-            transcript_data["oncue_xml_base64"] = base64.b64encode(xml_content.encode("utf-8")).decode("ascii")
+            transcript_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
+            transcript_data["transcript_text"] = transcript_text
+            transcript_data["transcript"] = transcript_text
         except Exception as e:
             logger.warning(f"Failed to regenerate documents: {e}")
 
@@ -1853,6 +1716,9 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str):
 
         snapshot_data = json.loads(blob.download_as_string())
 
+        if not snapshot_data.get("media_key"):
+            snapshot_data["media_key"] = media_key
+
         # Save as current
         save_current_transcript(media_key, snapshot_data)
 
@@ -1863,137 +1729,6 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str):
     except Exception as e:
         logger.error(f"Failed to restore snapshot {snapshot_id} for {media_key}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# Old session-based endpoints (kept for backwards compatibility)
-@app.get("/api/transcripts/{session_id}")
-async def get_editor_session(session_id: str):
-    session_data = load_editor_session(session_id)
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Editor session not found")
-    if session_is_expired(session_data):
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=404, detail="Editor session expired")
-
-    return JSONResponse(build_session_response(session_data))
-
-
-@app.get("/api/transcripts/latest")
-async def get_latest_editor_session():
-    session_data = load_latest_editor_session()
-    if not session_data:
-        raise HTTPException(status_code=404, detail="No editor sessions available")
-    return JSONResponse(build_session_response(session_data))
-
-
-@app.post("/api/transcripts/create")
-async def create_editor_session(payload: Dict = Body(...)):
-    """Create a new editor session from a JSON payload (e.g. recovering from a snapshot)."""
-    lines_payload = payload.get("lines") or []
-    title_data = payload.get("title_data") or {}
-    media_blob_name = payload.get("media_blob_name")
-    media_content_type = payload.get("media_content_type")
-    
-    # Ensure we have valid duration
-    try:
-        duration_seconds = float(payload.get("audio_duration") or 0)
-    except (TypeError, ValueError):
-        duration_seconds = 0.0
-        
-    lines_per_page = payload.get("lines_per_page") or DEFAULT_LINES_PER_PAGE
-    
-    # Reconstruct turns and artifacts
-    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-    turns = construct_turns_from_lines(normalized_lines)
-    
-    if not turns and lines_payload:
-        # If we have lines but couldn't make turns, something is wrong, but we should try to proceed
-        pass
-        
-    docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
-        turns,
-        title_data,
-        duration_seconds,
-        lines_per_page,
-    )
-    
-    docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
-    
-    session_id = uuid.uuid4().hex
-    created_at = datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
-    
-    session_payload = {
-        "session_id": session_id,
-        "created_at": created_at.isoformat(),
-        "updated_at": created_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "title_data": title_data,
-        "audio_duration": duration_seconds,
-        "lines_per_page": lines_per_page,
-        "turns": serialize_transcript_turns(turns),
-        "lines": updated_lines_payload,
-        "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
-        "transcript_text": transcript_text,
-        "media_blob_name": media_blob_name,
-        "media_content_type": media_content_type,
-        "source": "recovery",
-        "clips": [],
-    }
-    
-    save_editor_session(session_id, session_payload)
-    return JSONResponse(build_session_response(session_payload))
-
-
-@app.post("/api/transcripts/{session_id}/snapshots")
-async def create_snapshot(session_id: str, payload: Optional[Dict] = Body(None)):
-    session_data = load_editor_session(session_id)
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Editor session not found")
-    if session_is_expired(session_data):
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=404, detail="Editor session expired")
-
-    media_key = snapshot_media_key(session_data)
-    override_lines = None
-    override_title = None
-    saved_flag = False
-    if payload:
-        if isinstance(payload.get("lines"), list):
-            override_lines = payload.get("lines")
-        if isinstance(payload.get("title_data"), dict):
-            override_title = payload.get("title_data")
-        if "saved" in payload:
-            saved_flag = bool(payload.get("saved"))
-
-    snapshot_id = uuid.uuid4().hex
-    snap_payload = build_snapshot_payload(session_data, lines_override=override_lines, title_override=override_title)
-    snap_payload["snapshot_id"] = snapshot_id
-    snap_payload["session_id"] = session_id
-    snap_payload["saved"] = saved_flag
-
-    save_snapshot(media_key, snapshot_id, snap_payload)
-    prune_snapshots(media_key)
-
-    return JSONResponse({"snapshot_id": snapshot_id, "created_at": snap_payload["created_at"]})
-
-
-@app.get("/api/transcripts/{session_id}/snapshots")
-async def list_session_snapshots(session_id: str):
-    session_data = load_editor_session(session_id)
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Editor session not found")
-    media_key = snapshot_media_key(session_data)
-    return await list_snapshots_media_key(media_key)
-
-
-@app.get("/api/transcripts/{session_id}/snapshots/{snapshot_id}")
-async def get_snapshot(session_id: str, snapshot_id: str):
-    session_data = load_editor_session(session_id)
-    media_key = snapshot_media_key(session_data) if session_data else session_id
-    return await get_snapshot_by_media(media_key, snapshot_id)
 
 
 @app.get("/api/transcripts/snapshots")
@@ -2080,14 +1815,11 @@ async def get_snapshot_by_media(media_key: str, snapshot_id: str):
     return JSONResponse(snapshot)
 
 
-@app.post("/api/transcripts/{session_id}/gemini-refine")
-async def gemini_refine_transcript(session_id: str):
-    session_data = load_editor_session(session_id)
+@app.post("/api/transcripts/by-key/{media_key:path}/gemini-refine")
+async def gemini_refine_transcript(media_key: str):
+    session_data = load_current_transcript(media_key)
     if not session_data:
-        raise HTTPException(status_code=404, detail="Editor session not found")
-    if session_is_expired(session_data):
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=404, detail="Editor session expired")
+        raise HTTPException(status_code=404, detail="Transcript not found")
 
     media_blob_name = session_data.get("media_blob_name")
     if not media_blob_name:
@@ -2141,12 +1873,12 @@ async def gemini_refine_transcript(session_id: str):
         session_data["docx_base64"] = docx_b64
         session_data["oncue_xml_base64"] = oncue_b64
         session_data["transcript_text"] = transcript_text
+        session_data["transcript"] = transcript_text
         session_data["updated_at"] = updated_at.isoformat()
-        session_data["expires_at"] = (updated_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
 
-        save_editor_session(session_id, session_data)
+        save_current_transcript(media_key, session_data)
 
-        return JSONResponse(build_session_response(session_data))
+        return JSONResponse(session_data)
     finally:
         for path in (audio_path, media_path):
             if path and os.path.exists(path):
@@ -2158,16 +1890,13 @@ async def gemini_refine_transcript(session_id: str):
 
 @app.post("/api/clips")
 async def create_clip(payload: Dict = Body(...)):
-    session_id = payload.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
+    media_key = payload.get("media_key")
+    if not media_key:
+        raise HTTPException(status_code=400, detail="media_key is required")
 
-    session_data = load_editor_session(session_id)
+    session_data = load_current_transcript(media_key)
     if not session_data:
-        raise HTTPException(status_code=404, detail="Editor session not found")
-    if session_is_expired(session_data):
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=404, detail="Editor session expired")
+        raise HTTPException(status_code=404, detail="Transcript not found")
 
     lines = session_data.get("lines") or []
     if not lines:
@@ -2305,7 +2034,7 @@ async def create_clip(payload: Dict = Body(...)):
 
     clip_data = {
         "clip_id": clip_id,
-        "parent_session_id": session_id,
+        "parent_media_key": media_key,
         "name": clip_name,
         "created_at": created_at.isoformat(),
         "expires_at": clip_expires_at.isoformat(),
@@ -2332,6 +2061,7 @@ async def create_clip(payload: Dict = Body(...)):
 
     clip_summary = {
         "clip_id": clip_id,
+        "parent_media_key": media_key,
         "name": clip_name,
         "created_at": created_at.isoformat(),
         "duration": float(normalized_duration),
@@ -2358,24 +2088,24 @@ async def create_clip(payload: Dict = Body(...)):
     clips_list.append(clip_summary)
 
     session_data["updated_at"] = created_at.isoformat()
-    session_data["expires_at"] = (created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
+    session_data["media_key"] = media_key
 
     try:
-        save_editor_session(session_id, session_data)
+        save_current_transcript(media_key, session_data)
     except Exception as exc:
         clips_list.pop()
         delete_clip_session(clip_id)
-        logger.error("Failed to update session %s after clip creation: %s", session_id, exc)
+        logger.error("Failed to update session %s after clip creation: %s", media_key, exc)
         raise HTTPException(status_code=500, detail="Unable to update session with clip metadata")
 
     clip_response = dict(clip_data)
-    clip_response.pop("parent_session_id", None)
+    clip_response.pop("parent_media_key", None)
     clip_response["transcript"] = clip_response.pop("transcript_text", "")
     clip_response["summary"] = clip_summary
 
     return JSONResponse({
         "clip": clip_response,
-        "session": build_session_response(session_data),
+        "transcript": session_data,
     })
 
 
@@ -2400,82 +2130,6 @@ async def get_clip_session(clip_id: str):
 
     response_payload = dict(clip_data)
     response_payload["transcript"] = response_payload.pop("transcript_text", "")
-    return JSONResponse(response_payload)
-
-
-@app.put("/api/transcripts/{session_id}")
-async def update_editor_session(session_id: str, payload: Dict = Body(...)):
-    session_data = load_editor_session(session_id)
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Editor session not found")
-    if session_is_expired(session_data):
-        delete_editor_session(session_id)
-        raise HTTPException(status_code=404, detail="Editor session expired")
-
-    lines_payload = payload.get("lines")
-    if not isinstance(lines_payload, list) or not lines_payload:
-        raise HTTPException(status_code=400, detail="Lines payload is required")
-
-    title_updates = payload.get("title_data") or {}
-    current_title = dict(session_data.get("title_data") or {})
-    current_title.update(title_updates)
-
-    duration_seconds = float(session_data.get("audio_duration") or 0)
-    lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
-
-    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-    turns = construct_turns_from_lines(normalized_lines)
-
-    if not turns:
-        raise HTTPException(status_code=400, detail="No valid turns could be constructed from lines")
-
-    docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
-        turns,
-        current_title,
-        duration_seconds,
-        lines_per_page,
-    )
-
-    docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
-
-    hours, rem = divmod(duration_seconds, 3600)
-    minutes, seconds = divmod(rem, 60)
-    current_title["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
-
-    media_blob_name = payload.get("media_blob_name", session_data.get("media_blob_name"))
-    media_content_type = payload.get("media_content_type", session_data.get("media_content_type"))
-
-    updated_at = datetime.now(timezone.utc)
-
-    session_data["turns"] = serialize_transcript_turns(turns)
-    session_data["lines"] = updated_lines_payload
-    session_data["title_data"] = current_title
-    session_data["audio_duration"] = duration_seconds
-    session_data["docx_base64"] = docx_b64
-    session_data["oncue_xml_base64"] = oncue_b64
-    session_data["transcript_text"] = transcript_text
-    session_data["media_blob_name"] = media_blob_name
-    session_data["media_content_type"] = media_content_type
-    session_data["updated_at"] = updated_at.isoformat()
-    session_data["expires_at"] = (updated_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)).isoformat()
-
-    save_editor_session(session_id, session_data)
-
-    response_payload = {
-        "session_id": session_id,
-        "lines": updated_lines_payload,
-        "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
-        "transcript": transcript_text,
-        "title_data": current_title,
-        "audio_duration": duration_seconds,
-        "updated_at": session_data["updated_at"],
-        "expires_at": session_data["expires_at"],
-        "media_blob_name": media_blob_name,
-        "media_content_type": media_content_type,
-    }
-
     return JSONResponse(response_payload)
 
 
@@ -2509,26 +2163,9 @@ async def import_oncue_transcript(
     }
     title_data.update(overrides)
 
-    # Determine MEDIA_ID
-    # Priority: 1. Media File Name (raw) 2. XML mediaId attribute 3. XML File Name (raw)
-    media_id = None
-    if media_file and media_file.filename:
-        media_id = media_file.filename
-    else:
-        # Try to extract from XML root
-        try:
-            root = ET.fromstring(xml_text)
-            deposition = root.find(".//deposition")
-            if deposition is not None:
-                media_id = deposition.get("mediaId") or deposition.get("mediaID")
-        except Exception:
-            pass
-        
-        if not media_id and xml_file.filename:
-            media_id = xml_file.filename
-            
-    if media_id:
-        title_data["MEDIA_ID"] = str(media_id)
+    # Always use a fresh media key to avoid collisions with prior imports
+    media_key = uuid.uuid4().hex
+    title_data["MEDIA_ID"] = media_key
 
     duration_seconds = float(parsed["audio_duration"] or 0)
     lines_payload = parsed["lines"]
@@ -2564,39 +2201,9 @@ async def import_oncue_transcript(
                 media_blob_name = None
                 media_content_type = None
 
-    session_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc)
-    expires_at = created_at + timedelta(days=EDITOR_SESSION_TTL_DAYS)
-
-    # Use MEDIA_ID as the media_key for the new storage system
-    media_key = title_data.get("MEDIA_ID") or uuid.uuid4().hex
-    if "MEDIA_ID" not in title_data:
-        title_data["MEDIA_ID"] = media_key
-
-    logger.info(f"Import using media_key: {media_key}")
-
-    session_payload = {
-        "session_id": session_id,
-        "media_key": media_key,  # Include for new storage system
-        "created_at": created_at.isoformat(),
-        "updated_at": created_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "title_data": title_data,
-        "audio_duration": duration_seconds,
-        "lines_per_page": DEFAULT_LINES_PER_PAGE,
-        "turns": serialize_transcript_turns(turns),
-        "lines": line_payloads,
-        "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
-        "transcript_text": transcript_text,
-        "media_blob_name": media_blob_name,
-        "media_content_type": media_content_type,
-        "source": "import",
-        "clips": [],
-    }
 
     try:
-        # Save to new media_key-based storage for history feature
         transcript_data = {
             "media_key": media_key,
             "created_at": created_at.isoformat(),
@@ -2609,11 +2216,13 @@ async def import_oncue_transcript(
             "docx_base64": docx_b64,
             "oncue_xml_base64": oncue_b64,
             "transcript_text": transcript_text,
+            "transcript": transcript_text,
             "media_blob_name": media_blob_name,
             "media_content_type": media_content_type,
             "user_id": "anonymous",
             "clips": [],
         }
+
         save_current_transcript(media_key, transcript_data)
 
         # Create initial snapshot (manual save) for history feature
@@ -2626,12 +2235,9 @@ async def import_oncue_transcript(
 
     except Exception as e:
         logger.error("Failed to save imported transcript to new storage: %s", e)
-        # Continue anyway - old session storage is still saved below
+        raise HTTPException(status_code=500, detail="Unable to persist imported transcript")
 
-    # Keep old session-based storage for backwards compatibility
-    save_editor_session(session_id, session_payload)
-
-    response_payload = build_session_response(session_payload)
+    response_payload = dict(transcript_data)
     return JSONResponse(response_payload)
 
 @app.post("/api/upload-preview")
@@ -2746,7 +2352,6 @@ async def health_check():
     if current_time - last_cleanup_time > timedelta(hours=12):
         try:
             cleanup_old_files()
-            cleanup_expired_editor_sessions()
             cleanup_expired_clip_sessions()
             last_cleanup_time = current_time
             logger.info("Periodic cleanup completed via health check")
