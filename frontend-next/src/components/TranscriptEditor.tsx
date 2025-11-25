@@ -810,8 +810,9 @@ export default function TranscriptEditor({
         setSelectedLineId(null)
         setEditingField(null)
         activeLineMarker.current = null
-        if (data.session_id) {
-          setActiveSessionId(data.session_id)
+        const importedMediaKey = data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
+        if (importedMediaKey) {
+          setMediaKey(importedMediaKey)
         }
         onSessionChange(data)
         setImportXmlFile(null)
