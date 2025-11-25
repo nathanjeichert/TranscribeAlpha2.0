@@ -993,7 +993,7 @@ export default function TranscriptEditor({
                               </div>
                               <button
                                 className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100"
-                                onClick={() => handleRestoreSnapshot(snap.snapshot_id, snap.media_key || selectedMediaKey)}
+                                onClick={() => handleRestoreSnapshot(snap.snapshot_id)}
                               >
                                 Restore
                               </button>
