@@ -47,6 +47,7 @@ export interface EditorSessionResponse {
   docx_base64?: string | null
   oncue_xml_base64?: string | null
   transcript?: string | null
+  transcript_text?: string | null
   clips?: ClipSummary[]
 }
 
@@ -320,7 +321,7 @@ export default function TranscriptEditor({
         ; (editInputRef.current as HTMLInputElement).select()
       }
     }
-  }, [editingLineId, editingFieldName]) // Only run when lineId or field changes, not when value changes
+  }, [editingField]) // Only run when lineId or field changes, not when value changes
 
   useEffect(() => {
     const player = effectiveMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
