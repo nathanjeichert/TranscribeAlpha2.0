@@ -11,6 +11,7 @@ interface ClipCreatorProps {
   onSessionRefresh: (session: EditorSessionResponse) => void
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
+  onOpenHistory?: () => void
 }
 
 interface ClipLineEntry {
@@ -121,6 +122,7 @@ export default function ClipCreator({
   onSessionRefresh,
   onDownload,
   buildFilename,
+  onOpenHistory,
 }: ClipCreatorProps) {
   const lines = useMemo<EditorLine[]>(() => session?.lines ?? [], [session])
   const clipHistory = useMemo<ClipSummary[]>(() => session?.clips ?? [], [session])
@@ -647,6 +649,13 @@ export default function ClipCreator({
 
   return (
     <div className="space-y-8">
+      {onOpenHistory && (
+        <div className="flex justify-end">
+          <button className="btn-outline text-sm" onClick={onOpenHistory}>
+            History
+          </button>
+        </div>
+      )}
       <div className="card">
         <div className="card-header">
           <h2 className="text-xl font-medium">Import Transcript</h2>

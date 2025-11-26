@@ -26,7 +26,19 @@ interface TranscriptListItem {
   line_count?: number
 }
 
-type AppTab = 'transcribe' | 'editor' | 'clip' | 'history'
+interface SnapshotListItem {
+  snapshot_id: string
+  created_at?: string
+  is_manual_save?: boolean
+  line_count?: number
+  title_label?: string
+}
+
+interface HistoryGroup extends TranscriptListItem {
+  snapshots: SnapshotListItem[]
+}
+
+type AppTab = 'transcribe' | 'editor' | 'clip'
 
 export default function TranscribeForm() {
   const [formData, setFormData] = useState<FormData>({
@@ -49,10 +61,12 @@ export default function TranscribeForm() {
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string>('')
   const [mediaContentType, setMediaContentType] = useState<string | undefined>(undefined)
   const [mediaIsLocal, setMediaIsLocal] = useState(false)
-  const [showHistoryList, setShowHistoryList] = useState(false)
-  const [historyItems, setHistoryItems] = useState<TranscriptListItem[]>([])
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [showHistoryModal, setShowHistoryModal] = useState(false)
+  const [historyGroups, setHistoryGroups] = useState<HistoryGroup[]>([])
+  const [historyModalLoading, setHistoryModalLoading] = useState(false)
+  const [historyModalError, setHistoryModalError] = useState<string | null>(null)
+  const [selectedHistoryKey, setSelectedHistoryKey] = useState<string | null>(null)
+  const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null)
   const [geminiBusy, setGeminiBusy] = useState(false)
   const [geminiError, setGeminiError] = useState<string | null>(null)
   const [useGeminiPolish, setUseGeminiPolish] = useState(false)
@@ -172,36 +186,135 @@ export default function TranscribeForm() {
     [hydrateTranscript],
   )
 
-  const fetchHistory = useCallback(async () => {
-    setHistoryLoading(true)
-    setHistoryError(null)
+  const trimSnapshotsToLimit = useCallback((snapshots: SnapshotListItem[]) => {
+    const sorted = [...snapshots].sort((a, b) => {
+      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0
+      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0
+      return bTime - aTime
+    })
+    const manual = sorted.find((snap) => snap.is_manual_save)
+    let limited = sorted.slice(0, 10)
+    if (manual && !limited.some((snap) => snap.snapshot_id === manual.snapshot_id)) {
+      if (limited.length >= 10) {
+        limited[limited.length - 1] = manual
+      } else {
+        limited.push(manual)
+      }
+      limited = [...limited].sort((a, b) => {
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0
+        return bTime - aTime
+      })
+    }
+    return limited
+  }, [])
+
+  const loadHistoryModal = useCallback(async () => {
+    setShowHistoryModal(true)
+    setHistoryModalLoading(true)
+    setHistoryModalError(null)
     try {
       const response = await fetch('/api/transcripts')
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to load sessions')
+        throw new Error(detail?.detail || 'Failed to load history')
       }
       const payload = await response.json()
-      setHistoryItems(payload.transcripts || [])
-    } catch (err: any) {
-      setHistoryError(err?.message || 'Failed to load sessions')
-    } finally {
-      setHistoryLoading(false)
-    }
-  }, [])
+      const transcripts: TranscriptListItem[] = payload.transcripts || []
 
-  const handleSelectHistoryItem = useCallback(
-    async (key: string) => {
-      setHistoryError(null)
+      const groups: HistoryGroup[] = await Promise.all(
+        transcripts.map(async (item) => {
+          try {
+            const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(item.media_key)}/history`)
+            let snapshots: SnapshotListItem[] = []
+            if (historyResponse.ok) {
+              const historyData = await historyResponse.json()
+              snapshots = trimSnapshotsToLimit(
+                (historyData.snapshots || []).map((snap: any) => ({
+                  ...snap,
+                  media_key: item.media_key,
+                })),
+              )
+            }
+            return {
+              ...item,
+              snapshots,
+            }
+          } catch {
+            return {
+              ...item,
+              snapshots: [],
+            }
+          }
+        }),
+      )
+
+      let finalGroups = groups
+
+      // Fallback: if no transcripts listed but we have an active key, still attempt to load its history
+      if (!finalGroups.length && (transcriptData?.media_key || mediaKey)) {
+        const fallbackKey = transcriptData?.media_key ?? mediaKey!
+        try {
+          const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(fallbackKey)}/history`)
+          const historyData = historyResponse.ok ? await historyResponse.json() : { snapshots: [] }
+          finalGroups = [
+            {
+              media_key: fallbackKey,
+              title_label: fallbackKey,
+              updated_at: null,
+              line_count: 0,
+              snapshots: trimSnapshotsToLimit(
+                (historyData.snapshots || []).map((snap: any) => ({
+                  ...snap,
+                  media_key: fallbackKey,
+                })),
+              ),
+            },
+          ]
+        } catch {
+          finalGroups = []
+        }
+      }
+
+      const preferredKey = transcriptData?.media_key ?? mediaKey
+      const initialKey =
+        preferredKey && finalGroups.some((group) => group.media_key === preferredKey)
+          ? preferredKey
+          : finalGroups[0]?.media_key ?? null
+
+      setHistoryGroups(finalGroups)
+      setSelectedHistoryKey(initialKey)
+    } catch (err: any) {
+      setHistoryModalError(err?.message || 'Failed to load history')
+    } finally {
+      setHistoryModalLoading(false)
+    }
+  }, [mediaKey, transcriptData?.media_key, trimSnapshotsToLimit])
+
+  const handleRestoreSnapshot = useCallback(
+    async (key: string, snapshotId: string) => {
+      setRestoringSnapshotId(`${key}:${snapshotId}`)
+      setHistoryModalError(null)
       try {
-        await fetchTranscriptByKey(key)
+        const response = await fetch(
+          `/api/transcripts/by-key/${encodeURIComponent(key)}/restore/${snapshotId}`,
+          { method: 'POST' },
+        )
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to restore snapshot')
+        }
+        const data: TranscriptData = await response.json()
+        hydrateTranscript(data)
         setActiveTab('editor')
-        setShowHistoryList(false)
+        setShowHistoryModal(false)
       } catch (err: any) {
-        setHistoryError(err?.message || 'Failed to restore session')
+        setHistoryModalError(err?.message || 'Failed to restore snapshot')
+      } finally {
+        setRestoringSnapshotId(null)
       }
     },
-    [fetchTranscriptByKey],
+    [hydrateTranscript],
   )
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -349,6 +462,7 @@ export default function TranscribeForm() {
     transcriptData?.media_content_type ??
     mediaContentType ??
     selectedFile?.type
+  const selectedHistoryGroup = historyGroups.find((group) => group.media_key === selectedHistoryKey)
 
   useEffect(() => {
     const storedKey = typeof window !== 'undefined' ? localStorage.getItem('active_media_key') : null
@@ -378,15 +492,10 @@ export default function TranscribeForm() {
     }
   }, [transcriptData?.media_key, mediaKey])
 
-  useEffect(() => {
-    if (activeTab === 'history' && showHistoryList) {
-      fetchHistory()
-    }
-  }, [activeTab, showHistoryList, fetchHistory])
-
   return (
-    <div className="min-h-screen bg-primary-50">
-      <div className="max-w-screen-2xl mx-auto px-6 py-12">
+    <>
+      <div className="min-h-screen bg-primary-50">
+        <div className="max-w-screen-2xl mx-auto px-6 py-12">
         <div className="text-center mb-12">
           <div className="bg-gradient-to-r from-primary-900 to-primary-700 text-white rounded-2xl p-8 shadow-2xl">
             <h1 className="text-4xl font-light mb-4">TranscribeAlpha</h1>
@@ -394,18 +503,23 @@ export default function TranscribeForm() {
           </div>
         </div>
 
-        <div className="flex justify-center mb-10 gap-4">
+        <div className="flex justify-center mb-10 gap-4 flex-wrap items-center">
           <button className={tabClasses('transcribe')} onClick={() => setActiveTab('transcribe')}>
             Transcription
-          </button>
-          <button className={tabClasses('history')} onClick={() => { setActiveTab('history'); setShowHistoryList(true) }}>
-            Sessions
           </button>
           <button className={tabClasses('editor')} onClick={() => setActiveTab('editor')}>
             Editor
           </button>
           <button className={tabClasses('clip')} onClick={() => setActiveTab('clip')}>
             Clip Creator
+          </button>
+          <button
+            className="btn-outline text-sm"
+            onClick={() => {
+              loadHistoryModal()
+            }}
+          >
+            History
           </button>
         </div>
 
@@ -721,66 +835,6 @@ export default function TranscribeForm() {
           </div>
         )}
 
-        {activeTab === 'history' && (
-          <div className="space-y-6">
-            <div className="card">
-              <div className="card-header flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-medium">Session History</h2>
-                  <p className="text-sm text-primary-100">Resume a saved transcript session by clicking below.</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    className="btn-outline text-sm"
-                    onClick={() => {
-                      const next = !showHistoryList
-                      setShowHistoryList(next)
-                      if (next) fetchHistory()
-                    }}
-                  >
-                    {showHistoryList ? 'Hide Sessions' : 'Show Sessions'}
-                  </button>
-                  <button className="btn-primary text-sm" onClick={fetchHistory} disabled={historyLoading}>
-                    {historyLoading ? 'Refreshing…' : 'Refresh'}
-                  </button>
-                </div>
-              </div>
-              <div className="card-body space-y-4">
-                {historyError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{historyError}</div>}
-                {showHistoryList && (
-                  <>
-                    {historyLoading ? (
-                      <div className="text-sm text-primary-700">Loading sessions…</div>
-                    ) : historyItems.length === 0 ? (
-                      <div className="text-sm text-primary-700">No sessions found yet. Upload media to create one.</div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {historyItems.map((item) => (
-                          <button
-                            key={item.media_key}
-                            className="w-full rounded-lg border border-primary-200 bg-white px-4 py-3 text-left shadow-sm hover:border-primary-400 hover:bg-primary-50"
-                            onClick={() => handleSelectHistoryItem(item.media_key)}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="font-semibold text-primary-900">
-                                {item.title_label || 'Untitled transcript'}
-                              </div>
-                              <div className="text-[11px] text-primary-500">
-                                {item.updated_at ? new Date(item.updated_at).toLocaleString() : '—'}
-                              </div>
-                            </div>
-                            <div className="text-xs text-primary-500 mt-1">Key: {item.media_key}</div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
         {activeTab === 'editor' && (
           <TranscriptEditor
             mediaKey={mediaKey}
@@ -793,6 +847,7 @@ export default function TranscribeForm() {
             buildFilename={generateFilename}
             onSessionChange={handleSessionChange}
             onSaveComplete={handleEditorSave}
+            onOpenHistory={loadHistoryModal}
           />
         )}
 
@@ -805,9 +860,114 @@ export default function TranscribeForm() {
             onSessionRefresh={handleSessionChange}
             onDownload={downloadFile}
             buildFilename={generateFilename}
+            onOpenHistory={loadHistoryModal}
           />
         )}
       </div>
     </div>
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-6xl rounded-lg bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-primary-900">Transcript History</h3>
+                <p className="text-sm text-primary-600">
+                  Snapshots grouped by media ID. Autosave runs every minute and keeps the latest ten per transcript.
+                </p>
+              </div>
+              <button
+                className="rounded border border-primary-300 px-3 py-1 text-sm text-primary-700 hover:bg-primary-100"
+                onClick={() => setShowHistoryModal(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            {historyModalError && (
+              <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {historyModalError}
+              </div>
+            )}
+
+            <div className="mt-4 grid grid-cols-[260px_1fr] gap-4 max-h-[70vh]">
+              <div className="rounded border border-primary-100 overflow-y-auto">
+                {historyModalLoading ? (
+                  <div className="p-4 text-sm text-primary-600">Loading transcripts...</div>
+                ) : historyGroups.length === 0 ? (
+                  <div className="p-4 text-sm text-primary-700">No saved transcripts yet.</div>
+                ) : (
+                  <ul>
+                    {historyGroups.map((group) => (
+                      <li key={group.media_key}>
+                        <button
+                          className={`w-full px-4 py-3 text-left transition ${
+                            selectedHistoryKey === group.media_key
+                              ? 'bg-primary-100 font-semibold text-primary-900'
+                              : 'hover:bg-primary-50 text-primary-800'
+                          }`}
+                          onClick={() => setSelectedHistoryKey(group.media_key)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-primary-900">{group.title_label || 'Untitled transcript'}</div>
+                            <div className="text-[11px] text-primary-500">
+                              {group.updated_at ? new Date(group.updated_at).toLocaleString() : '—'}
+                            </div>
+                          </div>
+                          <div className="text-[11px] text-primary-500 mt-1">Key: {group.media_key}</div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="rounded border border-primary-100 overflow-y-auto">
+                {historyModalLoading ? (
+                  <div className="p-4 text-sm text-primary-600">Loading snapshots...</div>
+                ) : !selectedHistoryGroup ? (
+                  <div className="p-4 text-sm text-primary-700">Select a transcript to view its snapshots.</div>
+                ) : selectedHistoryGroup.snapshots.length === 0 ? (
+                  <div className="p-4 text-sm text-primary-700">
+                    No autosaves or manual saves yet for this media ID. Make an edit to start autosaving.
+                  </div>
+                ) : (
+                  <ul>
+                    {selectedHistoryGroup.snapshots.map((snap) => {
+                      const restoreKey = `${selectedHistoryGroup.media_key}:${snap.snapshot_id}`
+                      const restoring = restoringSnapshotId === restoreKey
+                      return (
+                        <li
+                          key={`${selectedHistoryGroup.media_key}-${snap.snapshot_id}`}
+                          className="flex items-center justify-between border-b border-primary-100 px-4 py-3 text-sm"
+                        >
+                          <div>
+                            <div className="font-semibold text-primary-900">
+                              {snap.title_label || selectedHistoryGroup.title_label || selectedHistoryGroup.media_key}
+                            </div>
+                            <div className="text-xs text-primary-600">
+                              {snap.created_at ? new Date(snap.created_at).toLocaleString() : 'Unknown time'}
+                            </div>
+                            <div className="text-xs text-primary-500">
+                              {snap.is_manual_save ? 'Manual save' : 'Autosave'} - {snap.line_count ?? 0} lines
+                            </div>
+                          </div>
+                          <button
+                            className="rounded border border-primary-300 px-3 py-1 text-xs font-semibold text-primary-800 hover:bg-primary-100 disabled:opacity-60"
+                            onClick={() => handleRestoreSnapshot(selectedHistoryGroup.media_key, snap.snapshot_id)}
+                            disabled={restoring}
+                          >
+                            {restoring ? 'Restoring...' : 'Restore'}
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 }
