@@ -1105,11 +1105,11 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
             contents=[
                 genai_types.Content(
                     parts=[
-                        genai_types.Part.from_text(instructions),
+                        genai_types.Part.from_text(text=instructions),
                         genai_types.Part.from_text(
-                            f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"
+                            text=f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"
                         ),
-                        genai_types.Part.from_uri(uploaded.uri, uploaded.mime_type or audio_mime),
+                        genai_types.Part.from_uri(file_uri=uploaded.uri, mime_type=uploaded.mime_type or audio_mime),
                     ]
                 )
             ],
