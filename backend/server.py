@@ -1127,7 +1127,11 @@ def prepare_audio_for_gemini(blob_name: str, content_type: Optional[str]) -> Tup
 
 
 def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hint: float) -> List[dict]:
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        api_key = api_key.strip()
+        if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):
+            api_key = api_key[1:-1].strip()
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
@@ -1186,9 +1190,17 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
             uploaded = client.files.upload(file=audio_path, config=upload_config)
         except Exception as exc:
             logger.exception("Failed to upload media to Gemini")
+            exc_text = str(exc)
+            if "API_KEY_INVALID" in exc_text or "API key not valid" in exc_text:
+                logger.error("Gemini rejected API key (len=%s). Check for quotes/whitespace and correct key source.", len(api_key or ""))
             raise HTTPException(
                 status_code=502,
-                detail=f"Uploading media to Gemini failed ({type(exc).__name__}: {exc})",
+                detail=(
+                    "Uploading media to Gemini failed. "
+                    "If this is an API key error, ensure `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) is set without quotes/whitespace "
+                    "and is a valid Gemini Developer API key. "
+                    f"({type(exc).__name__}: {exc})"
+                ),
             ) from exc
         wait_timeout = int(os.getenv("GEMINI_FILE_ACTIVE_TIMEOUT_SECONDS", "120"))
         try:
