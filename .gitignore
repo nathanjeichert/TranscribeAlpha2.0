@@ -12,6 +12,11 @@ frontend-next/node_modules/
 .env.production.local
 .env.development.local
 
+# Secrets (never commit these!)
+users.json
+*.secret
+*.pem
+
 # Logs
 npm-debug.log*
 yarn-debug.log*
