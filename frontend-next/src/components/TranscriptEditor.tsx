@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getAuthHeaders } from '@/utils/auth'
 
 interface EditorLine {
   id: string
@@ -218,7 +219,9 @@ export default function TranscriptEditor({
 
       try {
         // Try loading from server first
-        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(targetKey)}`)
+        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(targetKey)}`, {
+          headers: getAuthHeaders(),
+        })
 
         if (!response.ok) {
           if (response.status === 404) {
@@ -452,7 +455,7 @@ export default function TranscriptEditor({
         // Auto-save creates both current state AND snapshot
         await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             lines,
             title_data: sessionMeta.title_data ?? {},
@@ -710,7 +713,7 @@ export default function TranscriptEditor({
     try {
       const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           lines,
           title_data: sessionMeta?.title_data ?? {},
@@ -779,6 +782,7 @@ export default function TranscriptEditor({
 
         const response = await fetch('/api/transcripts/import', {
           method: 'POST',
+          headers: getAuthHeaders(),
           body: formData,
         })
         if (!response.ok) {

@@ -71,6 +71,32 @@ except ImportError:
         create_docx = transcriber.create_docx
         ffmpeg_executable_path = transcriber.ffmpeg_executable_path
 
+# Import authentication module
+try:
+    from .auth import (
+        authenticate_user,
+        create_access_token,
+        create_refresh_token,
+        get_current_user,
+        decode_token,
+    )
+except ImportError:
+    try:
+        from auth import (
+            authenticate_user,
+            create_access_token,
+            create_refresh_token,
+            get_current_user,
+            decode_token,
+        )
+    except ImportError:
+        import auth as auth_module
+        authenticate_user = auth_module.authenticate_user
+        create_access_token = auth_module.create_access_token
+        create_refresh_token = auth_module.create_refresh_token
+        get_current_user = auth_module.get_current_user
+        decode_token = auth_module.decode_token
+
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
@@ -1390,7 +1416,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -1400,6 +1426,122 @@ async def startup_event():
     logger.info("Starting TranscribeAlpha with Cloud Storage enabled")
     cleanup_old_files()
     cleanup_expired_clip_sessions()
+
+
+# Authentication endpoints
+@app.post("/api/auth/login")
+async def login(credentials: dict = Body(...)):
+    """
+    Authenticate user and return access and refresh tokens.
+
+    Request body:
+    {
+        "username": "string",
+        "password": "string"
+    }
+    """
+    username = credentials.get("username")
+    password = credentials.get("password")
+
+    if not username or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="Username and password are required"
+        )
+
+    user = authenticate_user(username, password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Create tokens
+    access_token = create_access_token(
+        data={"sub": username, "role": user.get("role", "user")}
+    )
+    refresh_token = create_refresh_token(
+        data={"sub": username, "role": user.get("role", "user")}
+    )
+
+    logger.info(f"User '{username}' logged in successfully")
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "username": username,
+            "role": user.get("role", "user")
+        }
+    }
+
+
+@app.post("/api/auth/refresh")
+async def refresh_token(token_data: dict = Body(...)):
+    """
+    Refresh access token using refresh token.
+
+    Request body:
+    {
+        "refresh_token": "string"
+    }
+    """
+    refresh_token = token_data.get("refresh_token")
+
+    if not refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Refresh token is required"
+        )
+
+    # Decode and validate refresh token
+    payload = decode_token(refresh_token)
+
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Create new access token
+    access_token = create_access_token(
+        data={"sub": username, "role": payload.get("role", "user")}
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+
+@app.post("/api/auth/logout")
+async def logout(current_user: dict = Depends(get_current_user)):
+    """
+    Logout endpoint (client should delete tokens).
+    """
+    logger.info(f"User '{current_user['username']}' logged out")
+    return {"message": "Successfully logged out"}
+
+
+@app.get("/api/auth/me")
+async def get_current_user_info(current_user: dict = Depends(get_current_user)):
+    """Get current user information from token."""
+    return {
+        "username": current_user["username"],
+        "role": current_user.get("role", "user"),
+        "user_id": current_user["user_id"]
+    }
 
 
 @app.post("/api/transcribe")
@@ -1412,6 +1554,7 @@ async def transcribe(
     input_time: str = Form(""),
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
 ):
     logger.info(f"Received transcription request for file: {file.filename}")
     
@@ -1542,7 +1685,7 @@ async def transcribe(
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
         "updated_at": created_at.isoformat(),
-        "user_id": "anonymous",  # Will come from auth later
+        "user_id": current_user["user_id"],
         "clips": [],
     }
 
@@ -1571,10 +1714,10 @@ async def transcribe(
 
 # New media-key-based API endpoints
 @app.get("/api/transcripts")
-async def list_transcripts_endpoint(user_id: str = "anonymous"):
-    """List all transcripts for browsing."""
+async def list_transcripts_endpoint(current_user: dict = Depends(get_current_user)):
+    """List all transcripts for authenticated user."""
     try:
-        transcripts = list_all_transcripts(user_id)
+        transcripts = list_all_transcripts(current_user["user_id"])
         return JSONResponse(content={"transcripts": transcripts})
     except Exception as e:
         logger.error(f"Failed to list transcripts: {e}")
@@ -1582,12 +1725,17 @@ async def list_transcripts_endpoint(user_id: str = "anonymous"):
 
 
 @app.get("/api/transcripts/by-key/{media_key:path}")
-async def get_transcript_by_media_key(media_key: str):
+async def get_transcript_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """Get current transcript state or latest snapshot by media_key."""
     try:
         data = load_current_transcript(media_key)
         if not data:
             raise HTTPException(status_code=404, detail="Transcript not found")
+
+        # Verify user owns this transcript
+        if data.get("user_id") != current_user["user_id"]:
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
+
         return JSONResponse(content=data)
     except HTTPException:
         raise
@@ -1597,7 +1745,7 @@ async def get_transcript_by_media_key(media_key: str):
 
 
 @app.put("/api/transcripts/by-key/{media_key:path}")
-async def save_transcript_by_media_key(media_key: str, request: Request):
+async def save_transcript_by_media_key(media_key: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Save transcript changes (auto-save or manual save)."""
     try:
         payload = await request.json()
@@ -1605,7 +1753,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request):
         lines = payload.get("lines", [])
         title_data = payload.get("title_data", {})
         is_manual_save = payload.get("is_manual_save", False)
-        user_id = payload.get("user_id", "anonymous")
+        user_id = current_user["user_id"]
 
         # Load existing or create new
         existing = load_current_transcript(media_key) or {}
@@ -1665,7 +1813,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request):
 
 
 @app.get("/api/transcripts/by-key/{media_key:path}/history")
-async def list_transcript_history_by_media_key(media_key: str):
+async def list_transcript_history_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """List all snapshots for a media_key."""
     try:
         logger.info(f"Fetching history for media_key: {media_key}")
@@ -1705,7 +1853,7 @@ async def list_transcript_history_by_media_key(media_key: str):
 
 
 @app.post("/api/transcripts/by-key/{media_key:path}/restore/{snapshot_id}")
-async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str):
+async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, current_user: dict = Depends(get_current_user)):
     """Restore a specific snapshot as current state."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
@@ -1732,7 +1880,7 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str):
 
 
 @app.get("/api/transcripts/snapshots")
-async def list_all_snapshots():
+async def list_all_snapshots(current_user: dict = Depends(get_current_user)):
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
         items: List[dict] = []
@@ -1800,13 +1948,13 @@ async def list_all_snapshots():
 
 
 @app.get("/api/snapshots/{media_key}")
-async def list_snapshots_media_key(media_key: str):
-    prune_snapshots(media_key)
+async def list_snapshots_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
+    prune_snapshots(media_key, current_user["user_id"])
     return JSONResponse({"snapshots": list_snapshots_for_media(media_key)})
 
 
 @app.get("/api/snapshots/{media_key}/{snapshot_id}")
-async def get_snapshot_by_media(media_key: str, snapshot_id: str):
+async def get_snapshot_by_media(media_key: str, snapshot_id: str, current_user: dict = Depends(get_current_user)):
     snapshot = load_snapshot(media_key, snapshot_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Snapshot not found")
@@ -1816,7 +1964,7 @@ async def get_snapshot_by_media(media_key: str, snapshot_id: str):
 
 
 @app.post("/api/transcripts/by-key/{media_key:path}/gemini-refine")
-async def gemini_refine_transcript(media_key: str):
+async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(get_current_user)):
     session_data = load_current_transcript(media_key)
     if not session_data:
         raise HTTPException(status_code=404, detail="Transcript not found")
@@ -1889,7 +2037,7 @@ async def gemini_refine_transcript(media_key: str):
 
 
 @app.post("/api/clips")
-async def create_clip(payload: Dict = Body(...)):
+async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(get_current_user)):
     media_key = payload.get("media_key")
     if not media_key:
         raise HTTPException(status_code=400, detail="media_key is required")
@@ -2110,7 +2258,7 @@ async def create_clip(payload: Dict = Body(...)):
 
 
 @app.get("/api/clips/{clip_id}")
-async def get_clip_session(clip_id: str):
+async def get_clip_session(clip_id: str, current_user: dict = Depends(get_current_user)):
     clip_data = load_clip_session(clip_id)
     if not clip_data:
         raise HTTPException(status_code=404, detail="Clip session not found")
@@ -2143,6 +2291,7 @@ async def import_oncue_transcript(
     input_date: str = Form(""),
     input_time: str = Form(""),
     location: str = Form(""),
+    current_user: dict = Depends(get_current_user),
 ):
     xml_bytes = await xml_file.read()
     if not xml_bytes:
@@ -2219,7 +2368,7 @@ async def import_oncue_transcript(
             "transcript": transcript_text,
             "media_blob_name": media_blob_name,
             "media_content_type": media_content_type,
-            "user_id": "anonymous",
+            "user_id": current_user["user_id"],
             "clips": [],
         }
 
@@ -2241,7 +2390,7 @@ async def import_oncue_transcript(
     return JSONResponse(response_payload)
 
 @app.post("/api/upload-preview")
-async def upload_media_preview(file: UploadFile = File(...)):
+async def upload_media_preview(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """Upload media file for preview purposes"""
     try:
         file_bytes = await file.read()

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorSessionResponse, ClipSummary } from '@/components/TranscriptEditor'
+import { getAuthHeaders } from '@/utils/auth'
 
 interface ClipCreatorProps {
   session: EditorSessionResponse | null
@@ -390,7 +391,9 @@ export default function ClipCreator({
       }
       try {
         setHistoryLoadingId(clipId)
-        const response = await fetch(`/api/clips/${clipId}`)
+        const response = await fetch(`/api/clips/${clipId}`, {
+          headers: getAuthHeaders(),
+        })
         if (!response.ok) {
           return null
         }
@@ -478,7 +481,7 @@ export default function ClipCreator({
     try {
       const response = await fetch('/api/clips', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(payload),
       })
 
@@ -526,6 +529,7 @@ export default function ClipCreator({
 
         const response = await fetch('/api/transcripts/import', {
           method: 'POST',
+          headers: getAuthHeaders(),
           body: formData,
         })
         if (!response.ok) {

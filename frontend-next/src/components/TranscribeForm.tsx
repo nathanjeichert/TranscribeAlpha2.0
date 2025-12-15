@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import TranscriptEditor, { EditorSaveResponse, EditorSessionResponse } from '@/components/TranscriptEditor'
 import ClipCreator from '@/components/ClipCreator'
+import { getAuthHeaders } from '@/utils/auth'
 
 interface FormData {
   case_name: string
@@ -164,7 +165,9 @@ export default function TranscribeForm() {
   const fetchTranscriptByKey = useCallback(
     async (key: string) => {
       try {
-        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`)
+        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`, {
+          headers: getAuthHeaders(),
+        })
         if (!response.ok) {
           if (response.status === 404) {
             try {
@@ -214,7 +217,9 @@ export default function TranscribeForm() {
     setHistoryModalLoading(true)
     setHistoryModalError(null)
     try {
-      const response = await fetch('/api/transcripts')
+      const response = await fetch('/api/transcripts', {
+        headers: getAuthHeaders(),
+      })
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail?.detail || 'Failed to load history')
@@ -225,7 +230,9 @@ export default function TranscribeForm() {
       const groups: HistoryGroup[] = await Promise.all(
         transcripts.map(async (item) => {
           try {
-            const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(item.media_key)}/history`)
+            const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(item.media_key)}/history`, {
+              headers: getAuthHeaders(),
+            })
             let snapshots: SnapshotListItem[] = []
             if (historyResponse.ok) {
               const historyData = await historyResponse.json()
@@ -255,7 +262,9 @@ export default function TranscribeForm() {
       if (!finalGroups.length && (transcriptData?.media_key || mediaKey)) {
         const fallbackKey = transcriptData?.media_key ?? mediaKey!
         try {
-          const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(fallbackKey)}/history`)
+          const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(fallbackKey)}/history`, {
+            headers: getAuthHeaders(),
+          })
           const historyData = historyResponse.ok ? await historyResponse.json() : { snapshots: [] }
           finalGroups = [
             {
@@ -298,7 +307,10 @@ export default function TranscribeForm() {
       try {
         const response = await fetch(
           `/api/transcripts/by-key/${encodeURIComponent(key)}/restore/${snapshotId}`,
-          { method: 'POST' },
+          {
+            method: 'POST',
+            headers: getAuthHeaders(),
+          },
         )
         if (!response.ok) {
           const detail = await response.json().catch(() => ({}))
@@ -347,6 +359,7 @@ export default function TranscribeForm() {
 
       const response = await fetch('/api/transcribe', {
         method: 'POST',
+        headers: getAuthHeaders(),
         body: submitFormData,
       })
 
@@ -428,6 +441,7 @@ export default function TranscribeForm() {
     try {
       const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/gemini-refine`, {
         method: 'POST',
+        headers: getAuthHeaders(),
       })
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
