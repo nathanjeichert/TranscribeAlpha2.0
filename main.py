@@ -66,7 +66,7 @@ except ImportError as e:
         raise ImportError(f"Could not import app: {e}, {e2}")
 
 if __name__ == "__main__":
-    # Cloud Run uses PORT environment variable, defaults to 8080
+    # Cloud Run uses PORT environment variable, defaults to 8080 for HTTP
     port = int(os.getenv("PORT", 8080))
     host = os.getenv("HOST", "0.0.0.0")
     print(f"Starting server on {host}:{port}")
