@@ -1091,9 +1091,10 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     )
 
     try:
+        # Use dictionary for config to ensure correct serialization of mime_type
         uploaded = client.files.upload(
             file=audio_path,
-            config=genai_types.UploadFileConfig(mime_type=audio_mime),
+            config={"mime_type": audio_mime},
         )
     except Exception as exc:
         logger.error("Failed to upload media to Gemini: %s", exc)
