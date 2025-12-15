@@ -59,15 +59,15 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-# Check if passlib is installed
-if ! python3 -c "from passlib.hash import bcrypt" 2>/dev/null; then
-    echo -e "${YELLOW}Installing passlib...${NC}"
-    pip3 install passlib[bcrypt] --quiet
+# Check if bcrypt is installed
+if ! python3 -c "import bcrypt" 2>/dev/null; then
+    echo -e "${YELLOW}Installing bcrypt...${NC}"
+    pip3 install bcrypt --quiet
 fi
 
 # Generate password hash
 echo "Generating password hash..."
-PASSWORD_HASH=$(python3 -c "from passlib.hash import bcrypt; print(bcrypt.hash('$PASSWORD'))")
+PASSWORD_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw('$PASSWORD'.encode(), bcrypt.gensalt()).decode())")
 
 if [ -z "$PASSWORD_HASH" ]; then
     echo -e "${RED}Error: Failed to generate password hash${NC}"

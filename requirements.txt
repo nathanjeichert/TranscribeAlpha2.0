@@ -11,5 +11,5 @@ assemblyai>=0.30.0
 packaging>=23.0
 google-genai>=1.52.0
 python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
 google-cloud-secret-manager>=2.16.0

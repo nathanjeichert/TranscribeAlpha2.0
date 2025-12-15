@@ -10,15 +10,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from google.cloud import secretmanager
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 logger = logging.getLogger(__name__)
-
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT configuration
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
@@ -106,7 +103,7 @@ def load_users_from_secret_manager() -> Dict[str, dict]:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     try:
-        return pwd_context.verify(plain_password, hashed_password)
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
     except Exception as e:
         logger.error(f"Password verification error: {e}")
         return False
@@ -114,7 +111,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     """Generate password hash (for admin use)."""
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
 def authenticate_user(username: str, password: str) -> Optional[dict]:
