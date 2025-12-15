@@ -168,7 +168,7 @@ def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3
 
 def get_audio_mime_type(ext: str) -> Optional[str]:
     mime_map = {
-        "mp3": "audio/mp3",
+        "mp3": "audio/mpeg",
         "wav": "audio/wav",
         "aiff": "audio/aiff",
         "aac": "audio/aac",

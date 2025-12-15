@@ -7,6 +7,7 @@ import tempfile
 import io
 import hashlib
 import subprocess
+import time
 import re
 import shutil
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body, Request, Depends
+import anyio
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1042,21 +1044,83 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
 def prepare_audio_for_gemini(blob_name: str, content_type: Optional[str]) -> Tuple[str, str, float, str]:
     """Download media, convert to audio if needed, and return (audio_path, mime_type, duration, original_path)."""
     media_path, detected_type = download_blob_to_path(blob_name)
+    try:
+        if os.path.getsize(media_path) <= 0:
+            raise HTTPException(status_code=400, detail="Downloaded media file is empty")
+    except OSError:
+        raise HTTPException(status_code=500, detail="Unable to access downloaded media file")
     audio_path = media_path
-    audio_mime = detected_type or content_type or "application/octet-stream"
+    source_mime = (detected_type or content_type or "").lower().strip()
+    if not source_mime:
+        source_mime = (mimetypes.guess_type(media_path)[0] or "").lower().strip()
 
-    if audio_mime.startswith("video"):
+    def canonicalize_audio_mime(mime_value: str, file_path: str) -> str:
+        mime_value = (mime_value or "").lower().strip()
+        if mime_value in {"audio/mp3", "audio/mpeg", "audio/x-mp3", "audio/mpeg3"}:
+            return "audio/mpeg"
+        if mime_value in {"audio/x-wav"}:
+            return "audio/wav"
+        guessed = (mimetypes.guess_type(file_path)[0] or "").lower().strip()
+        if guessed in {"audio/mpeg", "audio/mp3", "audio/x-mp3", "audio/mpeg3"}:
+            return "audio/mpeg"
+        if guessed == "audio/x-wav":
+            return "audio/wav"
+        return mime_value or guessed or "application/octet-stream"
+
+    supported_audio_mimes = {
+        "audio/mpeg",
+        "audio/wav",
+        "audio/aac",
+        "audio/ogg",
+        "audio/flac",
+        "audio/mp4",
+        "audio/aiff",
+    }
+
+    audio_mime = canonicalize_audio_mime(source_mime, media_path)
+    needs_conversion = (source_mime.startswith("video/") or audio_mime not in supported_audio_mimes)
+    if needs_conversion:
+        ffmpeg_bin = get_ffmpeg_binary()
         temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
         temp_audio.close()
-        converted = convert_video_to_audio(media_path, temp_audio.name)
-        if converted:
-            audio_path = converted
-            audio_mime = "audio/mp3"
-        else:
-            audio_path = media_path
-            audio_mime = "audio/mp3"
-    elif not audio_mime.startswith("audio"):
-        audio_mime = "audio/mp3"
+        command = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            media_path,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-b:a",
+            "96k",
+            temp_audio.name,
+        ]
+        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if process.returncode != 0 or not os.path.exists(temp_audio.name):
+            stderr = process.stderr.decode("utf-8", errors="ignore")
+            logger.error("FFmpeg audio conversion failed: %s", stderr)
+            try:
+                os.remove(temp_audio.name)
+            except OSError:
+                pass
+            raise HTTPException(status_code=500, detail="Failed to prepare audio for Gemini")
+        audio_path = temp_audio.name
+        audio_mime = "audio/mpeg"
+    else:
+        audio_mime = canonicalize_audio_mime(audio_mime, media_path)
+
+    max_upload_bytes = int(os.getenv("GEMINI_MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))  # 1 GiB default
+    try:
+        audio_size = os.path.getsize(audio_path)
+    except OSError:
+        audio_size = None
+    if audio_size is not None and max_upload_bytes > 0 and audio_size > max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio is too large for Gemini refinement ({audio_size} bytes > {max_upload_bytes} bytes)",
+        )
 
     duration_seconds = get_media_duration(audio_path) or 0.0
     return audio_path, audio_mime, duration_seconds, media_path
@@ -1074,13 +1138,9 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         logger.error("google-genai not available: %s", exc)
         raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
 
-    configured_model = os.getenv("GEMINI_MODEL_NAME", "models/gemini-3-pro-preview")
-    model_name = configured_model if configured_model.startswith("models/") else f"models/{configured_model}"
-    try:
-        client = genai.Client(api_key=api_key)
-    except Exception as exc:
-        logger.error("Failed to initialize Gemini client: %s", exc)
-        raise HTTPException(status_code=500, detail="Unable to initialize Gemini client") from exc
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3-pro-preview").strip()
+    if not model_name:
+        model_name = "gemini-3-pro-preview"
 
     instructions = (
         "You are improving an OnCue-style legal transcript. "
@@ -1090,48 +1150,92 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         "Do not include any extra keys or wrapping text."
     )
 
-    try:
-        # Use dictionary for config to ensure correct serialization of mime_type
-        uploaded = client.files.upload(
-            file=audio_path,
-            config={"mime_type": audio_mime},
-        )
-    except Exception as exc:
-        logger.error("Failed to upload media to Gemini: %s", exc)
-        raise HTTPException(status_code=502, detail="Uploading media to Gemini failed") from exc
+    def extract_json(text: str) -> str:
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"```$", "", cleaned).strip()
+        return cleaned
 
+    def wait_for_file_active(client: Any, file_name: str, *, timeout_seconds: int = 120) -> Any:
+        deadline = time.time() + max(5, timeout_seconds)
+        last_state = None
+        while time.time() < deadline:
+            fetched = client.files.get(name=file_name)
+            state = getattr(fetched, "state", None)
+            if state != last_state:
+                logger.info("Gemini file %s state=%s", file_name, state)
+                last_state = state
+            if state == genai_types.FileState.ACTIVE:
+                return fetched
+            if state == genai_types.FileState.FAILED:
+                err = getattr(fetched, "error", None)
+                raise RuntimeError(f"Gemini file processing failed: {err}")
+            time.sleep(2.0)
+        raise TimeoutError("Timed out waiting for Gemini file to become ACTIVE")
+
+    client = None
+    uploaded = None
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[
-                genai_types.Content(
-                    parts=[
-                        genai_types.Part.from_text(text=instructions),
-                        genai_types.Part.from_text(
-                            text=f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"
-                        ),
-                        genai_types.Part.from_uri(file_uri=uploaded.uri, mime_type=uploaded.mime_type or audio_mime),
-                    ]
-                )
-            ],
-            config=genai_types.GenerateContentConfig(
-                temperature=0.15,
-                response_mime_type="application/json",
-            ),
-            request_options={"timeout": 600},
+        client = genai.Client(api_key=api_key)
+        upload_config = genai_types.UploadFileConfig(
+            mime_type=audio_mime,
+            display_name=os.path.basename(audio_path),
         )
-    except Exception as exc:
-        logger.error("Gemini generation failed: %s", exc)
         try:
-            client.files.delete(name=uploaded.name)
-        except Exception:
-            pass
-        raise HTTPException(status_code=502, detail="Gemini transcript refinement failed") from exc
+            uploaded = client.files.upload(file=audio_path, config=upload_config)
+        except Exception as exc:
+            logger.exception("Failed to upload media to Gemini")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Uploading media to Gemini failed ({type(exc).__name__}: {exc})",
+            ) from exc
+        wait_timeout = int(os.getenv("GEMINI_FILE_ACTIVE_TIMEOUT_SECONDS", "120"))
+        try:
+            uploaded = wait_for_file_active(client, uploaded.name, timeout_seconds=wait_timeout)
+        except Exception as exc:
+            logger.exception("Uploaded file did not become ACTIVE")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini file processing failed ({type(exc).__name__}: {exc})",
+            ) from exc
 
-    try:
-        client.files.delete(name=uploaded.name)
-    except Exception:
-        pass
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    genai_types.Part.from_text(text=instructions),
+                    genai_types.Part.from_text(
+                        text=f"Total duration (seconds): {duration_hint:.2f}. Existing XML transcript follows:\n{xml_text}"
+                    ),
+                    genai_types.Part.from_uri(
+                        file_uri=uploaded.uri,
+                        mime_type=uploaded.mime_type or audio_mime,
+                    ),
+                ],
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.15,
+                    response_mime_type="application/json",
+                ),
+                request_options={"timeout": 600},
+            )
+        except Exception as exc:
+            logger.exception("Gemini generation failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini transcript refinement failed ({type(exc).__name__}: {exc})",
+            ) from exc
+    finally:
+        if client and uploaded:
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception:
+                pass
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
 
     raw_text = getattr(response, "text", None) or getattr(response, "output_text", None)
     if not raw_text and getattr(response, "candidates", None):
@@ -1145,7 +1249,7 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         raise HTTPException(status_code=502, detail="Gemini returned an empty response")
 
     try:
-        parsed = json.loads(raw_text)
+        parsed = json.loads(extract_json(raw_text))
     except json.JSONDecodeError as exc:
         logger.error("Failed to parse Gemini JSON: %s", exc)
         raise HTTPException(status_code=502, detail="Gemini returned invalid JSON") from exc
@@ -1306,12 +1410,11 @@ def download_blob_to_path(blob_name: str) -> Tuple[str, Optional[str]]:
     if not blob.exists():
         raise HTTPException(status_code=404, detail="Media blob not found")
 
-    data = blob.download_as_bytes()
-    suffix = mimetypes.guess_extension(blob.content_type or "") or ".bin"
+    extension = os.path.splitext(blob.name)[1]
+    suffix = extension or mimetypes.guess_extension(blob.content_type or "") or ".bin"
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    temp_file.write(data)
-    temp_file.flush()
     temp_file.close()
+    blob.download_to_filename(temp_file.name)
     return temp_file.name, blob.content_type
 
 
@@ -1986,11 +2089,19 @@ async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(
     audio_path = None
     media_path = None
     try:
-        audio_path, audio_mime, duration_seconds, media_path = prepare_audio_for_gemini(
-            media_blob_name, session_data.get("media_content_type")
+        audio_path, audio_mime, duration_seconds, media_path = await anyio.to_thread.run_sync(
+            prepare_audio_for_gemini,
+            media_blob_name,
+            session_data.get("media_content_type"),
         )
         duration_hint = duration_seconds or float(session_data.get("audio_duration") or 0)
-        gemini_lines = run_gemini_edit(xml_text, audio_path, audio_mime, duration_hint)
+        gemini_lines = await anyio.to_thread.run_sync(
+            run_gemini_edit,
+            xml_text,
+            audio_path,
+            audio_mime,
+            duration_hint,
+        )
 
         normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_hint)
         turns = construct_turns_from_lines(normalized_lines)
