@@ -221,7 +221,7 @@ def save_current_transcript(media_key: str, transcript_data: dict) -> None:
 
         # Set TTL metadata
         created_at = transcript_data.get("created_at", datetime.now(timezone.utc).isoformat())
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
 
         blob.metadata = {
             "media_key": media_key,
