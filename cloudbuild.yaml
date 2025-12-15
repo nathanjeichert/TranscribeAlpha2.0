@@ -52,4 +52,4 @@ options:
 # Build timeout
 timeout: '1200s'
 
-# Updated for build trigger fix
+# Trigger rebuild (no functional changes)
