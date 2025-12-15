@@ -1132,6 +1132,11 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         api_key = api_key.strip()
         if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):
             api_key = api_key[1:-1].strip()
+        if api_key in {"your-gemini-key-here", "YOUR_GEMINI_KEY_HERE"}:
+            raise HTTPException(
+                status_code=500,
+                detail="GEMINI_API_KEY is still set to the placeholder value; update your Cloud Run env var or Cloud Build trigger substitution _GEMINI_API_KEY.",
+            )
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
