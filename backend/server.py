@@ -1186,7 +1186,10 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     client = None
     uploaded = None
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=600_000),
+        )
         upload_config = genai_types.UploadFileConfig(
             mime_type=audio_mime,
             display_name=os.path.basename(audio_path),
@@ -1234,7 +1237,6 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
                     temperature=0.15,
                     response_mime_type="application/json",
                 ),
-                request_options={"timeout": 600},
             )
         except Exception as exc:
             logger.exception("Gemini generation failed")
