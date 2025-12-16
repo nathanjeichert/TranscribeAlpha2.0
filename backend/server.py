@@ -1236,6 +1236,7 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
                 config=genai_types.GenerateContentConfig(
                     temperature=0.15,
                     response_mime_type="application/json",
+                    thinking_config=genai_types.ThinkingConfig(thinking_level="low"),
                 ),
             )
         except Exception as exc:
@@ -1304,18 +1305,244 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
 
     return normalized
 
+
+def transcribe_with_gemini(
+    audio_path: str,
+    audio_mime: str,
+    duration_hint: float,
+    speaker_name_list: Optional[List[str]] = None,
+) -> List[dict]:
+    """
+    Transcribe audio using Gemini 3.0 Pro with thinking_level="low".
+
+    Args:
+        audio_path: Path to the audio file
+        audio_mime: MIME type of the audio
+        duration_hint: Approximate duration in seconds
+        speaker_name_list: Optional list of speaker names to use
+
+    Returns:
+        List of transcript line objects with speaker, text, start, end fields
+    """
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        api_key = api_key.strip()
+        if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):
+            api_key = api_key[1:-1].strip()
+        if api_key in {"your-gemini-key-here", "YOUR_GEMINI_KEY_HERE"}:
+            raise HTTPException(
+                status_code=500,
+                detail="GEMINI_API_KEY is still set to the placeholder value; update your Cloud Run env var.",
+            )
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except Exception as exc:
+        logger.error("google-genai not available: %s", exc)
+        raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
+
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3-pro-preview").strip()
+    if not model_name:
+        model_name = "gemini-3-pro-preview"
+
+    # Build speaker instructions
+    speaker_instructions = ""
+    if speaker_name_list and len(speaker_name_list) > 0:
+        speaker_instructions = (
+            f"Use these speaker names in order of appearance: {', '.join(speaker_name_list)}. "
+            f"Expected number of speakers: {len(speaker_name_list)}. "
+        )
+    else:
+        speaker_instructions = (
+            "Identify and label distinct speakers as SPEAKER A, SPEAKER B, SPEAKER C, etc. "
+        )
+
+    instructions = (
+        "You are a professional legal transcriptionist. "
+        "Transcribe the provided audio file into a legal transcript format. "
+        f"{speaker_instructions}"
+        "Return ONLY a JSON array of objects with fields: speaker (uppercase string), text (string), start (float seconds), end (float seconds). "
+        "Each object represents one speaker turn/utterance. "
+        "Ensure proper punctuation, capitalization, and paragraph breaks for readability. "
+        "Timestamps should be accurate, with start < end and entries non-overlapping and chronological. "
+        "Do not include any extra keys or wrapping text."
+    )
+
+    def extract_json(text: str) -> str:
+        cleaned = (text or "").strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r"```$", "", cleaned).strip()
+        return cleaned
+
+    def wait_for_file_active(client: Any, file_name: str, *, timeout_seconds: int = 120) -> Any:
+        deadline = time.time() + max(5, timeout_seconds)
+        last_state = None
+        while time.time() < deadline:
+            fetched = client.files.get(name=file_name)
+            state = getattr(fetched, "state", None)
+            if state != last_state:
+                logger.info("Gemini file %s state=%s", file_name, state)
+                last_state = state
+            if state == genai_types.FileState.ACTIVE:
+                return fetched
+            if state == genai_types.FileState.FAILED:
+                err = getattr(fetched, "error", None)
+                raise RuntimeError(f"Gemini file processing failed: {err}")
+            time.sleep(2.0)
+        raise TimeoutError("Timed out waiting for Gemini file to become ACTIVE")
+
+    client = None
+    uploaded = None
+    try:
+        client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=600_000),
+        )
+        upload_config = genai_types.UploadFileConfig(
+            mime_type=audio_mime,
+            display_name=os.path.basename(audio_path),
+        )
+        try:
+            uploaded = client.files.upload(file=audio_path, config=upload_config)
+        except Exception as exc:
+            logger.exception("Failed to upload media to Gemini")
+            exc_text = str(exc)
+            if "API_KEY_INVALID" in exc_text or "API key not valid" in exc_text:
+                logger.error("Gemini rejected API key (len=%s). Check for quotes/whitespace.", len(api_key or ""))
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Uploading media to Gemini failed. "
+                    f"({type(exc).__name__}: {exc})"
+                ),
+            ) from exc
+
+        wait_timeout = int(os.getenv("GEMINI_FILE_ACTIVE_TIMEOUT_SECONDS", "120"))
+        try:
+            uploaded = wait_for_file_active(client, uploaded.name, timeout_seconds=wait_timeout)
+        except Exception as exc:
+            logger.exception("Uploaded file did not become ACTIVE")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini file processing failed ({type(exc).__name__}: {exc})",
+            ) from exc
+
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    genai_types.Part.from_text(text=instructions),
+                    genai_types.Part.from_text(
+                        text=f"Total audio duration (seconds): {duration_hint:.2f}. Please transcribe the following audio:"
+                    ),
+                    genai_types.Part.from_uri(
+                        file_uri=uploaded.uri,
+                        mime_type=uploaded.mime_type or audio_mime,
+                    ),
+                ],
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.15,
+                    response_mime_type="application/json",
+                    thinking_config=genai_types.ThinkingConfig(thinking_level="low"),
+                ),
+            )
+        except Exception as exc:
+            logger.exception("Gemini transcription failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini transcription failed ({type(exc).__name__}: {exc})",
+            ) from exc
+    finally:
+        if client and uploaded:
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception:
+                pass
+        if client:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    raw_text = getattr(response, "text", None) or getattr(response, "output_text", None)
+    if not raw_text and getattr(response, "candidates", None):
+        try:
+            raw_text = response.candidates[0].content.parts[0].text
+        except Exception:
+            raw_text = None
+
+    if not raw_text:
+        logger.error("Gemini response missing text payload")
+        raise HTTPException(status_code=502, detail="Gemini returned an empty response")
+
+    try:
+        parsed = json.loads(extract_json(raw_text))
+    except json.JSONDecodeError as exc:
+        logger.error("Failed to parse Gemini JSON: %s", exc)
+        raise HTTPException(status_code=502, detail="Gemini returned invalid JSON") from exc
+
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=502, detail="Gemini response must be a list of line objects")
+
+    # Map speaker names if provided
+    speaker_mapping = {}
+    if speaker_name_list:
+        for i, name in enumerate(speaker_name_list):
+            speaker_mapping[f"SPEAKER {chr(ord('A') + i)}"] = name.upper()
+            speaker_mapping[chr(ord('A') + i)] = name.upper()
+
+    normalized = []
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            continue
+        speaker = str(item.get("speaker", "")).strip().upper() or f"SPEAKER {chr(ord('A') + idx)}"
+
+        # Apply speaker mapping if available
+        if speaker in speaker_mapping:
+            speaker = speaker_mapping[speaker]
+
+        text = str(item.get("text", "")).strip()
+        try:
+            start_val = float(item.get("start", 0.0))
+            end_val = float(item.get("end", start_val))
+        except (TypeError, ValueError):
+            start_val = 0.0
+            end_val = start_val
+        normalized.append(
+            {
+                "id": item.get("id") or f"gem-{idx}",
+                "speaker": speaker,
+                "text": text,
+                "start": max(start_val, 0.0),
+                "end": max(end_val, start_val),
+                "is_continuation": False,
+            }
+        )
+
+    if not normalized:
+        raise HTTPException(status_code=502, detail="Gemini did not return any transcript lines")
+
+    logger.info(f"Gemini transcription completed with {len(normalized)} lines")
+    return normalized
+
+
 def create_cache_key(
     file_bytes: bytes,
     speaker_list: Optional[List[str]],
+    model: str = "assemblyai",
 ) -> str:
-    """Create a cache key based on file content and transcription settings"""
+    """Create a cache key based on file content, transcription settings, and model"""
     # Create hash of file content
     file_hash = hashlib.md5(file_bytes).hexdigest()
-    
-    # Create hash of settings
-    settings_str = f"{speaker_list or []}"
+
+    # Create hash of settings (including model)
+    settings_str = f"{speaker_list or []}_{model}"
     settings_hash = hashlib.md5(settings_str.encode()).hexdigest()
-    
+
     return f"{file_hash}_{settings_hash}"
 
 def cleanup_old_files():
@@ -1677,16 +1904,34 @@ async def transcribe(
     input_time: str = Form(""),
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
+    transcription_model: str = Form("assemblyai"),
     current_user: dict = Depends(get_current_user),
 ):
-    logger.info(f"Received transcription request for file: {file.filename}")
-    
-    if not os.getenv("ASSEMBLYAI_API_KEY"):
-        logger.error("ASSEMBLYAI_API_KEY environment variable not set")
+    logger.info(f"Received transcription request for file: {file.filename} using model: {transcription_model}")
+
+    # Validate model selection
+    valid_models = {"assemblyai", "gemini"}
+    if transcription_model not in valid_models:
         raise HTTPException(
-            status_code=500,
-            detail="Server configuration error: AssemblyAI API key not configured"
+            status_code=400,
+            detail=f"Invalid transcription model. Must be one of: {', '.join(valid_models)}"
         )
+
+    # Check for required API key based on model
+    if transcription_model == "assemblyai":
+        if not os.getenv("ASSEMBLYAI_API_KEY"):
+            logger.error("ASSEMBLYAI_API_KEY environment variable not set")
+            raise HTTPException(
+                status_code=500,
+                detail="Server configuration error: AssemblyAI API key not configured"
+            )
+    elif transcription_model == "gemini":
+        if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            logger.error("GEMINI_API_KEY/GOOGLE_API_KEY environment variable not set")
+            raise HTTPException(
+                status_code=500,
+                detail="Server configuration error: Gemini API key not configured"
+            )
     
     # Check file size and handle large files with Cloud Storage
     file_size = len(await file.read())
@@ -1750,37 +1995,109 @@ async def transcribe(
         media_blob_name = None
         media_content_type = None
 
-    # Check cache first
-    cache_key = create_cache_key(file_bytes, speaker_list)
+    # Check cache first (include model in cache key)
+    cache_key = create_cache_key(file_bytes, speaker_list, transcription_model)
 
     if cache_key in temp_transcript_cache:
-        logger.info("Using cached AssemblyAI transcription")
+        logger.info(f"Using cached {transcription_model} transcription")
         cached_result = temp_transcript_cache[cache_key]
         turns = cached_result["turns"]
         duration_seconds = cached_result.get("duration")
         logger.info(f"Used cached transcription with {len(turns)} turns.")
     else:
-        # Generate new transcription
-        logger.info("Starting new AssemblyAI transcription process...")
-        try:
-            turns, docx_bytes, duration_seconds = process_transcription(
-                file_bytes,
-                file.filename,
-                speaker_list,
-                title_data,
-            )
+        # Generate new transcription based on selected model
+        if transcription_model == "assemblyai":
+            logger.info("Starting new AssemblyAI transcription process...")
+            try:
+                turns, docx_bytes, duration_seconds = process_transcription(
+                    file_bytes,
+                    file.filename,
+                    speaker_list,
+                    title_data,
+                )
 
-            # Cache the transcript results
-            temp_transcript_cache[cache_key] = {
-                "turns": turns,
-                "duration": duration_seconds,
-            }
-            logger.info(f"Transcription completed and cached. Generated {len(turns)} turns.")
-        except Exception as e:
-            import traceback
-            error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-            logger.error(f"Transcription error: {error_detail}")
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+                # Cache the transcript results
+                temp_transcript_cache[cache_key] = {
+                    "turns": turns,
+                    "duration": duration_seconds,
+                }
+                logger.info(f"AssemblyAI transcription completed and cached. Generated {len(turns)} turns.")
+            except Exception as e:
+                import traceback
+                error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+                logger.error(f"AssemblyAI transcription error: {error_detail}")
+                raise HTTPException(status_code=500, detail=f"AssemblyAI transcription failed: {str(e)}")
+
+        elif transcription_model == "gemini":
+            logger.info("Starting new Gemini transcription process...")
+            try:
+                # Process audio file for Gemini (need to extract audio and get duration)
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    input_path = os.path.join(temp_dir, file.filename)
+                    with open(input_path, "wb") as f:
+                        f.write(file_bytes)
+
+                    ext = file.filename.split('.')[-1].lower()
+                    audio_path = input_path
+                    audio_mime = "audio/mpeg"
+
+                    # Convert video to audio if needed
+                    SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
+                    if ext in SUPPORTED_VIDEO_TYPES:
+                        output_audio = os.path.join(temp_dir, f"{os.path.splitext(file.filename)[0]}.mp3")
+                        audio_path = convert_video_to_audio(input_path, output_audio) or input_path
+                        audio_mime = "audio/mpeg"
+                    else:
+                        # Get audio mime type
+                        mime_map = {
+                            "mp3": "audio/mpeg",
+                            "wav": "audio/wav",
+                            "m4a": "audio/mp4",
+                            "flac": "audio/flac",
+                            "ogg": "audio/ogg",
+                            "aac": "audio/aac",
+                            "aiff": "audio/aiff",
+                        }
+                        audio_mime = mime_map.get(ext, "audio/mpeg")
+
+                    # Get duration
+                    duration_seconds = get_media_duration(audio_path) or 0.0
+
+                    # Update title_data with duration
+                    hours, rem = divmod(duration_seconds, 3600)
+                    minutes, seconds = divmod(rem, 60)
+                    title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+                    # Run Gemini transcription (blocking call in thread)
+                    gemini_lines = await anyio.to_thread.run_sync(
+                        transcribe_with_gemini,
+                        audio_path,
+                        audio_mime,
+                        duration_seconds,
+                        speaker_list,
+                    )
+
+                    # Normalize and convert to TranscriptTurn objects
+                    normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
+                    turns = construct_turns_from_lines(normalized_lines)
+
+                    if not turns:
+                        raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
+
+                    # Cache the results
+                    temp_transcript_cache[cache_key] = {
+                        "turns": turns,
+                        "duration": duration_seconds,
+                    }
+                    logger.info(f"Gemini transcription completed and cached. Generated {len(turns)} turns.")
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                import traceback
+                error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+                logger.error(f"Gemini transcription error: {error_detail}")
+                raise HTTPException(status_code=500, detail=f"Gemini transcription failed: {str(e)}")
 
     docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
         turns,

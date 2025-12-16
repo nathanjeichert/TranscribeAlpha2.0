@@ -13,6 +13,7 @@ interface FormData {
   input_time: string
   location: string
   speaker_names: string
+  transcription_model: 'assemblyai' | 'gemini'
 }
 
 type TranscriptData = EditorSessionResponse & {
@@ -50,6 +51,7 @@ export default function TranscribeForm() {
     input_time: '',
     location: '',
     speaker_names: '',
+    transcription_model: 'assemblyai',
   })
 
   const [activeTab, setActiveTab] = useState<AppTab>('transcribe')
@@ -663,6 +665,23 @@ export default function TranscribeForm() {
                   <div className="card-body space-y-6">
                     <div>
                       <label className="block text-sm font-medium text-primary-700 mb-2">
+                        Transcription Model
+                      </label>
+                      <select
+                        name="transcription_model"
+                        value={formData.transcription_model}
+                        onChange={handleInputChange}
+                        className="input-field"
+                      >
+                        <option value="assemblyai">AssemblyAI (Recommended)</option>
+                        <option value="gemini">Gemini 3.0 Pro</option>
+                      </select>
+                      <p className="text-xs text-primary-600 mt-1">
+                        AssemblyAI provides millisecond-accurate timestamps. Gemini 3.0 Pro offers advanced AI transcription.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-primary-700 mb-2">
                         Speaker Names (optional)
                       </label>
                       <input
@@ -679,8 +698,15 @@ export default function TranscribeForm() {
                     </div>
                     <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
                       <div className="text-sm text-primary-700">
-                        Transcriptions are processed with <span className="font-medium">AssemblyAI</span> to provide
-                        millisecond-accurate word-level timestamps for OnCue synchronization.
+                        {formData.transcription_model === 'assemblyai' ? (
+                          <>
+                            Using <span className="font-medium">AssemblyAI</span> for millisecond-accurate word-level timestamps optimized for OnCue synchronization.
+                          </>
+                        ) : (
+                          <>
+                            Using <span className="font-medium">Gemini 3.0 Pro</span> for advanced AI-powered transcription with intelligent speaker identification.
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
