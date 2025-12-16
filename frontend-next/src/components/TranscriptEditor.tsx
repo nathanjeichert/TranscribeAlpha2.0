@@ -66,6 +66,9 @@ interface TranscriptEditorProps {
   onSessionChange: (session: EditorSessionResponse) => void
   onSaveComplete: (result: EditorSaveResponse) => void
   onOpenHistory?: () => void
+  onGeminiRefine?: () => void
+  isGeminiBusy?: boolean
+  geminiError?: string | null
 }
 
 const secondsToLabel = (seconds: number) => {
@@ -139,6 +142,9 @@ export default function TranscriptEditor({
   onSessionChange,
   onSaveComplete,
   onOpenHistory,
+  onGeminiRefine,
+  isGeminiBusy,
+  geminiError,
 }: TranscriptEditorProps) {
   const [lines, setLines] = useState<EditorLine[]>(initialData?.lines ?? [])
   const [sessionMeta, setSessionMeta] = useState<EditorSessionResponse | null>(initialData ?? null)
@@ -229,19 +235,19 @@ export default function TranscriptEditor({
             const cached = loadFromLocalStorage(targetKey)
             if (cached) {
               setLines(cached.lines)
-            setSessionMeta({
-              title_data: cached.titleData,
-              audio_duration: cached.audioDuration,
-              lines_per_page: cached.linesPerPage,
-              lines: cached.lines,
-              media_blob_name: cached.mediaBlobName,
-              media_content_type: cached.mediaContentType,
-            } as EditorSessionResponse)
-            setActiveMediaKey(targetKey)
-            setError('Loaded from local cache. Save to sync with server.')
-            setLoading(false)
-            return
-          }
+              setSessionMeta({
+                title_data: cached.titleData,
+                audio_duration: cached.audioDuration,
+                lines_per_page: cached.linesPerPage,
+                lines: cached.lines,
+                media_blob_name: cached.mediaBlobName,
+                media_content_type: cached.mediaContentType,
+              } as EditorSessionResponse)
+              setActiveMediaKey(targetKey)
+              setError('Loaded from local cache. Save to sync with server.')
+              setLoading(false)
+              return
+            }
           }
 
           const detail = await response.json().catch(() => ({}))
@@ -897,6 +903,16 @@ export default function TranscriptEditor({
                 Delete Utterance
               </button>
             </div>
+            {onGeminiRefine && (
+              <button
+                className="rounded-lg border-2 border-amber-400 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900 shadow-sm hover:bg-amber-200 disabled:opacity-60"
+                onClick={onGeminiRefine}
+                disabled={isGeminiBusy}
+                title="Refine the current transcript using Gemini corrections."
+              >
+                {isGeminiBusy ? 'Running Gemini...' : 'Polish with Gemini 3.0'}
+              </button>
+            )}
             <button className="btn-primary px-4 py-2" onClick={handleSave} disabled={saving || !sessionMeta || !isDirty}>
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
@@ -906,6 +922,11 @@ export default function TranscriptEditor({
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               {error}
+            </div>
+          )}
+          {geminiError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              Gemini Error: {geminiError}
             </div>
           )}
           {snapshotError && (
