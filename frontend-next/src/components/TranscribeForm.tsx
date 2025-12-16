@@ -673,12 +673,9 @@ export default function TranscribeForm() {
                         onChange={handleInputChange}
                         className="input-field"
                       >
-                        <option value="assemblyai">AssemblyAI (Recommended)</option>
+                        <option value="assemblyai">AssemblyAI</option>
                         <option value="gemini">Gemini 3.0 Pro</option>
                       </select>
-                      <p className="text-xs text-primary-600 mt-1">
-                        AssemblyAI provides millisecond-accurate timestamps. Gemini 3.0 Pro offers advanced AI transcription.
-                      </p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-primary-700 mb-2">
@@ -695,19 +692,6 @@ export default function TranscribeForm() {
                       <p className="text-xs text-primary-600 mt-1">
                         Separate multiple speakers with commas. Leave blank for automatic detection.
                       </p>
-                    </div>
-                    <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
-                      <div className="text-sm text-primary-700">
-                        {formData.transcription_model === 'assemblyai' ? (
-                          <>
-                            Using <span className="font-medium">AssemblyAI</span> for millisecond-accurate word-level timestamps optimized for OnCue synchronization.
-                          </>
-                        ) : (
-                          <>
-                            Using <span className="font-medium">Gemini 3.0 Pro</span> for advanced AI-powered transcription with intelligent speaker identification.
-                          </>
-                        )}
-                      </div>
                     </div>
                   </div>
                 </div>
