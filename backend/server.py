@@ -818,16 +818,20 @@ def normalize_line_payloads(
         speaker_name = str(line.get("speaker", "")).strip() or "SPEAKER"
         text_value = str(line.get("text", "")).strip()
 
-        normalized_lines.append(
-            {
-                "id": line.get("id") or f"{idx}",
-                "speaker": speaker_name.upper(),
-                "text": text_value,
-                "start": start_val,
-                "end": end_val,
-                "is_continuation": bool(line.get("is_continuation", False)),
-            }
-        )
+        normalized_line = {
+            "id": line.get("id") or f"{idx}",
+            "speaker": speaker_name.upper(),
+            "text": text_value,
+            "start": start_val,
+            "end": end_val,
+            "is_continuation": bool(line.get("is_continuation", False)),
+        }
+
+        # Pass through word-level timestamps if present
+        if "words" in line and isinstance(line["words"], list):
+            normalized_line["words"] = line["words"]
+
+        normalized_lines.append(normalized_line)
 
         max_end = max(max_end, end_val)
 
@@ -891,24 +895,50 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
 
         current_text_parts.append(text_val)
 
-        tokens = [tok for tok in text_val.split() if tok]
-        line_duration = max(end_val - start_val, 0.01)
-        word_count = len(tokens) or 1
-        for word_idx, token in enumerate(tokens or [""]):
-            token_start = start_val + (line_duration * word_idx / word_count)
-            if word_idx == word_count - 1:
-                token_end = end_val
-            else:
-                token_end = start_val + (line_duration * (word_idx + 1) / word_count)
-            current_words.append(
-                WordTimestamp(
-                    text=token or "",
-                    start=token_start * 1000.0,
-                    end=max(token_end * 1000.0, token_start * 1000.0),
-                    confidence=None,
-                    speaker=speaker,
+        # Check if word-level timestamps were provided (e.g., from Gemini)
+        line_words = line.get("words")
+        if isinstance(line_words, list) and len(line_words) > 0:
+            # Use provided word-level timestamps
+            for word_data in line_words:
+                if not isinstance(word_data, dict):
+                    continue
+                word_text = str(word_data.get("text", "")).strip()
+                if not word_text:
+                    continue
+                try:
+                    word_start = float(word_data.get("start", 0.0))
+                    word_end = float(word_data.get("end", word_start))
+                except (TypeError, ValueError):
+                    continue
+                current_words.append(
+                    WordTimestamp(
+                        text=word_text,
+                        start=word_start * 1000.0,  # convert to milliseconds
+                        end=max(word_end * 1000.0, word_start * 1000.0),
+                        confidence=None,
+                        speaker=speaker,
+                    )
                 )
-            )
+        else:
+            # Fallback: interpolate word timestamps from line timing
+            tokens = [tok for tok in text_val.split() if tok]
+            line_duration = max(end_val - start_val, 0.01)
+            word_count = len(tokens) or 1
+            for word_idx, token in enumerate(tokens or [""]):
+                token_start = start_val + (line_duration * word_idx / word_count)
+                if word_idx == word_count - 1:
+                    token_end = end_val
+                else:
+                    token_end = start_val + (line_duration * (word_idx + 1) / word_count)
+                current_words.append(
+                    WordTimestamp(
+                        text=token or "",
+                        start=token_start * 1000.0,
+                        end=max(token_end * 1000.0, token_start * 1000.0),
+                        confidence=None,
+                        speaker=speaker,
+                    )
+                )
 
     flush_turn()
     return turns
@@ -1362,12 +1392,17 @@ def transcribe_with_gemini(
 
     instructions = (
         "You are a professional legal transcriptionist. "
-        "Transcribe the provided audio file into a legal transcript format. "
+        "Transcribe the provided audio file into a legal transcript format with WORD-LEVEL timestamps. "
         f"{speaker_instructions}"
-        "Return ONLY a JSON array of objects with fields: speaker (uppercase string), text (string), start (float seconds), end (float seconds). "
-        "Each object represents one speaker turn/utterance. "
-        "Ensure proper punctuation, capitalization, and paragraph breaks for readability. "
-        "Timestamps should be accurate, with start < end and entries non-overlapping and chronological. "
+        "Return ONLY a JSON array of objects. Each object represents one speaker turn with these fields:\n"
+        "- speaker: uppercase string (e.g., 'SPEAKER A')\n"
+        "- text: the full utterance text as a string\n"
+        "- start: float, start time in seconds for the utterance\n"
+        "- end: float, end time in seconds for the utterance\n"
+        "- words: array of word objects, each with {word: string, start: float seconds, end: float seconds}\n\n"
+        "The 'words' array must contain timing for EVERY word in the utterance text. "
+        "Ensure proper punctuation and capitalization. "
+        "All timestamps should be accurate, with start < end, entries non-overlapping and chronological. "
         "Do not include any extra keys or wrapping text."
     )
 
@@ -1512,16 +1547,44 @@ def transcribe_with_gemini(
         except (TypeError, ValueError):
             start_val = 0.0
             end_val = start_val
-        normalized.append(
-            {
-                "id": item.get("id") or f"gem-{idx}",
-                "speaker": speaker,
-                "text": text,
-                "start": max(start_val, 0.0),
-                "end": max(end_val, start_val),
-                "is_continuation": False,
-            }
-        )
+
+        # Extract word-level timestamps if provided by Gemini
+        words_data = None
+        raw_words = item.get("words")
+        if isinstance(raw_words, list) and len(raw_words) > 0:
+            words_data = []
+            for word_item in raw_words:
+                if not isinstance(word_item, dict):
+                    continue
+                word_text = str(word_item.get("word", word_item.get("text", ""))).strip()
+                if not word_text:
+                    continue
+                try:
+                    word_start = float(word_item.get("start", 0.0))
+                    word_end = float(word_item.get("end", word_start))
+                except (TypeError, ValueError):
+                    continue
+                words_data.append({
+                    "text": word_text,
+                    "start": max(word_start, 0.0),
+                    "end": max(word_end, word_start),
+                    "speaker": speaker,
+                })
+
+        line_data = {
+            "id": item.get("id") or f"gem-{idx}",
+            "speaker": speaker,
+            "text": text,
+            "start": max(start_val, 0.0),
+            "end": max(end_val, start_val),
+            "is_continuation": False,
+        }
+
+        # Include words if we got valid word-level data
+        if words_data and len(words_data) > 0:
+            line_data["words"] = words_data
+
+        normalized.append(line_data)
 
     if not normalized:
         raise HTTPException(status_code=502, detail="Gemini did not return any transcript lines")
