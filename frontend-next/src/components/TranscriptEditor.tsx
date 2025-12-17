@@ -296,8 +296,11 @@ export default function TranscriptEditor({
     if (!initialData) return
     setSessionMeta(initialData)
     setLines(initialData.lines ?? [])
-    const resolvedKey = initialData.media_key ?? initialMediaKey ?? activeMediaKey ?? null
-    setActiveMediaKey(resolvedKey)
+    // Only update activeMediaKey from props, not from internal state (to avoid circular updates)
+    const resolvedKey = initialData.media_key ?? initialMediaKey ?? null
+    if (resolvedKey) {
+      setActiveMediaKey(resolvedKey)
+    }
     setHistory([])
     setFuture([])
     setIsDirty(false)
@@ -306,7 +309,8 @@ export default function TranscriptEditor({
     setEditingField(null)
     setSnapshotError(null)
     activeLineMarker.current = null
-  }, [initialData, initialMediaKey, activeMediaKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialData, initialMediaKey])
 
   useEffect(() => {
     if (initialData || sessionMeta) return
