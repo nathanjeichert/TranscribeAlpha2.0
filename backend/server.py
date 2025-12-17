@@ -2814,6 +2814,9 @@ async def import_oncue_transcript(
     location: str = Form(""),
     current_user: dict = Depends(get_current_user),
 ):
+    # Debug logging for import
+    logger.info(f"Import request: xml_file={xml_file.filename}, media_file={media_file.filename if media_file else 'None'}")
+
     xml_bytes = await xml_file.read()
     if not xml_bytes:
         raise HTTPException(status_code=400, detail="Uploaded XML file is empty")
@@ -2857,7 +2860,9 @@ async def import_oncue_transcript(
     media_blob_name = None
     media_content_type = None
     if media_file:
+        logger.info(f"Import: media_file present, filename={media_file.filename}, content_type={media_file.content_type}")
         media_bytes = await media_file.read()
+        logger.info(f"Import: read {len(media_bytes) if media_bytes else 0} bytes from media file")
         if media_bytes:
             media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename)[0]
             try:
@@ -2866,10 +2871,13 @@ async def import_oncue_transcript(
                     media_file.filename,
                     media_content_type,
                 )
+                logger.info(f"Import: uploaded media to blob {media_blob_name}")
             except Exception as e:
                 logger.error("Failed to store media during import: %s", e)
                 media_blob_name = None
                 media_content_type = None
+    else:
+        logger.info("Import: no media_file provided")
 
     created_at = datetime.now(timezone.utc)
 
@@ -3059,6 +3067,9 @@ async def resync_transcript(
     # 2. Get Audio Access (Consistent with Gemini flow)
     media_blob_name = session_data.get("media_blob_name")
     media_content_type = session_data.get("media_content_type")
+
+    logger.info(f"Resync: media_key={media_key}, media_blob_name={media_blob_name}, media_content_type={media_content_type}")
+    logger.info(f"Resync: session_data keys={list(session_data.keys())}")
 
     if not media_blob_name:
         raise HTTPException(status_code=400, detail="Audio file reference not found in session")
