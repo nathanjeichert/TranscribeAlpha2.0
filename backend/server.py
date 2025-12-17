@@ -99,7 +99,15 @@ except ImportError:
         get_current_user = auth_module.get_current_user
         decode_token = auth_module.decode_token
 
-from .rev_ai_sync import RevAIAligner
+# Import Rev AI alignment module
+try:
+    from .rev_ai_sync import RevAIAligner
+except ImportError:
+    try:
+        from rev_ai_sync import RevAIAligner
+    except ImportError:
+        import rev_ai_sync
+        RevAIAligner = rev_ai_sync.RevAIAligner
 
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")

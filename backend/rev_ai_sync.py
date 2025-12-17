@@ -5,8 +5,16 @@ import requests
 import re
 from typing import List, Optional, Dict, Any
 
-from .transcriber import TranscriptTurn, WordTimestamp
-# Assuming you have these models available in transcriber or similar
+# Import transcriber models with fallback pattern
+try:
+    from .transcriber import TranscriptTurn, WordTimestamp
+except ImportError:
+    try:
+        from transcriber import TranscriptTurn, WordTimestamp
+    except ImportError:
+        import transcriber
+        TranscriptTurn = transcriber.TranscriptTurn
+        WordTimestamp = transcriber.WordTimestamp
 
 logger = logging.getLogger(__name__)
 
