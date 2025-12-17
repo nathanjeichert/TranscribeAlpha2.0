@@ -53,15 +53,22 @@ class RevAIAligner:
             # Get default credentials
             credentials, project = auth.default()
 
-            # On Cloud Run, credentials are Compute Engine credentials
-            # We need to get the service account email and use IAM signing
-            if hasattr(credentials, 'service_account_email'):
-                self._service_account_email = credentials.service_account_email
-            else:
-                # Try to get from metadata server
-                import google.auth.transport.requests
-                auth_req = google.auth.transport.requests.Request()
-                credentials.refresh(auth_req)
+            # Refresh credentials to ensure token is valid
+            auth_req = google_requests.Request()
+            credentials.refresh(auth_req)
+
+            # On Cloud Run, we need to get the service account email from metadata server
+            # The credentials.service_account_email may just return "default"
+            try:
+                import urllib.request
+                metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
+                req = urllib.request.Request(metadata_url, headers={"Metadata-Flavor": "Google"})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    self._service_account_email = response.read().decode('utf-8').strip()
+                logger.info(f"Got service account email from metadata: {self._service_account_email}")
+            except Exception as meta_err:
+                logger.warning(f"Could not get SA email from metadata: {meta_err}")
+                # Fallback to credentials attribute
                 if hasattr(credentials, 'service_account_email'):
                     self._service_account_email = credentials.service_account_email
 
