@@ -181,6 +181,10 @@ export default function TranscriptEditor({
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const lastSnapshotRef = useRef<number>(0)
 
+  // Rev AI Re-sync State
+  const [isResyncing, setIsResyncing] = useState(false)
+  const [resyncError, setResyncError] = useState<string | null>(null)
+
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
     if (mediaUrl) return mediaUrl
@@ -821,6 +825,51 @@ export default function TranscriptEditor({
     [importXmlFile, importMediaFile, onSessionChange],
   )
 
+  const handleResync = useCallback(async () => {
+    if (!activeMediaKey) {
+      setResyncError('No active transcript to re-sync.')
+      return
+    }
+
+    if (!confirm('This will update all timestamps based on audio alignment. Text changes will be preserved. Continue?')) {
+      return
+    }
+
+    setIsResyncing(true)
+    setResyncError(null)
+
+    try {
+      const response = await fetch('/resync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({
+          media_key: activeMediaKey,
+        }),
+      })
+
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Re-sync failed')
+      }
+
+      const data = await response.json()
+      // data contains { status, lines, oncue_xml_base64 }
+
+      // We need to update local state fully. 
+      // Ideally we reload the full session to be safe, or patch it.
+      // Let's reload the session to ensure consistency.
+      await fetchTranscript(activeMediaKey)
+
+    } catch (err: any) {
+      setResyncError(err.message || 'Re-sync failed')
+    } finally {
+      setIsResyncing(false)
+    }
+  }, [activeMediaKey, fetchTranscript])
+
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
   const transcriptText = sessionMeta?.transcript ?? sessionMeta?.transcript_text ?? ''
@@ -913,6 +962,14 @@ export default function TranscriptEditor({
                 {isGeminiBusy ? 'Running Gemini...' : 'Polish with Gemini 3.0'}
               </button>
             )}
+            <button
+              className="rounded-lg border-2 border-indigo-400 bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-900 shadow-sm hover:bg-indigo-200 disabled:opacity-60"
+              onClick={handleResync}
+              disabled={isResyncing || !effectiveMediaUrl}
+              title="Automatically re-align timestamps to audio using Rev AI."
+            >
+              {isResyncing ? 'Re-syncing...' : 'Auto Re-sync'}
+            </button>
             <button className="btn-primary px-4 py-2" onClick={handleSave} disabled={saving || !sessionMeta || !isDirty}>
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
@@ -1275,6 +1332,26 @@ export default function TranscriptEditor({
           </div>
         </div>
       </div>
+
+      {/* Re-sync Loading Overlay */}
+      {isResyncing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-xl bg-white p-8 shadow-2xl text-center">
+            <div className="mb-4 flex justify-center">
+              {/* Simple Spinner */}
+              <svg className="h-10 w-10 animate-spin text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+            <h3 className="text-lg font-bold text-gray-900">Aligning Transcript</h3>
+            <p className="mt-2 text-sm text-gray-600">
+              Sending audio and text to Rev AI for forced alignment. <br />
+              This may take a minute or two.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
