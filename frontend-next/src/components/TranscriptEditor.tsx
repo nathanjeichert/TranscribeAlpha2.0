@@ -839,7 +839,7 @@ export default function TranscriptEditor({
     setResyncError(null)
 
     try {
-      const response = await fetch('/resync', {
+      const response = await fetch('/api/resync', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

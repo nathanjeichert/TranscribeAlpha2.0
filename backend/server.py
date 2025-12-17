@@ -3051,7 +3051,7 @@ if __name__ == "__main__":
     # Run the server
     asyncio.run(hypercorn.asyncio.serve(app, config))
 
-@app.post("/resync")
+@app.post("/api/resync")
 async def resync_transcript(
     payload: dict = Body(...),
     user: dict = Depends(get_current_user),
