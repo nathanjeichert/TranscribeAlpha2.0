@@ -3035,9 +3035,114 @@ async def health_check():
         "last_cleanup": last_cleanup_time.isoformat()
     }
 
+@app.post("/api/resync")
+async def resync_transcript(
+    payload: dict = Body(...),
+    user: dict = Depends(get_current_user),
+):
+    """
+    Re-sync the transcript using Rev AI Forced Alignment.
+
+    Payload:
+      - media_key: string
+      - api_key: string (optional, checks env if missing)
+    """
+    media_key = payload.get("media_key")
+    if not media_key:
+        raise HTTPException(status_code=400, detail="Missing media_key")
+
+    # 1. Load Session
+    session_data = load_current_transcript(media_key)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    # 2. Get Audio Access (Consistent with Gemini flow)
+    media_blob_name = session_data.get("media_blob_name")
+    media_content_type = session_data.get("media_content_type")
+
+    if not media_blob_name:
+        raise HTTPException(status_code=400, detail="Audio file reference not found in session")
+
+    # Use existing helper to download and convert (if needed)
+    # This ensures we handle video->audio conversion and mime types consistently
+    audio_path = None
+    try:
+        # Run in thread pool to avoid blocking async event loop
+        audio_path, _, _, _ = await anyio.to_thread.run_sync(
+            prepare_audio_for_gemini, media_blob_name, media_content_type
+        )
+    except Exception as e:
+        logger.error(f"Failed to prepare audio for re-sync: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to prepare audio: {e}")
+
+    try:
+        # 3. Get API Key
+        rev_api_key = payload.get("api_key") or os.getenv("REV_AI_API_KEY")
+        if not rev_api_key:
+            raise HTTPException(status_code=500, detail="Rev AI API Key not configured")
+
+        aligner = RevAIAligner(rev_api_key)
+
+        # 4. Prepare Turns
+        lines = session_data.get("lines", [])
+        if not lines:
+            raise HTTPException(status_code=400, detail="No transcript lines to align")
+
+        turns = construct_turns_from_lines(lines)
+
+        # 5. Call Rev AI
+        # Convert turns to dicts for the aligner
+        turns_payload = [t.dict() for t in turns]
+
+        # We pass the local audio_path. The aligner prefers file upload.
+        updated_turns_payload = await anyio.to_thread.run_sync(
+            aligner.align_transcript, turns_payload, audio_path, None
+        )
+
+        updated_turns = [TranscriptTurn(**t) for t in updated_turns_payload]
+
+        # 6. Rebuild Artifacts
+        title_data = session_data.get("title_data", {})
+        audio_duration = session_data.get("audio_duration", 0.0)
+        lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+
+        docx_bytes, oncue_xml, transcript_text, new_line_entries = build_session_artifacts(
+            updated_turns,
+            title_data,
+            audio_duration,
+            lines_per_page
+        )
+
+        # 7. Update Session
+        session_data["lines"] = new_line_entries
+        session_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+        session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        save_current_transcript(media_key, session_data)
+
+        return {
+            "status": "success",
+            "lines": new_line_entries,
+            "oncue_xml_base64": session_data["oncue_xml_base64"]
+        }
+
+    except Exception as e:
+        logger.error(f"Re-sync failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Re-sync process failed: {e}")
+
+    finally:
+        # Cleanup temporary audio file
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+            except:
+                pass
+
+
 # Mount static files LAST so API routes take precedence
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+
 
 if __name__ == "__main__":
     # Cloud Run uses PORT environment variable, defaults to 8080
@@ -3058,105 +3163,3 @@ if __name__ == "__main__":
     
     # Run the server
     asyncio.run(hypercorn.asyncio.serve(app, config))
-
-@app.post("/api/resync")
-async def resync_transcript(
-    payload: dict = Body(...),
-    user: dict = Depends(get_current_user),
-):
-    """
-    Re-sync the transcript using Rev AI Forced Alignment.
-    
-    Payload:
-      - media_key: string
-      - api_key: string (optional, checks env if missing)
-    """
-    media_key = payload.get("media_key")
-    if not media_key:
-        raise HTTPException(status_code=400, detail="Missing media_key")
-    
-    # 1. Load Session
-    session_data = load_current_transcript(media_key)
-    if not session_data:
-        raise HTTPException(status_code=404, detail="Transcript not found")
-
-    # 2. Get Audio Access (Consistent with Gemini flow)
-    media_blob_name = session_data.get("media_blob_name")
-    media_content_type = session_data.get("media_content_type")
-
-    if not media_blob_name:
-         raise HTTPException(status_code=400, detail="Audio file reference not found in session")
-
-    # Use existing helper to download and convert (if needed)
-    # This ensures we handle video->audio conversion and mime types consistently
-    try:
-        # Run in thread pool to avoid blocking async event loop
-        audio_path, _, _, _ = await anyio.to_thread.run_sync(
-            prepare_audio_for_gemini, media_blob_name, media_content_type
-        )
-    except Exception as e:
-        logger.error(f"Failed to prepare audio for re-sync: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to prepare audio: {e}")
-
-    try:
-        # 3. Get API Key
-        rev_api_key = payload.get("api_key") or os.getenv("REV_AI_API_KEY")
-        if not rev_api_key:
-            raise HTTPException(status_code=500, detail="Rev AI API Key not configured")
-            
-        aligner = RevAIAligner(rev_api_key)
-        
-        # 4. Prepare Turns
-        lines = session_data.get("lines", [])
-        if not lines:
-             raise HTTPException(status_code=400, detail="No transcript lines to align")
-             
-        turns = construct_turns_from_lines(lines)
-        
-        # 5. Call Rev AI
-        # Convert turns to dicts for the aligner
-        turns_payload = [t.dict() for t in turns]
-        
-        # We pass the local audio_path. The aligner prefers file upload.
-        updated_turns_payload = await anyio.to_thread.run_sync(
-            aligner.align_transcript, turns_payload, audio_path, None
-        )
-        
-        updated_turns = [TranscriptTurn(**t) for t in updated_turns_payload]
-        
-        # 6. Rebuild Artifacts
-        title_data = session_data.get("title_data", {})
-        audio_duration = session_data.get("audio_duration", 0.0)
-        lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
-        
-        docx_bytes, oncue_xml, transcript_text, new_line_entries = build_session_artifacts(
-            updated_turns,
-            title_data,
-            audio_duration,
-            lines_per_page
-        )
-        
-        # 7. Update Session
-        session_data["lines"] = new_line_entries
-        session_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode()
-        session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        
-        save_current_transcript(media_key, session_data)
-        
-        return {
-            "status": "success", 
-            "lines": new_line_entries,
-            "oncue_xml_base64": session_data["oncue_xml_base64"]
-        }
-
-    except Exception as e:
-        logger.error(f"Re-sync failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Re-sync process failed: {e}")
-        
-    finally:
-        # Cleanup temporary audio file
-        if audio_path and os.path.exists(audio_path):
-             try:
-                 os.remove(audio_path)
-             except:
-                 pass
