@@ -18,7 +18,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-REV_AI_BASE_URL = "https://api.rev.ai/revspeech/v1beta"
+REV_AI_BASE_URL = "https://api.rev.ai/speechtotext/v1"
 
 class RevAIAligner:
     def __init__(self, api_key: str):
@@ -33,37 +33,50 @@ class RevAIAligner:
         return re.sub(r'[^\w\s]', '', text).replace('\n', ' ')
 
     def submit_alignment_job(self, audio_url: Optional[str], audio_file_path: Optional[str], text: str) -> str:
-        url = f"{REV_AI_BASE_URL}/works/alignment"
-        
+        # Rev AI Forced Alignment API endpoint
+        url = f"{REV_AI_BASE_URL}/jobs"
+
         # Prepare multipart/form-data
         files = {}
-        data = {}
+        data = {
+            'transcript': text,  # The text to align
+        }
 
-        if audio_file_path and os.path.exists(audio_file_path):
-             files['media'] = open(audio_file_path, 'rb')
-        elif audio_url:
-            data['media_url'] = audio_url
-        else:
-             raise ValueError("Either audio_url or audio_file_path must be provided")
+        file_handle = None
+        try:
+            if audio_file_path and os.path.exists(audio_file_path):
+                file_handle = open(audio_file_path, 'rb')
+                files['media'] = ('audio.mp3', file_handle, 'audio/mpeg')
+            elif audio_url:
+                data['media_url'] = audio_url
+            else:
+                raise ValueError("Either audio_url or audio_file_path must be provided")
 
-        files['text'] = (None, text) 
-        
-        response = requests.post(url, headers=self.headers, files=files, data=data)
-        
-        if response.status_code != 200 and response.status_code != 201:
-            logger.error(f"Rev AI Job Submit Failed: {response.text}")
-            raise Exception(f"Failed to submit alignment job: {response.text}")
-            
-        return response.json()['id']
+            logger.info(f"Submitting to Rev AI: {url}")
+            logger.info(f"Audio file: {audio_file_path}, exists: {os.path.exists(audio_file_path) if audio_file_path else 'N/A'}")
+
+            response = requests.post(url, headers=self.headers, files=files if files else None, data=data)
+
+            logger.info(f"Rev AI response status: {response.status_code}")
+            logger.info(f"Rev AI response body: {response.text[:500] if response.text else 'empty'}")
+
+            if response.status_code not in (200, 201):
+                logger.error(f"Rev AI Job Submit Failed (HTTP {response.status_code}): {response.text}")
+                raise Exception(f"Failed to submit alignment job (HTTP {response.status_code}): {response.text}")
+
+            return response.json()['id']
+        finally:
+            if file_handle:
+                file_handle.close()
 
     def get_job_details(self, job_id: str) -> Dict[str, Any]:
-        url = f"{REV_AI_BASE_URL}/works/{job_id}"
+        url = f"{REV_AI_BASE_URL}/jobs/{job_id}"
         response = requests.get(url, headers=self.headers)
         response.raise_for_status()
         return response.json()
 
     def get_alignment_result(self, job_id: str) -> Dict[str, Any]:
-        url = f"{REV_AI_BASE_URL}/works/{job_id}/result"
+        url = f"{REV_AI_BASE_URL}/jobs/{job_id}/transcript"
         # Rev AI output format is JSON
         headers = self.headers.copy()
         headers['Accept'] = 'application/vnd.rev.transcript.v1.0+json'
