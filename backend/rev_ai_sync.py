@@ -8,6 +8,10 @@ from datetime import timedelta
 from typing import List, Optional, Dict, Any
 
 from google.cloud import storage
+from google import auth
+from google.auth.transport import requests as google_requests
+from google.auth import compute_engine
+from google.auth.compute_engine import credentials as compute_credentials
 
 # Import transcriber models with fallback pattern
 try:
@@ -38,16 +42,57 @@ class RevAIAligner:
         }
         self.storage_client = storage.Client()
 
-    def _create_signed_url(self, blob_name: str, expiration_minutes: int = 60) -> str:
-        """Create a signed URL for a Cloud Storage blob."""
+        # Get credentials for signing URLs on Cloud Run
+        self._signing_credentials = None
+        self._service_account_email = None
+        self._init_signing_credentials()
+
+    def _init_signing_credentials(self):
+        """Initialize credentials for signing URLs using IAM signBlob API."""
+        try:
+            # Get default credentials
+            credentials, project = auth.default()
+
+            # On Cloud Run, credentials are Compute Engine credentials
+            # We need to get the service account email and use IAM signing
+            if hasattr(credentials, 'service_account_email'):
+                self._service_account_email = credentials.service_account_email
+            else:
+                # Try to get from metadata server
+                import google.auth.transport.requests
+                auth_req = google.auth.transport.requests.Request()
+                credentials.refresh(auth_req)
+                if hasattr(credentials, 'service_account_email'):
+                    self._service_account_email = credentials.service_account_email
+
+            self._signing_credentials = credentials
+            logger.info(f"Initialized signing credentials for: {self._service_account_email}")
+        except Exception as e:
+            logger.warning(f"Could not initialize signing credentials: {e}")
+
+    def _create_signed_url(self, blob_name: str, expiration_minutes: int = 15) -> str:
+        """Create a signed URL for a Cloud Storage blob using IAM signBlob API."""
         bucket = self.storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(blob_name)
 
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(minutes=expiration_minutes),
-            method="GET"
-        )
+        # Use IAM-based signing which works with Compute Engine credentials
+        if self._service_account_email:
+            url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=expiration_minutes),
+                method="GET",
+                service_account_email=self._service_account_email,
+                access_token=self._signing_credentials.token,
+            )
+        else:
+            # Fallback - try regular signing (works if running with service account key)
+            url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=expiration_minutes),
+                method="GET"
+            )
+
+        logger.info(f"Generated signed URL for {blob_name} (expires in {expiration_minutes} min)")
         return url
 
     def _upload_text_to_gcs(self, text: str, filename: str) -> str:
