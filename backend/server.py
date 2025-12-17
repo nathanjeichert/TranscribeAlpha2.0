@@ -3115,7 +3115,9 @@ async def resync_transcript(
 
         # 7. Update Session
         session_data["lines"] = new_line_entries
+        session_data["docx_base64"] = base64.b64encode(docx_bytes).decode()
         session_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+        session_data["transcript_text"] = transcript_text
         session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         save_current_transcript(media_key, session_data)
@@ -3123,6 +3125,7 @@ async def resync_transcript(
         return {
             "status": "success",
             "lines": new_line_entries,
+            "docx_base64": session_data["docx_base64"],
             "oncue_xml_base64": session_data["oncue_xml_base64"]
         }
 

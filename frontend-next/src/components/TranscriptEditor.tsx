@@ -1338,9 +1338,9 @@ export default function TranscriptEditor({
         </div>
       </div>
 
-      {/* Re-sync Loading Overlay */}
+      {/* Re-sync Loading Overlay - uses z-[9999] to ensure it's above everything */}
       {isResyncing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="fixed top-0 left-0 right-0 bottom-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-xl bg-white p-8 shadow-2xl text-center">
             <div className="mb-4 flex justify-center">
               {/* Simple Spinner */}

@@ -300,6 +300,15 @@ class RevAIAligner:
             result = self.wait_for_job(job_id)
 
             # Parse results - Rev AI returns monologues with elements
+            # Log the raw structure to debug field names
+            logger.info(f"Rev AI result keys: {result.keys()}")
+            if result.get('monologues'):
+                first_mono = result['monologues'][0] if result['monologues'] else {}
+                logger.info(f"First monologue keys: {first_mono.keys() if first_mono else 'empty'}")
+                if first_mono.get('elements'):
+                    first_elem = first_mono['elements'][0] if first_mono['elements'] else {}
+                    logger.info(f"First element example: {first_elem}")
+
             aligned_elements = []
             for monologue in result.get('monologues', []):
                 for element in monologue.get('elements', []):
