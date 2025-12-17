@@ -294,10 +294,13 @@ export default function TranscriptEditor({
 
   useEffect(() => {
     if (!initialData) return
+    console.log('[SYNC EFFECT] initialData.media_key:', initialData.media_key)
+    console.log('[SYNC EFFECT] initialMediaKey prop:', initialMediaKey)
     setSessionMeta(initialData)
     setLines(initialData.lines ?? [])
     // Only update activeMediaKey from props, not from internal state (to avoid circular updates)
     const resolvedKey = initialData.media_key ?? initialMediaKey ?? null
+    console.log('[SYNC EFFECT] Setting activeMediaKey to resolvedKey:', resolvedKey)
     if (resolvedKey) {
       setActiveMediaKey(resolvedKey)
     }
@@ -804,6 +807,8 @@ export default function TranscriptEditor({
           throw new Error(detail?.detail || 'Failed to import transcript')
         }
         const data: EditorSessionResponse = await response.json()
+        console.log('[IMPORT] Response data.media_key:', data.media_key)
+        console.log('[IMPORT] Response data.media_blob_name:', data.media_blob_name)
         setSessionMeta(data)
         setLines(data.lines || [])
         setHistory([])
@@ -814,6 +819,7 @@ export default function TranscriptEditor({
         setEditingField(null)
         activeLineMarker.current = null
         const importedMediaKey = data.media_key ?? data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
+        console.log('[IMPORT] Setting activeMediaKey to:', importedMediaKey)
         if (importedMediaKey) {
           setActiveMediaKey(importedMediaKey)
         }
@@ -830,6 +836,7 @@ export default function TranscriptEditor({
   )
 
   const handleResync = useCallback(async () => {
+    console.log('[RESYNC] handleResync called with activeMediaKey:', activeMediaKey)
     if (!activeMediaKey) {
       setResyncError('No active transcript to re-sync.')
       return
@@ -843,6 +850,7 @@ export default function TranscriptEditor({
     setResyncError(null)
 
     try {
+      console.log('[RESYNC] Sending request with media_key:', activeMediaKey)
       const response = await fetch('/api/resync', {
         method: 'POST',
         headers: {
