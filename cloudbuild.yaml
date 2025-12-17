@@ -31,7 +31,7 @@ steps:
       - '8080'
       - '--use-http2'
       - '--set-env-vars'
-      - 'ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},GEMINI_MODEL_NAME=${_GEMINI_MODEL_NAME},JWT_SECRET_KEY=${_JWT_SECRET_KEY},ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
+      - 'ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},GEMINI_MODEL_NAME=${_GEMINI_MODEL_NAME},JWT_SECRET_KEY=${_JWT_SECRET_KEY},REV_AI_API_KEY=${_REV_AI_API_KEY},ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
 
 # Store images in Google Artifact Registry
 images:
@@ -43,6 +43,7 @@ substitutions:
   _GEMINI_API_KEY: 'your-gemini-key-here'
   _GEMINI_MODEL_NAME: 'models/gemini-3-pro-preview'
   _JWT_SECRET_KEY: 'your-jwt-secret-key-here-use-a-long-random-string'
+  _REV_AI_API_KEY: 'your-rev-ai-key-here'
 
 # Build options
 options:

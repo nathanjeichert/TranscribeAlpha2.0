@@ -996,6 +996,11 @@ export default function TranscriptEditor({
               {addError || deleteError}
             </div>
           )}
+          {resyncError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              Re-sync Error: {resyncError}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
             <div className="space-y-4">
