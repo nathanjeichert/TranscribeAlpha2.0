@@ -56,8 +56,8 @@ export default function AuthProvider({ children }: AuthProviderProps) {
 
   return (
     <>
-      {/* User info bar - fixed at top */}
-      <div className="sticky top-0 z-50 bg-primary-800 text-white px-4 py-2 flex justify-between items-center shadow-md">
+      {/* User info bar */}
+      <div className="bg-primary-800 text-white px-4 py-2 flex justify-between items-center shadow-md">
         <div className="text-sm">
           Signed in as <span className="font-semibold">{user?.username}</span>
         </div>

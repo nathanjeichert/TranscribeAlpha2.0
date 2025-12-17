@@ -193,7 +193,7 @@ class RevAIAligner:
 
             logger.info(f"Rev AI job {job_id} status: {status}")
 
-            if status == "transcribed":
+            if status == "completed":
                 return self.get_alignment_result(job_id)
             elif status == "failed":
                 failure = details.get('failure', 'Unknown error')

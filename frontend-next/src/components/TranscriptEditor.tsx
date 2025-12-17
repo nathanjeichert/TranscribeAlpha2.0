@@ -966,7 +966,7 @@ export default function TranscriptEditor({
               className="rounded-lg border-2 border-indigo-400 bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-900 shadow-sm hover:bg-indigo-200 disabled:opacity-60"
               onClick={handleResync}
               disabled={isResyncing || !effectiveMediaUrl}
-              title="Automatically re-align timestamps to audio using Rev AI."
+              title="Automatically re-align timestamps to the media file."
             >
               {isResyncing ? 'Re-syncing...' : 'Auto Re-sync'}
             </button>
@@ -1349,10 +1349,10 @@ export default function TranscriptEditor({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
             </div>
-            <h3 className="text-lg font-bold text-gray-900">Aligning Transcript</h3>
+            <h3 className="text-lg font-bold text-gray-900">Re-syncing Transcript</h3>
             <p className="mt-2 text-sm text-gray-600">
-              Sending audio and text to Rev AI for forced alignment. <br />
-              This may take a minute or two.
+              Automatically re-syncing the transcript to the media file. <br />
+              This could take a few minutes for longer files.
             </p>
           </div>
         </div>
