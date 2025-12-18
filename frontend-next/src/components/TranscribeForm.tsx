@@ -478,7 +478,14 @@ export default function TranscribeForm() {
     selectedFile?.type
   const selectedHistoryGroup = historyGroups.find((group) => group.media_key === selectedHistoryKey)
 
+  // Track if we've already loaded from localStorage to prevent re-fetching after import
+  const hasLoadedFromStorage = useRef(false)
+
   useEffect(() => {
+    // Only load from localStorage once on initial mount
+    if (hasLoadedFromStorage.current) return
+    hasLoadedFromStorage.current = true
+
     const storedKey = typeof window !== 'undefined' ? localStorage.getItem('active_media_key') : null
     if (storedKey) {
       fetchTranscriptByKey(storedKey)
@@ -491,7 +498,8 @@ export default function TranscribeForm() {
           }
         })
     }
-  }, [fetchTranscriptByKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     const key = transcriptData?.media_key ?? mediaKey
