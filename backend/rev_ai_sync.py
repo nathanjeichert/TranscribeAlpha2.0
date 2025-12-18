@@ -306,8 +306,9 @@ class RevAIAligner:
                 first_mono = result['monologues'][0] if result['monologues'] else {}
                 logger.info(f"First monologue keys: {first_mono.keys() if first_mono else 'empty'}")
                 if first_mono.get('elements'):
-                    first_elem = first_mono['elements'][0] if first_mono['elements'] else {}
-                    logger.info(f"First element example: {first_elem}")
+                    # Log first few elements to see full structure including timestamps
+                    for i, elem in enumerate(first_mono['elements'][:3]):
+                        logger.info(f"Element {i}: {elem}")
 
             aligned_elements = []
             for monologue in result.get('monologues', []):
@@ -320,6 +321,7 @@ class RevAIAligner:
             # Map timestamps back to our words
             min_len = min(len(aligned_elements), len(word_objects_to_update))
 
+            words_with_timestamps = 0
             for i in range(min_len):
                 rev_word = aligned_elements[i]
                 local_word = word_objects_to_update[i]
@@ -331,9 +333,14 @@ class RevAIAligner:
 
                 if start_sec is not None:
                     local_word['start'] = start_sec * 1000.0
+                    words_with_timestamps += 1
                 if end_sec is not None:
                     local_word['end'] = end_sec * 1000.0
                 local_word['confidence'] = conf
+
+            logger.info(f"Applied timestamps to {words_with_timestamps}/{min_len} words")
+            if min_len > 0:
+                logger.info(f"Sample updated word: {word_objects_to_update[0]}")
 
             # Update turn-level timestamps and interpolate missing values
             last_end = 0.0
