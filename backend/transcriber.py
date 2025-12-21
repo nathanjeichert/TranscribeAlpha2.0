@@ -88,20 +88,12 @@ ffmpeg_executable_path = find_executable_path('ffmpeg')
 ffprobe_executable_path = None
 
 if ffmpeg_executable_path:
-    print(f"Found ffmpeg: {ffmpeg_executable_path}")
     ffprobe_executable_path = get_ffprobe_path(ffmpeg_executable_path)
-    if ffprobe_executable_path:
-        print(f"Found ffprobe: {ffprobe_executable_path}")
-    else:
-        print("Warning: ffprobe not found")
-    
     # Configure pydub
     AudioSegment.converter = ffmpeg_executable_path
     AudioSegment.ffmpeg = ffmpeg_executable_path
     if ffprobe_executable_path:
         AudioSegment.ffprobe = ffprobe_executable_path
-else:
-    print("WARNING: Could not find ffmpeg executable!")
 
 SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
 SUPPORTED_AUDIO_TYPES = ["mp3", "wav", "m4a", "flac", "ogg", "aac", "aiff"]
@@ -132,37 +124,31 @@ class TranscriptTurn(BaseModel):
 
 def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3") -> Optional[str]:
     try:
-        print(f"Converting {input_path} to {output_path}")
-        print(f"Using ffmpeg path: {ffmpeg_executable_path}")
-        
+        logger.info("Converting %s to %s", input_path, output_path)
+
         if ffmpeg_executable_path:
-            # Use subprocess directly with the known ffmpeg path
             cmd = [
                 ffmpeg_executable_path,
                 '-i', input_path,
                 '-acodec', 'libmp3lame',
-                '-y',  # overwrite output file
+                '-y',
                 output_path
             ]
-            print(f"Running command: {' '.join(cmd)}")
+            logger.debug("Running command: %s", ' '.join(cmd))
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                print(f"Successfully converted to {output_path}")
-                # Add a small delay to ensure the file is completely written and released
+                logger.info("Successfully converted to %s", output_path)
                 time.sleep(0.5)
                 return output_path
             else:
-                print(f"ffmpeg failed with return code {result.returncode}")
-                print(f"stderr: {result.stderr}")
+                logger.error("ffmpeg failed with return code %d: %s", result.returncode, result.stderr)
                 return None
         else:
-            # Fallback to ffmpeg-python library
-            print("Using ffmpeg-python library as fallback")
+            logger.debug("Using ffmpeg-python library as fallback")
             ffmpeg.input(input_path).output(output_path, format=format, acodec='libmp3lame').overwrite_output().run(quiet=True)
             return output_path
     except Exception as e:
         logger.error("Unexpected error in convert_video_to_audio: %s", e)
-        print(f"Exception in convert_video_to_audio: {e}")
         return None
 
 
@@ -470,7 +456,7 @@ def get_media_duration(file_path: str) -> Optional[float]:
         if duration_str:
             return float(duration_str)
     except Exception as e:
-        print(f"ffprobe duration extraction failed: {e}")
+        logger.debug("ffprobe duration extraction failed: %s", e)
     return None
 
 def process_transcription(
@@ -513,7 +499,7 @@ def process_transcription(
                     break
                 except (PermissionError, FileNotFoundError) as e:
                     if attempt < max_retries - 1:
-                        print(f"Attempt {attempt + 1} failed to load audio file: {e}. Retrying...")
+                        logger.warning("Attempt %d failed to load audio file: %s. Retrying...", attempt + 1, e)
                         time.sleep(1)
                     else:
                         raise e
