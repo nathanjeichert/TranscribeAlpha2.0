@@ -150,18 +150,25 @@ def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
     return f"{SNAPSHOT_PREFIX}{media_key}/{snapshot_id}.json"
 
 
-def snapshot_media_key(session_data: dict) -> str:
-    title_data = session_data.get("title_data") or {}
-    if session_data.get("media_key"):
-        return str(session_data["media_key"])
-    # Priority 1: Explicit MEDIA_ID (from import or previous session)
+def _extract_media_key(data: dict) -> str:
+    """Extract media key from session/payload data using priority chain.
+
+    Priority: media_key field > title_data.MEDIA_ID > XML mediaId > filename > blob name > "unknown"
+    """
+    title_data = data.get("title_data") or {}
+
+    # Direct media_key field
+    if data.get("media_key"):
+        return str(data["media_key"])
+
+    # MEDIA_ID from title data
     if title_data.get("MEDIA_ID"):
         return str(title_data["MEDIA_ID"])
 
+    # Try to extract from OnCue XML
     xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
-
     media_id_from_xml = None
-    xml_b64 = session_data.get("oncue_xml_base64")
+    xml_b64 = data.get("oncue_xml_base64")
     if xml_b64:
         try:
             xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
@@ -172,40 +179,25 @@ def snapshot_media_key(session_data: dict) -> str:
         except Exception:
             media_id_from_xml = None
 
-    # Fallback chain: XML mediaId -> Filename -> Media Blob -> Session ID
-    key = media_id_from_xml or xml_filename or session_data.get("media_blob_name") or "unknown"
+    # Fallback chain
+    key = media_id_from_xml or xml_filename or data.get("media_blob_name") or "unknown"
     return str(key)
+
+
+def snapshot_media_key(session_data: dict) -> str:
+    """Extract media key from session data. Wrapper for backwards compatibility."""
+    return _extract_media_key(session_data)
 
 
 def derive_media_key_from_payload(payload: dict) -> str:
-    title_data = payload.get("title_data") or {}
-    if payload.get("media_key"):
-        return str(payload["media_key"])
-    if title_data.get("MEDIA_ID"):
-        return str(title_data["MEDIA_ID"])
-
-    xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
-
-    media_id_from_xml = None
-    xml_b64 = payload.get("oncue_xml_base64")
-    if xml_b64:
-        try:
-            xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
-            root = ET.fromstring(xml_text)
-            deposition = root.find(".//deposition")
-            if deposition is not None:
-                media_id_from_xml = deposition.get("mediaId") or deposition.get("mediaID")
-        except Exception:
-            media_id_from_xml = None
-
-    key = media_id_from_xml or xml_filename or payload.get("media_blob_name") or "unknown"
-    return str(key)
+    """Extract media key from payload data. Wrapper for backwards compatibility."""
+    return _extract_media_key(payload)
 
 
 def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:
     serialized: List[dict] = []
     for turn in turns:
-        turn_dict = turn.dict()
+        turn_dict = turn.model_dump()
         if turn_dict.get("words"):
             sanitized_words = []
             for word in turn_dict["words"]:
@@ -305,7 +297,7 @@ def load_latest_snapshot_for_media(media_key: str, prefer_manual_save: bool = Tr
                     manual_saves.append((blob.time_created, data))
                 else:
                     auto_saves.append((blob.time_created, data))
-            except:
+            except Exception:
                 continue
 
         # Return newest manual save if exists and preferred
@@ -358,7 +350,7 @@ def list_all_transcripts(user_id: str = "anonymous") -> List[dict]:
                         "updated_at": blob.updated.isoformat() if blob.updated else None,
                         "line_count": len(data.get("lines", [])),
                     })
-                except:
+                except Exception:
                     continue
 
         return sorted(transcripts, key=lambda x: x["updated_at"] or "", reverse=True)
@@ -522,7 +514,7 @@ def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
                     "created_at": blob.time_created,
                     "is_manual_save": is_manual,
                 })
-            except:
+            except Exception:
                 continue
 
         # Sort by creation time (newest first)
@@ -3103,7 +3095,7 @@ async def resync_transcript(
 
         # 5. Call Rev AI
         # Convert turns to dicts for the aligner
-        turns_payload = [t.dict() for t in turns]
+        turns_payload = [t.model_dump() for t in turns]
 
         # We pass the local audio_path. The aligner prefers file upload.
         updated_turns_payload = await anyio.to_thread.run_sync(
@@ -3149,7 +3141,7 @@ async def resync_transcript(
         if audio_path and os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
-            except:
+            except OSError:
                 pass
 
 

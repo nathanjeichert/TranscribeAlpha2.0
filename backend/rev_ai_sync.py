@@ -65,17 +65,17 @@ class RevAIAligner:
                 req = urllib.request.Request(metadata_url, headers={"Metadata-Flavor": "Google"})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     self._service_account_email = response.read().decode('utf-8').strip()
-                logger.info(f"Got service account email from metadata: {self._service_account_email}")
+                logger.info("Got service account email from metadata: %s", self._service_account_email)
             except Exception as meta_err:
-                logger.warning(f"Could not get SA email from metadata: {meta_err}")
+                logger.warning("Could not get SA email from metadata: %s", meta_err)
                 # Fallback to credentials attribute
                 if hasattr(credentials, 'service_account_email'):
                     self._service_account_email = credentials.service_account_email
 
             self._signing_credentials = credentials
-            logger.info(f"Initialized signing credentials for: {self._service_account_email}")
+            logger.info("Initialized signing credentials for: %s", self._service_account_email)
         except Exception as e:
-            logger.warning(f"Could not initialize signing credentials: {e}")
+            logger.warning("Could not initialize signing credentials: %s", e)
 
     def _create_signed_url(self, blob_name: str, expiration_minutes: int = 15) -> str:
         """Create a signed URL for a Cloud Storage blob using IAM signBlob API."""
@@ -99,7 +99,7 @@ class RevAIAligner:
                 method="GET"
             )
 
-        logger.info(f"Generated signed URL for {blob_name} (expires in {expiration_minutes} min)")
+        logger.info("Generated signed URL for %s (expires in %d min)", blob_name, expiration_minutes)
         return url
 
     def _upload_text_to_gcs(self, text: str, filename: str) -> str:
@@ -109,7 +109,7 @@ class RevAIAligner:
         blob = bucket.blob(blob_name)
 
         blob.upload_from_string(text, content_type="text/plain")
-        logger.info(f"Uploaded transcript to GCS: {blob_name}")
+        logger.info("Uploaded transcript to GCS: %s", blob_name)
 
         return blob_name
 
@@ -121,7 +121,7 @@ class RevAIAligner:
         blob = bucket.blob(blob_name)
 
         blob.upload_from_filename(audio_path)
-        logger.info(f"Uploaded audio to GCS: {blob_name}")
+        logger.info("Uploaded audio to GCS: %s", blob_name)
 
         return blob_name
 
@@ -131,9 +131,9 @@ class RevAIAligner:
             bucket = self.storage_client.bucket(BUCKET_NAME)
             blob = bucket.blob(blob_name)
             blob.delete()
-            logger.info(f"Cleaned up GCS blob: {blob_name}")
+            logger.info("Cleaned up GCS blob: %s", blob_name)
         except Exception as e:
-            logger.warning(f"Failed to cleanup GCS blob {blob_name}: {e}")
+            logger.warning("Failed to cleanup GCS blob %s: %s", blob_name, e)
 
     def submit_alignment_job(self, audio_url: str, transcript_url: str, metadata: str = "") -> str:
         """Submit alignment job to Rev AI using URLs."""
@@ -151,17 +151,17 @@ class RevAIAligner:
         if metadata:
             payload["metadata"] = metadata
 
-        logger.info(f"Submitting alignment job to Rev AI: {url}")
-        logger.info(f"Audio URL: {audio_url[:100]}...")
-        logger.info(f"Transcript URL: {transcript_url[:100]}...")
+        logger.info("Submitting alignment job to Rev AI: %s", url)
+        logger.info("Audio URL: %s...", audio_url[:100])
+        logger.info("Transcript URL: %s...", transcript_url[:100])
 
         response = requests.post(url, headers=self.headers, json=payload)
 
-        logger.info(f"Rev AI response status: {response.status_code}")
-        logger.info(f"Rev AI response body: {response.text[:500] if response.text else 'empty'}")
+        logger.info("Rev AI response status: %s", response.status_code)
+        logger.info("Rev AI response body: %s", response.text[:500] if response.text else 'empty')
 
         if response.status_code not in (200, 201):
-            logger.error(f"Rev AI Job Submit Failed (HTTP {response.status_code}): {response.text}")
+            logger.error("Rev AI Job Submit Failed (HTTP %s): %s", response.status_code, response.text)
             raise Exception(f"Failed to submit alignment job (HTTP {response.status_code}): {response.text}")
 
         return response.json()['id']
@@ -191,7 +191,7 @@ class RevAIAligner:
             details = self.get_job_details(job_id)
             status = details.get("status")
 
-            logger.info(f"Rev AI job {job_id} status: {status}")
+            logger.info("Rev AI job %s status: %s", job_id, status)
 
             if status == "completed":
                 return self.get_alignment_result(job_id)
@@ -265,7 +265,7 @@ class RevAIAligner:
             logger.warning("No valid text found to align")
             return turns
 
-        logger.info(f"Prepared {len(full_plain_text_parts)} words for alignment")
+        logger.info("Prepared %d words for alignment", len(full_plain_text_parts))
 
         # Track blobs for cleanup
         temp_blobs = []
@@ -292,23 +292,23 @@ class RevAIAligner:
                 raise ValueError("Either audio_url or audio_file_path must be provided")
 
             # Submit job
-            logger.info(f"Submitting alignment job with {len(full_text_for_api)} chars of text")
+            logger.info("Submitting alignment job with %d chars of text", len(full_text_for_api))
             job_id = self.submit_alignment_job(final_audio_url, transcript_url)
-            logger.info(f"Alignment job submitted: {job_id}")
+            logger.info("Alignment job submitted: %s", job_id)
 
             # Wait for result
             result = self.wait_for_job(job_id)
 
             # Parse results - Rev AI returns monologues with elements
             # Log the raw structure to debug field names
-            logger.info(f"Rev AI result keys: {result.keys()}")
+            logger.info("Rev AI result keys: %s", result.keys())
             if result.get('monologues'):
                 first_mono = result['monologues'][0] if result['monologues'] else {}
-                logger.info(f"First monologue keys: {first_mono.keys() if first_mono else 'empty'}")
+                logger.info("First monologue keys: %s", first_mono.keys() if first_mono else 'empty')
                 if first_mono.get('elements'):
                     # Log first few elements to see full structure including timestamps
                     for i, elem in enumerate(first_mono['elements'][:3]):
-                        logger.info(f"Element {i}: {elem}")
+                        logger.info("Element %d: %s", i, elem)
 
             aligned_elements = []
             for monologue in result.get('monologues', []):
@@ -316,7 +316,7 @@ class RevAIAligner:
                     if element.get('type') == 'text':
                         aligned_elements.append(element)
 
-            logger.info(f"Rev AI returned {len(aligned_elements)} aligned words. We have {len(word_objects_to_update)} words.")
+            logger.info("Rev AI returned %d aligned words. We have %d words.", len(aligned_elements), len(word_objects_to_update))
 
             # Map timestamps back to our words
             min_len = min(len(aligned_elements), len(word_objects_to_update))
@@ -338,9 +338,9 @@ class RevAIAligner:
                     local_word['end'] = end_sec * 1000.0
                 local_word['confidence'] = conf
 
-            logger.info(f"Applied timestamps to {words_with_timestamps}/{min_len} words")
+            logger.info("Applied timestamps to %d/%d words", words_with_timestamps, min_len)
             if min_len > 0:
-                logger.info(f"Sample updated word: {word_objects_to_update[0]}")
+                logger.info("Sample updated word: %s", word_objects_to_update[0])
 
             # Update turn-level timestamps and interpolate missing values
             last_end = 0.0

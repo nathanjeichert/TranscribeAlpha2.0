@@ -617,6 +617,10 @@ SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars
 MAX_TOTAL_LINE_WIDTH = 64   # Maximum total characters per XML line for speaker lines
 MAX_CONTINUATION_WIDTH = 64 # Maximum total characters per XML line for continuation lines
 
+# OnCue XML constants
+ONCUE_FIRST_PGLN = 101      # First page-line number (page 1, line 1 = 101)
+DEFAULT_VIDEO_ID = "1"      # Default video ID for single-video transcripts
+
 
 def compute_transcript_line_entries(
     transcript_turns: List[TranscriptTurn],
@@ -629,7 +633,7 @@ def compute_transcript_line_entries(
     line_entries: List[dict] = []
     page = 1
     line_in_page = 1
-    last_pgln = 101
+    last_pgln = ONCUE_FIRST_PGLN
 
     for turn_idx, turn in enumerate(transcript_turns):
         start_sec = timestamp_to_seconds(turn.timestamp)
@@ -799,11 +803,11 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
     deposition = SubElement(root, "deposition", depo_attrs)
 
     video_attrs = {
-        "ID": "1",
+        "ID": DEFAULT_VIDEO_ID,
         "filename": metadata.get("FILE_NAME", "audio.mp3"),
         "startTime": "0",
         "stopTime": str(int(round(audio_duration))),
-        "firstPGLN": "101",
+        "firstPGLN": str(ONCUE_FIRST_PGLN),
         "lastPGLN": "0",  # placeholder
         "startTuned": "no",
         "stopTuned": "no",
@@ -826,7 +830,7 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
                 "page": str(entry["page"]),
                 "line": str(entry["line"]),
                 "pgLN": str(entry["pgln"]),
-                "videoID": "1",
+                "videoID": DEFAULT_VIDEO_ID,
                 "videoStart": f"{entry['start']:.2f}",
                 "videoStop": f"{entry['end']:.2f}",
                 "isEdited": "no",
