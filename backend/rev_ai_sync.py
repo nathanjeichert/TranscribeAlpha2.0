@@ -208,70 +208,43 @@ class RevAIAligner:
         """
         Align transcript with audio using Rev AI Forced Alignment API.
 
-        1. Prepare plain text from turns
-        2. Upload audio and transcript to GCS
-        3. Create signed URLs
-        4. Submit to Rev AI
-        5. Wait for result
-        6. Update turns with new timestamps
-        7. Cleanup temporary files
+        Simplified approach:
+        1. Build plain text from turns, tracking speaker ownership per word
+        2. Upload to GCS and submit to Rev AI
+        3. Use Rev AI's output directly (their word values + timestamps)
+        4. Rebuild turns from Rev AI's elements with speaker assignments
+        5. Return new turns with accurate word-level timestamps
         """
 
-        # Build plain text and word mapping
-        full_plain_text_parts = []
-        word_objects_to_update = []
-        processed_turns = []
+        # Step 1: Build plain text and track speaker boundaries
+        # We track which speaker owns each word by index
+        plain_text_words = []
+        speaker_per_word = []  # speaker_per_word[i] = speaker name for word i
 
         for turn in turns:
             turn_text = turn.get('text', '')
-            speaker = turn.get('speaker', 'Unknown')
+            speaker = turn.get('speaker', 'UNKNOWN')
 
-            raw_tokens = turn_text.split()
-            new_words = []
-
-            for token in raw_tokens:
-                # Strip punctuation for Rev AI (they want only words)
+            # Split text and strip punctuation for Rev AI
+            for token in turn_text.split():
                 clean_token = re.sub(r'[^\w]', '', token).lower()
-
                 if clean_token:
-                    full_plain_text_parts.append(clean_token)
+                    plain_text_words.append(clean_token)
+                    speaker_per_word.append(speaker)
 
-                    word_obj = {
-                        "text": token,
-                        "start": 0.0,
-                        "end": 0.0,
-                        "confidence": 1.0,
-                        "speaker": speaker
-                    }
-                    new_words.append(word_obj)
-                    word_objects_to_update.append(word_obj)
-                else:
-                    # Punctuation-only token
-                    word_obj = {
-                        "text": token,
-                        "start": 0.0,
-                        "end": 0.0,
-                        "confidence": 1.0,
-                        "speaker": speaker
-                    }
-                    new_words.append(word_obj)
-
-            turn['words'] = new_words
-            processed_turns.append(turn)
-
-        full_text_for_api = " ".join(full_plain_text_parts)
+        full_text_for_api = " ".join(plain_text_words)
 
         if not full_text_for_api.strip():
             logger.warning("No valid text found to align")
             return turns
 
-        logger.info("Prepared %d words for alignment", len(full_plain_text_parts))
+        logger.info("Prepared %d words for alignment from %d turns", len(plain_text_words), len(turns))
 
         # Track blobs for cleanup
         temp_blobs = []
 
         try:
-            # Upload transcript text to GCS
+            # Step 2: Upload transcript text to GCS
             transcript_blob_name = self._upload_text_to_gcs(
                 full_text_for_api,
                 f"transcript_{int(time.time())}.txt"
@@ -281,10 +254,8 @@ class RevAIAligner:
 
             # Handle audio - either use existing URL or upload file
             if audio_url:
-                # If we already have a URL, use it
                 final_audio_url = audio_url
             elif audio_file_path and os.path.exists(audio_file_path):
-                # Upload audio to GCS
                 audio_blob_name = self._upload_audio_to_gcs(audio_file_path)
                 temp_blobs.append(audio_blob_name)
                 final_audio_url = self._create_signed_url(audio_blob_name)
@@ -292,80 +263,103 @@ class RevAIAligner:
                 raise ValueError("Either audio_url or audio_file_path must be provided")
 
             # Submit job
-            logger.info("Submitting alignment job with %d chars of text", len(full_text_for_api))
+            logger.info("Submitting alignment job with %d words", len(plain_text_words))
             job_id = self.submit_alignment_job(final_audio_url, transcript_url)
             logger.info("Alignment job submitted: %s", job_id)
 
             # Wait for result
             result = self.wait_for_job(job_id)
 
-            # Parse results - Rev AI returns monologues with elements
-            # Log the raw structure to debug field names
-            logger.info("Rev AI result keys: %s", result.keys())
-            if result.get('monologues'):
-                first_mono = result['monologues'][0] if result['monologues'] else {}
-                logger.info("First monologue keys: %s", first_mono.keys() if first_mono else 'empty')
-                if first_mono.get('elements'):
-                    # Log first few elements to see full structure including timestamps
-                    for i, elem in enumerate(first_mono['elements'][:3]):
-                        logger.info("Element %d: %s", i, elem)
-
-            aligned_elements = []
+            # Step 3: Extract aligned words from Rev AI response
+            aligned_words = []
             for monologue in result.get('monologues', []):
                 for element in monologue.get('elements', []):
                     if element.get('type') == 'text':
-                        aligned_elements.append(element)
+                        aligned_words.append(element)
 
-            logger.info("Rev AI returned %d aligned words. We have %d words.", len(aligned_elements), len(word_objects_to_update))
+            logger.info("Rev AI returned %d aligned words (expected %d)", len(aligned_words), len(plain_text_words))
 
-            # Map timestamps back to our words
-            min_len = min(len(aligned_elements), len(word_objects_to_update))
+            # Step 4: Build new turns from Rev AI output with speaker assignments
+            # Group consecutive words by speaker
+            new_turns = []
+            current_speaker = None
+            current_words = []
+            current_text_parts = []
 
-            words_with_timestamps = 0
-            for i in range(min_len):
-                rev_word = aligned_elements[i]
-                local_word = word_objects_to_update[i]
+            for i, rev_word in enumerate(aligned_words):
+                # Get speaker for this word (fall back to last known if index out of range)
+                if i < len(speaker_per_word):
+                    word_speaker = speaker_per_word[i]
+                else:
+                    word_speaker = speaker_per_word[-1] if speaker_per_word else 'UNKNOWN'
 
-                # Rev AI returns timestamps in seconds, we store in milliseconds
-                start_sec = rev_word.get('ts')
-                end_sec = rev_word.get('end_ts')
-                conf = rev_word.get('confidence', 1.0)
+                # Get word data from Rev AI
+                word_text = rev_word.get('value', '')
+                ts = rev_word.get('ts')
+                end_ts = rev_word.get('end_ts')
+                confidence = rev_word.get('confidence', 1.0)
 
-                if start_sec is not None:
-                    local_word['start'] = start_sec * 1000.0
-                    words_with_timestamps += 1
-                if end_sec is not None:
-                    local_word['end'] = end_sec * 1000.0
-                local_word['confidence'] = conf
-
-            logger.info("Applied timestamps to %d/%d words", words_with_timestamps, min_len)
-            if min_len > 0:
-                logger.info("Sample updated word: %s", word_objects_to_update[0])
-
-            # Update turn-level timestamps and interpolate missing values
-            last_end = 0.0
-            for turn in processed_turns:
-                words = turn['words']
-                if not words:
-                    continue
-
-                # Set turn timestamp from first valid word
-                first_valid_word = next((w for w in words if w['start'] > 0), None)
-                if first_valid_word:
-                    start_sec = first_valid_word['start'] / 1000.0
-                    m = int(start_sec // 60)
-                    s = int(start_sec % 60)
-                    turn['timestamp'] = f"[{m:02d}:{s:02d}]"
-
-                # Interpolate timestamps for punctuation-only words
-                for w in words:
-                    if w['start'] == 0.0 and w['end'] == 0.0:
-                        w['start'] = last_end
-                        w['end'] = last_end
+                # Convert to milliseconds (Rev AI returns seconds)
+                # Use interpolation fallback if timestamp is missing
+                if ts is not None:
+                    word_start_ms = ts * 1000.0
+                else:
+                    # Fallback: use end of previous word or 0
+                    if current_words:
+                        word_start_ms = current_words[-1].get('end', 0.0)
+                    elif new_turns and new_turns[-1].get('words'):
+                        word_start_ms = new_turns[-1]['words'][-1].get('end', 0.0)
                     else:
-                        last_end = w['end']
+                        word_start_ms = 0.0
 
-            return processed_turns
+                if end_ts is not None:
+                    word_end_ms = end_ts * 1000.0
+                else:
+                    word_end_ms = word_start_ms  # Zero duration if unknown
+
+                word_obj = {
+                    "text": word_text,
+                    "start": word_start_ms,
+                    "end": word_end_ms,
+                    "confidence": confidence,
+                    "speaker": word_speaker,
+                }
+
+                # Check if speaker changed - flush current turn
+                if current_speaker is not None and word_speaker != current_speaker:
+                    # Save current turn
+                    if current_words:
+                        turn_start_sec = current_words[0]['start'] / 1000.0
+                        m, s = int(turn_start_sec // 60), int(turn_start_sec % 60)
+                        new_turns.append({
+                            "speaker": current_speaker,
+                            "text": " ".join(current_text_parts),
+                            "timestamp": f"[{m:02d}:{s:02d}]",
+                            "words": current_words,
+                        })
+                    current_words = []
+                    current_text_parts = []
+
+                current_speaker = word_speaker
+                current_words.append(word_obj)
+                current_text_parts.append(word_text)
+
+            # Flush final turn
+            if current_words:
+                turn_start_sec = current_words[0]['start'] / 1000.0
+                m, s = int(turn_start_sec // 60), int(turn_start_sec % 60)
+                new_turns.append({
+                    "speaker": current_speaker,
+                    "text": " ".join(current_text_parts),
+                    "timestamp": f"[{m:02d}:{s:02d}]",
+                    "words": current_words,
+                })
+
+            logger.info("Built %d new turns from Rev AI alignment", len(new_turns))
+            if new_turns and new_turns[0].get('words'):
+                logger.info("Sample first word: %s", new_turns[0]['words'][0])
+
+            return new_turns
 
         finally:
             # Cleanup temporary GCS blobs

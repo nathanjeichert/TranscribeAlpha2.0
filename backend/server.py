@@ -13,6 +13,24 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Tuple, Any
 import xml.etree.ElementTree as ET
+from pydantic import BaseModel
+
+
+# Pydantic models for Gemini structured output
+class GeminiWordTiming(BaseModel):
+    """Word-level timing from Gemini transcription"""
+    word: str
+    start: float
+    end: float
+
+
+class GeminiUtterance(BaseModel):
+    """A single speaker utterance from Gemini transcription"""
+    speaker: str
+    text: str
+    start: float
+    end: float
+    words: List[GeminiWordTiming]
 from google.cloud import storage
 from google.api_core import exceptions as gcs_exceptions
 
@@ -897,21 +915,20 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
 
         current_text_parts.append(text_val)
 
-        # Check if word-level timestamps were provided (e.g., from Gemini)
+        # Word-level timestamps: AssemblyAI and Gemini (with structured output) always provide these.
+        # OnCue XML imports only have line-level timing, so we interpolate for compatibility.
+        # The Re-sync feature can replace interpolated data with real aligned timestamps.
         line_words = line.get("words")
         if isinstance(line_words, list) and len(line_words) > 0:
-            # Use provided word-level timestamps
+            # Use real word-level timestamps from transcription engine
             for word_data in line_words:
                 if not isinstance(word_data, dict):
                     continue
                 word_text = str(word_data.get("text", "")).strip()
                 if not word_text:
                     continue
-                try:
-                    word_start = float(word_data.get("start", 0.0))
-                    word_end = float(word_data.get("end", word_start))
-                except (TypeError, ValueError):
-                    continue
+                word_start = float(word_data.get("start", 0.0))
+                word_end = float(word_data.get("end", word_start))
                 current_words.append(
                     WordTimestamp(
                         text=word_text,
@@ -922,21 +939,21 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
                     )
                 )
         else:
-            # Fallback: interpolate word timestamps from line timing
+            # Fallback for OnCue XML imports: interpolate word timestamps from line timing.
+            # These are estimates only - use Re-sync to get accurate timestamps.
             tokens = [tok for tok in text_val.split() if tok]
+            if not tokens:
+                continue
             line_duration = max(end_val - start_val, 0.01)
-            word_count = len(tokens) or 1
-            for word_idx, token in enumerate(tokens or [""]):
+            word_count = len(tokens)
+            for word_idx, token in enumerate(tokens):
                 token_start = start_val + (line_duration * word_idx / word_count)
-                if word_idx == word_count - 1:
-                    token_end = end_val
-                else:
-                    token_end = start_val + (line_duration * (word_idx + 1) / word_count)
+                token_end = start_val + (line_duration * (word_idx + 1) / word_count) if word_idx < word_count - 1 else end_val
                 current_words.append(
                     WordTimestamp(
-                        text=token or "",
+                        text=token,
                         start=token_start * 1000.0,
-                        end=max(token_end * 1000.0, token_start * 1000.0),
+                        end=token_end * 1000.0,
                         confidence=None,
                         speaker=speaker,
                     )
@@ -1185,18 +1202,25 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
 
     instructions = (
         "You are improving an OnCue-style legal transcript. "
-        "Use the provided XML transcript and the audio to correct wording, punctuation, casing, and speaker labels. "
-        "Return ONLY a JSON array of objects with fields: speaker (uppercase string), text (string), start (float seconds), end (float seconds). "
-        "Preserve line order, keep timestamps close to the originals but adjust slightly if needed, ensure start < end and entries are non-overlapping and chronological. "
-        "Do not include any extra keys or wrapping text."
+        "Use the provided XML transcript and the audio to correct ONLY: wording errors, punctuation, capitalization, and speaker labels. "
+        "CRITICAL: You MUST preserve the EXACT start and end timestamps from the original - do NOT modify timing values. "
+        "Keep the same number of lines and line order. Only fix text content and speaker names."
     )
 
-    def extract_json(text: str) -> str:
-        cleaned = (text or "").strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
-            cleaned = re.sub(r"```$", "", cleaned).strip()
-        return cleaned
+    # Schema for polish output - enforces structure, timestamps come from original
+    polish_schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "speaker": {"type": "string"},
+                "text": {"type": "string"},
+                "start": {"type": "number"},
+                "end": {"type": "number"},
+            },
+            "required": ["speaker", "text", "start", "end"],
+        },
+    }
 
     def wait_for_file_active(client: Any, file_name: str, *, timeout_seconds: int = 120) -> Any:
         deadline = time.time() + max(5, timeout_seconds)
@@ -1268,6 +1292,7 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
                 config=genai_types.GenerateContentConfig(
                     temperature=0.15,
                     response_mime_type="application/json",
+                    response_json_schema=polish_schema,
                     thinking_config=genai_types.ThinkingConfig(thinking_level="low"),
                 ),
             )
@@ -1301,7 +1326,7 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         raise HTTPException(status_code=502, detail="Gemini returned an empty response")
 
     try:
-        parsed = json.loads(extract_json(raw_text))
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         logger.error("Failed to parse Gemini JSON: %s", exc)
         raise HTTPException(status_code=502, detail="Gemini returned invalid JSON") from exc
@@ -1315,12 +1340,8 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
             continue
         speaker = str(item.get("speaker", "")).strip() or f"SPEAKER {idx + 1}"
         text = str(item.get("text", "")).strip()
-        try:
-            start_val = float(item.get("start", 0.0))
-            end_val = float(item.get("end", start_val))
-        except (TypeError, ValueError):
-            start_val = 0.0
-            end_val = start_val
+        start_val = float(item.get("start", 0.0))
+        end_val = float(item.get("end", start_val))
         normalized.append(
             {
                 "id": item.get("id") or f"gem-{idx}",
@@ -1335,6 +1356,7 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     if not normalized:
         raise HTTPException(status_code=502, detail="Gemini did not return any transcript lines")
 
+    logger.info("Gemini polish completed with %d lines", len(normalized))
     return normalized
 
 
@@ -1394,26 +1416,12 @@ def transcribe_with_gemini(
 
     instructions = (
         "You are a professional legal transcriptionist. "
-        "Transcribe the provided audio file into a legal transcript format with WORD-LEVEL timestamps. "
+        "Transcribe the provided audio file into a legal transcript format with precise WORD-LEVEL timestamps. "
         f"{speaker_instructions}"
-        "Return ONLY a JSON array of objects. Each object represents one speaker turn with these fields:\n"
-        "- speaker: uppercase string (e.g., 'SPEAKER A')\n"
-        "- text: the full utterance text as a string\n"
-        "- start: float, start time in seconds for the utterance\n"
-        "- end: float, end time in seconds for the utterance\n"
-        "- words: array of word objects, each with {word: string, start: float seconds, end: float seconds}\n\n"
-        "The 'words' array must contain timing for EVERY word in the utterance text. "
+        "Each utterance must include the 'words' array with timing for EVERY word in the text. "
         "Ensure proper punctuation and capitalization. "
-        "All timestamps should be accurate, with start < end, entries non-overlapping and chronological. "
-        "Do not include any extra keys or wrapping text."
+        "All timestamps should be accurate in seconds, with start < end, entries non-overlapping and chronological."
     )
-
-    def extract_json(text: str) -> str:
-        cleaned = (text or "").strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
-            cleaned = re.sub(r"```$", "", cleaned).strip()
-        return cleaned
 
     def wait_for_file_active(client: Any, file_name: str, *, timeout_seconds: int = 120) -> Any:
         deadline = time.time() + max(5, timeout_seconds)
@@ -1468,6 +1476,34 @@ def transcribe_with_gemini(
                 detail=f"Gemini file processing failed ({type(exc).__name__}: {exc})",
             ) from exc
 
+        # Build the JSON schema for structured output
+        # Using the Pydantic model's schema to enforce word-level timestamps
+        utterance_schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "speaker": {"type": "string"},
+                    "text": {"type": "string"},
+                    "start": {"type": "number"},
+                    "end": {"type": "number"},
+                    "words": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "word": {"type": "string"},
+                                "start": {"type": "number"},
+                                "end": {"type": "number"},
+                            },
+                            "required": ["word", "start", "end"],
+                        },
+                    },
+                },
+                "required": ["speaker", "text", "start", "end", "words"],
+            },
+        }
+
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -1484,6 +1520,7 @@ def transcribe_with_gemini(
                 config=genai_types.GenerateContentConfig(
                     temperature=0.15,
                     response_mime_type="application/json",
+                    response_json_schema=utterance_schema,
                     thinking_config=genai_types.ThinkingConfig(thinking_level="low"),
                 ),
             )
@@ -1517,13 +1554,13 @@ def transcribe_with_gemini(
         raise HTTPException(status_code=502, detail="Gemini returned an empty response")
 
     try:
-        parsed = json.loads(extract_json(raw_text))
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         logger.error("Failed to parse Gemini JSON: %s", exc)
         raise HTTPException(status_code=502, detail="Gemini returned invalid JSON") from exc
 
     if not isinstance(parsed, list):
-        raise HTTPException(status_code=502, detail="Gemini response must be a list of line objects")
+        raise HTTPException(status_code=502, detail="Gemini response must be a list of utterance objects")
 
     # Map speaker names if provided
     speaker_mapping = {}
@@ -1535,7 +1572,9 @@ def transcribe_with_gemini(
     normalized = []
     for idx, item in enumerate(parsed):
         if not isinstance(item, dict):
+            logger.warning("Skipping non-dict item at index %d", idx)
             continue
+
         speaker = str(item.get("speaker", "")).strip().upper() or f"SPEAKER {chr(ord('A') + idx)}"
 
         # Apply speaker mapping if available
@@ -1543,35 +1582,27 @@ def transcribe_with_gemini(
             speaker = speaker_mapping[speaker]
 
         text = str(item.get("text", "")).strip()
-        try:
-            start_val = float(item.get("start", 0.0))
-            end_val = float(item.get("end", start_val))
-        except (TypeError, ValueError):
-            start_val = 0.0
-            end_val = start_val
+        start_val = float(item.get("start", 0.0))
+        end_val = float(item.get("end", start_val))
 
-        # Extract word-level timestamps if provided by Gemini
-        words_data = None
-        raw_words = item.get("words")
-        if isinstance(raw_words, list) and len(raw_words) > 0:
-            words_data = []
-            for word_item in raw_words:
-                if not isinstance(word_item, dict):
-                    continue
-                word_text = str(word_item.get("word", word_item.get("text", ""))).strip()
-                if not word_text:
-                    continue
-                try:
-                    word_start = float(word_item.get("start", 0.0))
-                    word_end = float(word_item.get("end", word_start))
-                except (TypeError, ValueError):
-                    continue
-                words_data.append({
-                    "text": word_text,
-                    "start": max(word_start, 0.0),
-                    "end": max(word_end, word_start),
-                    "speaker": speaker,
-                })
+        # Extract word-level timestamps (guaranteed by schema)
+        raw_words = item.get("words", [])
+        if not raw_words:
+            logger.warning("Utterance at index %d missing words array", idx)
+
+        words_data = []
+        for word_item in raw_words:
+            word_text = str(word_item.get("word", "")).strip()
+            if not word_text:
+                continue
+            word_start = float(word_item.get("start", 0.0))
+            word_end = float(word_item.get("end", word_start))
+            words_data.append({
+                "text": word_text,
+                "start": max(word_start, 0.0),
+                "end": max(word_end, word_start),
+                "speaker": speaker,
+            })
 
         line_data = {
             "id": item.get("id") or f"gem-{idx}",
@@ -1580,18 +1611,15 @@ def transcribe_with_gemini(
             "start": max(start_val, 0.0),
             "end": max(end_val, start_val),
             "is_continuation": False,
+            "words": words_data,
         }
-
-        # Include words if we got valid word-level data
-        if words_data and len(words_data) > 0:
-            line_data["words"] = words_data
 
         normalized.append(line_data)
 
     if not normalized:
         raise HTTPException(status_code=502, detail="Gemini did not return any transcript lines")
 
-    logger.info(f"Gemini transcription completed with {len(normalized)} lines")
+    logger.info("Gemini transcription completed with %d utterances", len(normalized))
     return normalized
 
 
@@ -3091,7 +3119,10 @@ async def resync_transcript(
         if not lines:
             raise HTTPException(status_code=400, detail="No transcript lines to align")
 
-        turns = construct_turns_from_lines(lines)
+        # Normalize lines before constructing turns (consistent with other endpoints)
+        audio_duration = session_data.get("audio_duration", 0.0)
+        normalized_lines, _ = normalize_line_payloads(lines, audio_duration)
+        turns = construct_turns_from_lines(normalized_lines)
 
         # 5. Call Rev AI
         # Convert turns to dicts for the aligner
