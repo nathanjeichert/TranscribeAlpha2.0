@@ -299,7 +299,7 @@ def calculate_line_timestamps_from_words(
     Calculate accurate start/stop timestamps for a wrapped line using word-level data.
 
     This function matches words in the text line to their precise timestamps from
-    AssemblyAI's word-level data, eliminating the need for linear interpolation.
+    word-level data, eliminating the need for linear interpolation.
 
     Args:
         text_line: The text content of the line (without speaker prefix)
@@ -313,6 +313,7 @@ def calculate_line_timestamps_from_words(
         - words_consumed: Number of words from all_words that were used
     """
     if not all_words or not text_line.strip():
+        logger.debug("calculate_line_timestamps: empty words or text_line")
         return (0.0, 0.0, 0)
 
     line_text_clean = text_line.strip().lower()
@@ -340,7 +341,8 @@ def calculate_line_timestamps_from_words(
             word_search_idx += 1
 
     if not matched_word_indices:
-        logger.warning("No word matches found for line: '%s...'", text_line[:50])
+        logger.warning("No word matches found for line: '%s...' (first word in array: '%s')",
+                      text_line[:50], all_words[start_offset].text if start_offset < len(all_words) else 'N/A')
         if start_offset < len(all_words):
             word = all_words[start_offset]
             return (word.start / 1000.0, word.end / 1000.0, 1)
@@ -352,6 +354,9 @@ def calculate_line_timestamps_from_words(
     start_seconds = first_word.start / 1000.0
     stop_seconds = last_word.end / 1000.0
     words_consumed = len(matched_word_indices)
+
+    logger.debug("Line timestamps: %.2f-%.2f (%d words matched) for '%s...'",
+                start_seconds, stop_seconds, words_consumed, text_line[:30])
 
     return (start_seconds, stop_seconds, words_consumed)
 
@@ -661,6 +666,8 @@ def compute_transcript_line_entries(
         total_lines = 1 + len(continuation_wrapped)
 
         if turn.words:
+            logger.info("Turn %d has %d words, first word: %s (start=%.1f ms)",
+                       turn_idx, len(turn.words), turn.words[0].text, turn.words[0].start)
             word_offset = 0
             use_word_data = True
 
@@ -670,8 +677,11 @@ def compute_transcript_line_entries(
                 word_offset,
             )
             if words_used == 0:
+                logger.warning("Turn %d: word matching failed, falling back to interpolation", turn_idx)
                 use_word_data = False
             else:
+                logger.info("Turn %d first line: %.2f-%.2f seconds (%d words)",
+                           turn_idx, first_line_start, first_line_stop, words_used)
                 word_offset += words_used
 
             continuation_timings: List[Tuple[float, float]] = []
@@ -701,6 +711,7 @@ def compute_transcript_line_entries(
                         line_stop = stop_sec
                     continuation_timings.append((line_start, line_stop))
         else:
+            logger.warning("Turn %d has NO word data, using interpolation", turn_idx)
             turn_duration = stop_sec - start_sec
             time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
 
