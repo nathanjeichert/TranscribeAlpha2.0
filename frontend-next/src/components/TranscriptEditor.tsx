@@ -432,13 +432,27 @@ export default function TranscriptEditor({
 
   const playLine = useCallback(
     (line: EditorLine) => {
-      if (!effectiveMediaUrl) return
+      console.log('[PLAY] playLine called:', {
+        lineId: line.id,
+        lineStart: line.start,
+        lineEnd: line.end,
+        effectiveMediaUrl: effectiveMediaUrl?.substring(0, 50),
+        isVideo,
+      })
+      if (!effectiveMediaUrl) {
+        console.log('[PLAY] No effectiveMediaUrl, returning')
+        return
+      }
       setSelectedLineId(line.id)
       const player = isVideo ? videoRef.current : audioRef.current
-      if (!player) return
+      if (!player) {
+        console.log('[PLAY] No player ref, returning')
+        return
+      }
+      console.log('[PLAY] Seeking to', line.start, 'seconds')
       player.currentTime = line.start
-      player.play().catch(() => {
-        /* ignored */
+      player.play().catch((err) => {
+        console.log('[PLAY] Play failed:', err)
       })
     },
     [effectiveMediaUrl, isVideo],
