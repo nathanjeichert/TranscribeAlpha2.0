@@ -897,7 +897,10 @@ export default function TranscriptEditor({
       // Use the response data directly instead of refetching
       // (GCS write propagation can cause fetchTranscript to get stale data)
       if (data.lines) {
+        // Save current state to history so user can undo the resync
+        pushHistory(lines)
         setLines(data.lines)
+        setIsDirty(true)
         console.log('[RESYNC] Applied', data.lines.length, 'lines directly from response')
       }
 
@@ -919,17 +922,12 @@ export default function TranscriptEditor({
         })
       }
 
-      // Clear edit history since timestamps changed
-      setHistory([])
-      setFuture([])
-      setIsDirty(false)
-
     } catch (err: any) {
       setResyncError(err.message || 'Re-sync failed')
     } finally {
       setIsResyncing(false)
     }
-  }, [activeMediaKey, sessionMeta, onSessionChange])
+  }, [activeMediaKey, sessionMeta, onSessionChange, pushHistory, lines])
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
