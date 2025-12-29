@@ -882,7 +882,7 @@ export default function TranscriptEditor({
       }
 
       const data = await response.json()
-      // data contains { status, lines, oncue_xml_base64 }
+      // data contains { status, lines, docx_base64, oncue_xml_base64 }
       console.log('[RESYNC] Response received:', {
         status: data.status,
         lineCount: data.lines?.length,
@@ -894,19 +894,42 @@ export default function TranscriptEditor({
         } : null,
       })
 
-      // We need to update local state fully.
-      // Ideally we reload the full session to be safe, or patch it.
-      // Let's reload the session to ensure consistency.
-      console.log('[RESYNC] Calling fetchTranscript to reload session...')
-      await fetchTranscript(activeMediaKey)
-      console.log('[RESYNC] fetchTranscript completed')
+      // Use the response data directly instead of refetching
+      // (GCS write propagation can cause fetchTranscript to get stale data)
+      if (data.lines) {
+        setLines(data.lines)
+        console.log('[RESYNC] Applied', data.lines.length, 'lines directly from response')
+      }
+
+      // Update session meta with new artifacts
+      setSessionMeta((prev) => prev ? {
+        ...prev,
+        lines: data.lines ?? prev.lines,
+        docx_base64: data.docx_base64 ?? prev.docx_base64,
+        oncue_xml_base64: data.oncue_xml_base64 ?? prev.oncue_xml_base64,
+      } : prev)
+
+      // Notify parent of the update
+      if (sessionMeta) {
+        onSessionChange({
+          ...sessionMeta,
+          lines: data.lines ?? sessionMeta.lines,
+          docx_base64: data.docx_base64 ?? sessionMeta.docx_base64,
+          oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta.oncue_xml_base64,
+        })
+      }
+
+      // Clear edit history since timestamps changed
+      setHistory([])
+      setFuture([])
+      setIsDirty(false)
 
     } catch (err: any) {
       setResyncError(err.message || 'Re-sync failed')
     } finally {
       setIsResyncing(false)
     }
-  }, [activeMediaKey, fetchTranscript])
+  }, [activeMediaKey, sessionMeta, onSessionChange])
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
