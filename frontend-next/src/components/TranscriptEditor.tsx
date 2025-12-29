@@ -259,8 +259,18 @@ export default function TranscriptEditor({
         }
 
         const data: EditorSessionResponse = await response.json()
+        console.log('[FETCH] Received session data:', {
+          lineCount: data.lines?.length,
+          firstLine: data.lines?.[0] ? {
+            id: data.lines[0].id,
+            text: data.lines[0].text?.substring(0, 30),
+            start: data.lines[0].start,
+            end: data.lines[0].end,
+          } : null,
+        })
         setSessionMeta(data)
         setLines(data.lines || [])
+        console.log('[FETCH] Called setLines with', data.lines?.length, 'lines')
         setActiveMediaKey(targetKey)
         setHistory([])
         setFuture([])
@@ -869,11 +879,23 @@ export default function TranscriptEditor({
 
       const data = await response.json()
       // data contains { status, lines, oncue_xml_base64 }
+      console.log('[RESYNC] Response received:', {
+        status: data.status,
+        lineCount: data.lines?.length,
+        firstLine: data.lines?.[0] ? {
+          id: data.lines[0].id,
+          text: data.lines[0].text?.substring(0, 30),
+          start: data.lines[0].start,
+          end: data.lines[0].end,
+        } : null,
+      })
 
-      // We need to update local state fully. 
+      // We need to update local state fully.
       // Ideally we reload the full session to be safe, or patch it.
       // Let's reload the session to ensure consistency.
+      console.log('[RESYNC] Calling fetchTranscript to reload session...')
       await fetchTranscript(activeMediaKey)
+      console.log('[RESYNC] fetchTranscript completed')
 
     } catch (err: any) {
       setResyncError(err.message || 'Re-sync failed')
