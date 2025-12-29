@@ -304,8 +304,12 @@ export default function TranscriptEditor({
 
   useEffect(() => {
     if (!initialData) return
-    console.log('[SYNC EFFECT] initialData.media_key:', initialData.media_key)
-    console.log('[SYNC EFFECT] initialMediaKey prop:', initialMediaKey)
+    console.log('[SYNC EFFECT] Running - initialData.media_key:', initialData.media_key)
+    console.log('[SYNC EFFECT] initialData first line:', initialData.lines?.[0] ? {
+      id: initialData.lines[0].id,
+      start: initialData.lines[0].start,
+      end: initialData.lines[0].end,
+    } : null)
     setSessionMeta(initialData)
     setLines(initialData.lines ?? [])
     // Only update activeMediaKey from props, not from internal state (to avoid circular updates)
