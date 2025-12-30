@@ -463,17 +463,38 @@ export default function TranscriptEditor({
       const seekAndPlay = () => {
         console.log('[PLAY] Seeking to', line.start, 'seconds (readyState:', player.readyState, ', duration:', player.duration, ')')
         console.log('[PLAY] currentTime BEFORE:', player.currentTime)
+
+        // Log seekable ranges to understand what browser thinks it can seek to
+        const seekable = player.seekable
+        console.log('[PLAY] seekable.length:', seekable.length)
+        for (let i = 0; i < seekable.length; i++) {
+          console.log('[PLAY] seekable range', i, ':', seekable.start(i), '-', seekable.end(i))
+        }
+
+        // Try pausing first, then seeking, then playing
+        player.pause()
+
+        const handleSeeked = () => {
+          player.removeEventListener('seeked', handleSeeked)
+          console.log('[PLAY] Seeked event fired, currentTime:', player.currentTime)
+          player.play().catch((err) => {
+            console.log('[PLAY] Play failed:', err)
+          })
+        }
+
+        player.addEventListener('seeked', handleSeeked)
         player.currentTime = line.start
         console.log('[PLAY] currentTime AFTER setting:', player.currentTime)
 
-        // Check if seek actually happened after a brief delay
+        // Fallback if seeked event never fires (seeking failed)
         setTimeout(() => {
-          console.log('[PLAY] currentTime after 100ms:', player.currentTime)
-        }, 100)
-
-        player.play().catch((err) => {
-          console.log('[PLAY] Play failed:', err)
-        })
+          console.log('[PLAY] currentTime after 500ms:', player.currentTime)
+          if (Math.abs(player.currentTime - line.start) > 1) {
+            console.log('[PLAY] Seek may have failed, forcing play anyway')
+            player.removeEventListener('seeked', handleSeeked)
+            player.play().catch(() => {})
+          }
+        }, 500)
       }
 
       // Check if media metadata is loaded (readyState >= 1 means HAVE_METADATA)
