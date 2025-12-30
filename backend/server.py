@@ -2978,7 +2978,10 @@ async def serve_media_file(file_id: str, request: Request):
         if not blob.exists():
             raise HTTPException(status_code=404, detail="Media file not found")
 
+        # Reload blob to get actual size from GCS (blob.size is None until reload)
+        blob.reload()
         file_size = metadata.get("size") or blob.size or 0
+        logger.info(f"Serving media {file_id}: size={file_size}, content_type={metadata.get('content_type')}")
         content_type = metadata.get("content_type", "application/octet-stream")
 
         range_header = request.headers.get("range")
