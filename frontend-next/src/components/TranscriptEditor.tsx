@@ -164,6 +164,8 @@ export default function TranscriptEditor({
   const editInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const activeLineMarker = useRef<string | null>(null)
+  // Skip resetting isDirty/history in SYNC EFFECT when we've just done a local update (e.g., resync)
+  const skipSyncEffectReset = useRef(false)
 
   const [importXmlFile, setImportXmlFile] = useState<File | null>(null)
   const [importMediaFile, setImportMediaFile] = useState<File | null>(null)
@@ -318,9 +320,17 @@ export default function TranscriptEditor({
     if (resolvedKey) {
       setActiveMediaKey(resolvedKey)
     }
-    setHistory([])
-    setFuture([])
-    setIsDirty(false)
+
+    // Skip resetting edit state if we just did a local update (e.g., resync)
+    if (skipSyncEffectReset.current) {
+      console.log('[SYNC EFFECT] Skipping history/isDirty reset (local update)')
+      skipSyncEffectReset.current = false
+    } else {
+      setHistory([])
+      setFuture([])
+      setIsDirty(false)
+    }
+
     setActiveLineId(null)
     setSelectedLineId(null)
     setEditingField(null)
@@ -449,11 +459,31 @@ export default function TranscriptEditor({
         console.log('[PLAY] No player ref, returning')
         return
       }
-      console.log('[PLAY] Seeking to', line.start, 'seconds')
-      player.currentTime = line.start
-      player.play().catch((err) => {
-        console.log('[PLAY] Play failed:', err)
-      })
+
+      const seekAndPlay = () => {
+        console.log('[PLAY] Seeking to', line.start, 'seconds (readyState:', player.readyState, ')')
+        player.currentTime = line.start
+        player.play().catch((err) => {
+          console.log('[PLAY] Play failed:', err)
+        })
+      }
+
+      // Check if media metadata is loaded (readyState >= 1 means HAVE_METADATA)
+      if (player.readyState >= 1) {
+        seekAndPlay()
+      } else {
+        // Wait for metadata to load before seeking
+        console.log('[PLAY] Waiting for metadata to load...')
+        const handleLoadedMetadata = () => {
+          player.removeEventListener('loadedmetadata', handleLoadedMetadata)
+          seekAndPlay()
+        }
+        player.addEventListener('loadedmetadata', handleLoadedMetadata)
+        // Also trigger a load if the player hasn't started loading
+        if (player.readyState === 0) {
+          player.load()
+        }
+      }
     },
     [effectiveMediaUrl, isVideo],
   )
@@ -926,8 +956,9 @@ export default function TranscriptEditor({
         oncue_xml_base64: data.oncue_xml_base64 ?? prev.oncue_xml_base64,
       } : prev)
 
-      // Notify parent of the update
+      // Notify parent of the update (skip SYNC EFFECT reset since we already set isDirty/history)
       if (sessionMeta) {
+        skipSyncEffectReset.current = true
         onSessionChange({
           ...sessionMeta,
           lines: data.lines ?? sessionMeta.lines,
