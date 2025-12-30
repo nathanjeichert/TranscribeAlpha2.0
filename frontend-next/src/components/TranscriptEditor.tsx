@@ -461,8 +461,16 @@ export default function TranscriptEditor({
       }
 
       const seekAndPlay = () => {
-        console.log('[PLAY] Seeking to', line.start, 'seconds (readyState:', player.readyState, ')')
+        console.log('[PLAY] Seeking to', line.start, 'seconds (readyState:', player.readyState, ', duration:', player.duration, ')')
+        console.log('[PLAY] currentTime BEFORE:', player.currentTime)
         player.currentTime = line.start
+        console.log('[PLAY] currentTime AFTER setting:', player.currentTime)
+
+        // Check if seek actually happened after a brief delay
+        setTimeout(() => {
+          console.log('[PLAY] currentTime after 100ms:', player.currentTime)
+        }, 100)
+
         player.play().catch((err) => {
           console.log('[PLAY] Play failed:', err)
         })
