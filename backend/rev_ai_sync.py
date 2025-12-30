@@ -1,3 +1,4 @@
+import copy
 import os
 import time
 import logging
@@ -208,29 +209,29 @@ class RevAIAligner:
         """
         Align transcript with audio using Rev AI Forced Alignment API.
 
-        Simplified approach:
-        1. Build plain text from turns, tracking speaker ownership per word
-        2. Upload to GCS and submit to Rev AI
-        3. Use Rev AI's output directly (their word values + timestamps)
-        4. Rebuild turns from Rev AI's elements with speaker assignments
-        5. Return new turns with accurate word-level timestamps
+        Timestamp-only approach (preserves original text):
+        1. Build plain text from turns for Rev AI alignment
+        2. Also build a flat list of original words (with punctuation intact)
+        3. Submit to Rev AI and get word-level timestamps
+        4. Map Rev AI timestamps back to original words by position
+        5. Update original turns with new timestamps, keeping original text
         """
 
-        # Step 1: Build plain text and track speaker boundaries
-        # We track which speaker owns each word by index
-        plain_text_words = []
-        speaker_per_word = []  # speaker_per_word[i] = speaker name for word i
+        # Step 1: Build plain text for Rev AI AND track original words
+        plain_text_words = []  # Cleaned words for Rev AI
+        original_words = []    # Original words with punctuation, indexed globally
+        word_to_turn_idx = []  # Maps global word index to (turn_index, word_index_in_turn)
 
-        for turn in turns:
+        for turn_idx, turn in enumerate(turns):
             turn_text = turn.get('text', '')
-            speaker = turn.get('speaker', 'UNKNOWN')
 
-            # Split text and strip punctuation for Rev AI
-            for token in turn_text.split():
+            for word_idx, token in enumerate(turn_text.split()):
+                # Clean version for Rev AI
                 clean_token = re.sub(r'[^\w]', '', token).lower()
                 if clean_token:
                     plain_text_words.append(clean_token)
-                    speaker_per_word.append(speaker)
+                    original_words.append(token)  # Keep original with punctuation
+                    word_to_turn_idx.append((turn_idx, word_idx))
 
         full_text_for_api = " ".join(plain_text_words)
 
@@ -279,87 +280,67 @@ class RevAIAligner:
 
             logger.info("Rev AI returned %d aligned words (expected %d)", len(aligned_words), len(plain_text_words))
 
-            # Step 4: Build new turns from Rev AI output with speaker assignments
-            # Group consecutive words by speaker
-            new_turns = []
-            current_speaker = None
-            current_words = []
-            current_text_parts = []
-
-            for i, rev_word in enumerate(aligned_words):
-                # Get speaker for this word (fall back to last known if index out of range)
-                if i < len(speaker_per_word):
-                    word_speaker = speaker_per_word[i]
-                else:
-                    word_speaker = speaker_per_word[-1] if speaker_per_word else 'UNKNOWN'
-
-                # Get word data from Rev AI
-                word_text = rev_word.get('value', '')
+            # Step 4: Build timestamp list from Rev AI (convert to milliseconds)
+            timestamps = []
+            last_end_ms = 0.0
+            for rev_word in aligned_words:
                 ts = rev_word.get('ts')
                 end_ts = rev_word.get('end_ts')
                 confidence = rev_word.get('confidence', 1.0)
 
-                # Convert to milliseconds (Rev AI returns seconds)
-                # Use interpolation fallback if timestamp is missing
                 if ts is not None:
-                    word_start_ms = ts * 1000.0
+                    start_ms = ts * 1000.0
                 else:
-                    # Fallback: use end of previous word or 0
-                    if current_words:
-                        word_start_ms = current_words[-1].get('end', 0.0)
-                    elif new_turns and new_turns[-1].get('words'):
-                        word_start_ms = new_turns[-1]['words'][-1].get('end', 0.0)
-                    else:
-                        word_start_ms = 0.0
+                    start_ms = last_end_ms  # Fallback to end of previous word
 
                 if end_ts is not None:
-                    word_end_ms = end_ts * 1000.0
+                    end_ms = end_ts * 1000.0
                 else:
-                    word_end_ms = word_start_ms  # Zero duration if unknown
+                    end_ms = start_ms  # Zero duration if unknown
 
-                word_obj = {
-                    "text": word_text,
-                    "start": word_start_ms,
-                    "end": word_end_ms,
-                    "confidence": confidence,
-                    "speaker": word_speaker,
-                }
-
-                # Check if speaker changed - flush current turn
-                if current_speaker is not None and word_speaker != current_speaker:
-                    # Save current turn
-                    if current_words:
-                        turn_start_sec = current_words[0]['start'] / 1000.0
-                        m, s = int(turn_start_sec // 60), int(turn_start_sec % 60)
-                        new_turns.append({
-                            "speaker": current_speaker,
-                            "text": " ".join(current_text_parts),
-                            "timestamp": f"[{m:02d}:{s:02d}]",
-                            "words": current_words,
-                        })
-                    current_words = []
-                    current_text_parts = []
-
-                current_speaker = word_speaker
-                current_words.append(word_obj)
-                current_text_parts.append(word_text)
-
-            # Flush final turn
-            if current_words:
-                turn_start_sec = current_words[0]['start'] / 1000.0
-                m, s = int(turn_start_sec // 60), int(turn_start_sec % 60)
-                new_turns.append({
-                    "speaker": current_speaker,
-                    "text": " ".join(current_text_parts),
-                    "timestamp": f"[{m:02d}:{s:02d}]",
-                    "words": current_words,
+                timestamps.append({
+                    'start': start_ms,
+                    'end': end_ms,
+                    'confidence': confidence,
                 })
+                last_end_ms = end_ms
 
-            logger.info("Built %d new turns from Rev AI alignment", len(new_turns))
-            if new_turns and new_turns[0].get('words'):
-                logger.info("Sample first word: %s", new_turns[0]['words'][0])
+            # Step 5: Update original turns with new timestamps
+            # Deep copy turns to avoid mutating input
+            updated_turns = copy.deepcopy(turns)
 
-            return new_turns
+            # Build new word lists for each turn with updated timestamps
+            turn_word_data = {i: [] for i in range(len(turns))}
+
+            for global_idx, (turn_idx, _) in enumerate(word_to_turn_idx):
+                if global_idx < len(timestamps):
+                    ts_data = timestamps[global_idx]
+                    original_word = original_words[global_idx]
+                    turn_word_data[turn_idx].append({
+                        'text': original_word,
+                        'start': ts_data['start'],
+                        'end': ts_data['end'],
+                        'confidence': ts_data['confidence'],
+                        'speaker': turns[turn_idx].get('speaker', 'UNKNOWN'),
+                    })
+
+            # Update each turn with new word data and recalculate timestamp
+            for turn_idx, turn in enumerate(updated_turns):
+                words = turn_word_data.get(turn_idx, [])
+                turn['words'] = words
+
+                # Update turn timestamp based on first word
+                if words:
+                    turn_start_sec = words[0]['start'] / 1000.0
+                    m, s = int(turn_start_sec // 60), int(turn_start_sec % 60)
+                    turn['timestamp'] = f"[{m:02d}:{s:02d}]"
+
+            logger.info("Updated %d turns with Rev AI timestamps (text preserved)", len(updated_turns))
+            if updated_turns and updated_turns[0].get('words'):
+                first_word = updated_turns[0]['words'][0]
+                logger.info("Sample first word: text='%s', start=%.1f ms", first_word.get('text'), first_word.get('start'))
+
+            return updated_turns
 
         finally:
             # Cleanup temporary GCS blobs
