@@ -140,9 +140,6 @@ ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [
 BUCKET_NAME = "transcribealpha-uploads-1750110926"
 storage_client = storage.Client()
 
-# Cache for transcription results
-temp_transcript_cache: Dict[str, dict] = {}
-
 # Default transcript layout configuration
 DEFAULT_LINES_PER_PAGE = 25
 
@@ -1623,21 +1620,6 @@ def transcribe_with_gemini(
     return normalized
 
 
-def create_cache_key(
-    file_bytes: bytes,
-    speaker_list: Optional[List[str]],
-    model: str = "assemblyai",
-) -> str:
-    """Create a cache key based on file content, transcription settings, and model"""
-    # Create hash of file content
-    file_hash = hashlib.md5(file_bytes).hexdigest()
-
-    # Create hash of settings (including model)
-    settings_str = f"{speaker_list or []}_{model}"
-    settings_hash = hashlib.md5(settings_str.encode()).hexdigest()
-
-    return f"{file_hash}_{settings_hash}"
-
 def cleanup_old_files():
     """Clean up files older than 1 day from Cloud Storage to prevent billing issues"""
     try:
@@ -2088,109 +2070,129 @@ async def transcribe(
         media_blob_name = None
         media_content_type = None
 
-    # Check cache first (include model in cache key)
-    cache_key = create_cache_key(file_bytes, speaker_list, transcription_model)
+    # Generate transcription based on selected model
+    if transcription_model == "assemblyai":
+        logger.info("Starting AssemblyAI transcription process...")
+        try:
+            turns, docx_bytes, duration_seconds = process_transcription(
+                file_bytes,
+                file.filename,
+                speaker_list,
+                title_data,
+            )
+            logger.info(f"AssemblyAI transcription completed. Generated {len(turns)} turns.")
+        except Exception as e:
+            import traceback
+            error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+            logger.error(f"AssemblyAI transcription error: {error_detail}")
+            raise HTTPException(status_code=500, detail=f"AssemblyAI transcription failed: {str(e)}")
 
-    if cache_key in temp_transcript_cache:
-        logger.info(f"Using cached {transcription_model} transcription")
-        cached_result = temp_transcript_cache[cache_key]
-        turns = cached_result["turns"]
-        duration_seconds = cached_result.get("duration")
-        logger.info(f"Used cached transcription with {len(turns)} turns.")
-    else:
-        # Generate new transcription based on selected model
-        if transcription_model == "assemblyai":
-            logger.info("Starting new AssemblyAI transcription process...")
-            try:
-                turns, docx_bytes, duration_seconds = process_transcription(
-                    file_bytes,
-                    file.filename,
+    elif transcription_model == "gemini":
+        logger.info("Starting Gemini transcription process...")
+        try:
+            # Process audio file for Gemini (need to extract audio and get duration)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                input_path = os.path.join(temp_dir, file.filename)
+                with open(input_path, "wb") as f:
+                    f.write(file_bytes)
+
+                ext = file.filename.split('.')[-1].lower()
+                audio_path = input_path
+                audio_mime = "audio/mpeg"
+
+                # Convert video to audio if needed
+                SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
+                if ext in SUPPORTED_VIDEO_TYPES:
+                    output_audio = os.path.join(temp_dir, f"{os.path.splitext(file.filename)[0]}.mp3")
+                    audio_path = convert_video_to_audio(input_path, output_audio) or input_path
+                    audio_mime = "audio/mpeg"
+                else:
+                    # Get audio mime type
+                    mime_map = {
+                        "mp3": "audio/mpeg",
+                        "wav": "audio/wav",
+                        "m4a": "audio/mp4",
+                        "flac": "audio/flac",
+                        "ogg": "audio/ogg",
+                        "aac": "audio/aac",
+                        "aiff": "audio/aiff",
+                    }
+                    audio_mime = mime_map.get(ext, "audio/mpeg")
+
+                # Get duration
+                duration_seconds = get_media_duration(audio_path) or 0.0
+
+                # Update title_data with duration
+                hours, rem = divmod(duration_seconds, 3600)
+                minutes, seconds = divmod(rem, 60)
+                title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+                # Run Gemini transcription (blocking call in thread)
+                gemini_lines = await anyio.to_thread.run_sync(
+                    transcribe_with_gemini,
+                    audio_path,
+                    audio_mime,
+                    duration_seconds,
                     speaker_list,
-                    title_data,
                 )
 
-                # Cache the transcript results
-                temp_transcript_cache[cache_key] = {
-                    "turns": turns,
-                    "duration": duration_seconds,
-                }
-                logger.info(f"AssemblyAI transcription completed and cached. Generated {len(turns)} turns.")
-            except Exception as e:
-                import traceback
-                error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-                logger.error(f"AssemblyAI transcription error: {error_detail}")
-                raise HTTPException(status_code=500, detail=f"AssemblyAI transcription failed: {str(e)}")
+                # Normalize and convert to TranscriptTurn objects
+                normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
+                turns = construct_turns_from_lines(normalized_lines)
 
-        elif transcription_model == "gemini":
-            logger.info("Starting new Gemini transcription process...")
-            try:
-                # Process audio file for Gemini (need to extract audio and get duration)
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    input_path = os.path.join(temp_dir, file.filename)
-                    with open(input_path, "wb") as f:
-                        f.write(file_bytes)
+                if not turns:
+                    raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
 
-                    ext = file.filename.split('.')[-1].lower()
-                    audio_path = input_path
-                    audio_mime = "audio/mpeg"
+                logger.info(f"Gemini transcription completed. Generated {len(turns)} turns.")
 
-                    # Convert video to audio if needed
-                    SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
-                    if ext in SUPPORTED_VIDEO_TYPES:
-                        output_audio = os.path.join(temp_dir, f"{os.path.splitext(file.filename)[0]}.mp3")
-                        audio_path = convert_video_to_audio(input_path, output_audio) or input_path
-                        audio_mime = "audio/mpeg"
-                    else:
-                        # Get audio mime type
-                        mime_map = {
-                            "mp3": "audio/mpeg",
-                            "wav": "audio/wav",
-                            "m4a": "audio/mp4",
-                            "flac": "audio/flac",
-                            "ogg": "audio/ogg",
-                            "aac": "audio/aac",
-                            "aiff": "audio/aiff",
-                        }
-                        audio_mime = mime_map.get(ext, "audio/mpeg")
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+            logger.error(f"Gemini transcription error: {error_detail}")
+            raise HTTPException(status_code=500, detail=f"Gemini transcription failed: {str(e)}")
 
-                    # Get duration
-                    duration_seconds = get_media_duration(audio_path) or 0.0
+    # Apply Rev AI forced alignment for accurate word-level timestamps
+    rev_api_key = os.getenv("REV_AI_API_KEY")
+    if rev_api_key and media_blob_name:
+        alignment_audio_path = None
+        try:
+            logger.info("Applying Rev AI forced alignment for accurate timestamps...")
 
-                    # Update title_data with duration
-                    hours, rem = divmod(duration_seconds, 3600)
-                    minutes, seconds = divmod(rem, 60)
-                    title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+            # Download media and convert to audio if needed (same as resync flow)
+            alignment_audio_path, _, _, _ = await anyio.to_thread.run_sync(
+                prepare_audio_for_gemini, media_blob_name, media_content_type
+            )
 
-                    # Run Gemini transcription (blocking call in thread)
-                    gemini_lines = await anyio.to_thread.run_sync(
-                        transcribe_with_gemini,
-                        audio_path,
-                        audio_mime,
-                        duration_seconds,
-                        speaker_list,
-                    )
+            aligner = RevAIAligner(rev_api_key)
 
-                    # Normalize and convert to TranscriptTurn objects
-                    normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
-                    turns = construct_turns_from_lines(normalized_lines)
+            # Convert turns to dicts for the aligner
+            turns_payload = [t.model_dump() for t in turns]
 
-                    if not turns:
-                        raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
+            # Run alignment (preserves original text, only updates timestamps)
+            aligned_turns_payload = await anyio.to_thread.run_sync(
+                aligner.align_transcript, turns_payload, alignment_audio_path, None
+            )
 
-                    # Cache the results
-                    temp_transcript_cache[cache_key] = {
-                        "turns": turns,
-                        "duration": duration_seconds,
-                    }
-                    logger.info(f"Gemini transcription completed and cached. Generated {len(turns)} turns.")
+            # Convert back to TranscriptTurn objects
+            turns = [TranscriptTurn(**t) for t in aligned_turns_payload]
+            logger.info(f"Rev AI alignment completed. Updated {len(turns)} turns with accurate timestamps.")
 
-            except HTTPException:
-                raise
-            except Exception as e:
-                import traceback
-                error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-                logger.error(f"Gemini transcription error: {error_detail}")
-                raise HTTPException(status_code=500, detail=f"Gemini transcription failed: {str(e)}")
+        except Exception as e:
+            # Fallback: keep original timestamps from ASR
+            logger.warning(f"Rev AI alignment failed, using native timestamps: {e}")
+        finally:
+            # Cleanup temporary audio file
+            if alignment_audio_path and os.path.exists(alignment_audio_path):
+                try:
+                    os.remove(alignment_audio_path)
+                except OSError:
+                    pass
+    elif not rev_api_key:
+        logger.info("REV_AI_API_KEY not configured, using native ASR timestamps")
+    elif not media_blob_name:
+        logger.warning("Media blob not available for alignment, using native ASR timestamps")
 
     docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
         turns,

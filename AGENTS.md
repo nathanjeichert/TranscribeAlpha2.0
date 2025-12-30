@@ -10,7 +10,8 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 |-----------|------------|
 | Backend | FastAPI (Python 3.x) |
 | Frontend | Next.js 14 + TypeScript + Tailwind CSS |
-| Transcription | AssemblyAI (slam-1 model) |
+| Transcription | AssemblyAI (slam-1) or Gemini 3.0 Pro |
+| Timestamp Alignment | Rev AI Forced Alignment API |
 | Deployment | Google Cloud Run + Cloud Storage |
 | HTTP Server | Hypercorn (HTTP/2 support) |
 
@@ -30,7 +31,8 @@ TranscribeAlpha/
 │   │                          # - OnCue XML generation
 │   │                          # - ffmpeg media processing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
-│   │                          # - Re-sync transcript with audio
+│   │                          # - Initial transcription timestamp alignment
+│   │                          # - Re-sync transcript with audio after edits
 │   │                          # - Word-level timestamp correction
 │   ├── auth.py                # JWT authentication
 │   │                          # - Google Secret Manager integration
@@ -79,6 +81,21 @@ The `server.py` file intentionally consolidates:
 | `transcriber.py` | Core transcription logic | AI integration, document generation, media processing |
 | `rev_ai_sync.py` | Forced alignment | Rev AI API calls, timestamp correction |
 | `auth.py` | Authentication | JWT, Secret Manager, user verification |
+
+### Transcription Pipeline
+
+The transcription flow uses a two-stage process for optimal accuracy:
+
+```
+Audio/Video → ASR (AssemblyAI or Gemini) → Rev AI Alignment → DOCX/XML
+```
+
+1. **ASR Stage**: AssemblyAI or Gemini extracts text and speaker labels
+2. **Alignment Stage**: Rev AI forced alignment provides accurate word-level timestamps
+3. **Artifact Generation**: DOCX and OnCue XML generated with aligned timestamps
+
+If `REV_AI_API_KEY` is not configured, native ASR timestamps are used as fallback.
+The alignment step preserves original text (punctuation, capitalization) while only updating timestamps.
 
 ### Import Pattern
 The codebase uses a multi-context import pattern to work in different execution contexts:
@@ -140,12 +157,15 @@ Before any refactor, verify:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `ASSEMBLYAI_API_KEY` | Yes | Transcription API |
-| `REV_AI_API_KEY` | For resync | Forced alignment API |
+| `ASSEMBLYAI_API_KEY` | Yes* | AssemblyAI transcription |
+| `GEMINI_API_KEY` | Yes* | Gemini transcription (alt: `GOOGLE_API_KEY`) |
+| `REV_AI_API_KEY` | Recommended | Forced alignment for accurate timestamps |
 | `JWT_SECRET_KEY` | For auth | Token signing |
 | `GOOGLE_CLOUD_PROJECT` | For auth | Secret Manager access |
 | `PORT` | No | Server port (default: 8080) |
 | `ENVIRONMENT` | No | "production" for strict CORS |
+
+*At least one transcription API key required (AssemblyAI or Gemini).
 
 ## Deployment
 
@@ -205,4 +225,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2025-12-21*
+*Last updated: 2025-12-30*

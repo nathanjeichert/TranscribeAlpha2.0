@@ -261,18 +261,8 @@ export default function TranscriptEditor({
         }
 
         const data: EditorSessionResponse = await response.json()
-        console.log('[FETCH] Received session data:', {
-          lineCount: data.lines?.length,
-          firstLine: data.lines?.[0] ? {
-            id: data.lines[0].id,
-            text: data.lines[0].text?.substring(0, 30),
-            start: data.lines[0].start,
-            end: data.lines[0].end,
-          } : null,
-        })
         setSessionMeta(data)
         setLines(data.lines || [])
-        console.log('[FETCH] Called setLines with', data.lines?.length, 'lines')
         setActiveMediaKey(targetKey)
         setHistory([])
         setFuture([])
@@ -306,24 +296,16 @@ export default function TranscriptEditor({
 
   useEffect(() => {
     if (!initialData) return
-    console.log('[SYNC EFFECT] Running - initialData.media_key:', initialData.media_key)
-    console.log('[SYNC EFFECT] initialData first line:', initialData.lines?.[0] ? {
-      id: initialData.lines[0].id,
-      start: initialData.lines[0].start,
-      end: initialData.lines[0].end,
-    } : null)
     setSessionMeta(initialData)
     setLines(initialData.lines ?? [])
     // Only update activeMediaKey from props, not from internal state (to avoid circular updates)
     const resolvedKey = initialData.media_key ?? initialMediaKey ?? null
-    console.log('[SYNC EFFECT] Setting activeMediaKey to resolvedKey:', resolvedKey)
     if (resolvedKey) {
       setActiveMediaKey(resolvedKey)
     }
 
     // Skip resetting edit state if we just did a local update (e.g., resync)
     if (skipSyncEffectReset.current) {
-      console.log('[SYNC EFFECT] Skipping history/isDirty reset (local update)')
       skipSyncEffectReset.current = false
     } else {
       setHistory([])
@@ -442,59 +424,14 @@ export default function TranscriptEditor({
 
   const playLine = useCallback(
     (line: EditorLine) => {
-      console.log('[PLAY] playLine called:', {
-        lineId: line.id,
-        lineStart: line.start,
-        lineEnd: line.end,
-        effectiveMediaUrl: effectiveMediaUrl?.substring(0, 50),
-        isVideo,
-      })
-      if (!effectiveMediaUrl) {
-        console.log('[PLAY] No effectiveMediaUrl, returning')
-        return
-      }
+      if (!effectiveMediaUrl) return
       setSelectedLineId(line.id)
       const player = isVideo ? videoRef.current : audioRef.current
-      if (!player) {
-        console.log('[PLAY] No player ref, returning')
-        return
-      }
+      if (!player) return
 
       const seekAndPlay = () => {
-        console.log('[PLAY] Seeking to', line.start, 'seconds (readyState:', player.readyState, ', duration:', player.duration, ')')
-        console.log('[PLAY] currentTime BEFORE:', player.currentTime)
-
-        // Log seekable ranges to understand what browser thinks it can seek to
-        const seekable = player.seekable
-        console.log('[PLAY] seekable.length:', seekable.length)
-        for (let i = 0; i < seekable.length; i++) {
-          console.log('[PLAY] seekable range', i, ':', seekable.start(i), '-', seekable.end(i))
-        }
-
-        // Try pausing first, then seeking, then playing
-        player.pause()
-
-        const handleSeeked = () => {
-          player.removeEventListener('seeked', handleSeeked)
-          console.log('[PLAY] Seeked event fired, currentTime:', player.currentTime)
-          player.play().catch((err) => {
-            console.log('[PLAY] Play failed:', err)
-          })
-        }
-
-        player.addEventListener('seeked', handleSeeked)
         player.currentTime = line.start
-        console.log('[PLAY] currentTime AFTER setting:', player.currentTime)
-
-        // Fallback if seeked event never fires (seeking failed)
-        setTimeout(() => {
-          console.log('[PLAY] currentTime after 500ms:', player.currentTime)
-          if (Math.abs(player.currentTime - line.start) > 1) {
-            console.log('[PLAY] Seek may have failed, forcing play anyway')
-            player.removeEventListener('seeked', handleSeeked)
-            player.play().catch(() => {})
-          }
-        }, 500)
+        player.play().catch(() => {})
       }
 
       // Check if media metadata is loaded (readyState >= 1 means HAVE_METADATA)
@@ -502,7 +439,6 @@ export default function TranscriptEditor({
         seekAndPlay()
       } else {
         // Wait for metadata to load before seeking
-        console.log('[PLAY] Waiting for metadata to load...')
         const handleLoadedMetadata = () => {
           player.removeEventListener('loadedmetadata', handleLoadedMetadata)
           seekAndPlay()
@@ -894,8 +830,6 @@ export default function TranscriptEditor({
           throw new Error(detail?.detail || 'Failed to import transcript')
         }
         const data: EditorSessionResponse = await response.json()
-        console.log('[IMPORT] Response data.media_key:', data.media_key)
-        console.log('[IMPORT] Response data.media_blob_name:', data.media_blob_name)
         setSessionMeta(data)
         setLines(data.lines || [])
         setHistory([])
@@ -906,7 +840,6 @@ export default function TranscriptEditor({
         setEditingField(null)
         activeLineMarker.current = null
         const importedMediaKey = data.media_key ?? data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
-        console.log('[IMPORT] Setting activeMediaKey to:', importedMediaKey)
         if (importedMediaKey) {
           setActiveMediaKey(importedMediaKey)
         }
@@ -923,7 +856,6 @@ export default function TranscriptEditor({
   )
 
   const handleResync = useCallback(async () => {
-    console.log('[RESYNC] handleResync called with activeMediaKey:', activeMediaKey)
     if (!activeMediaKey) {
       setResyncError('No active transcript to re-sync.')
       return
@@ -937,7 +869,6 @@ export default function TranscriptEditor({
     setResyncError(null)
 
     try {
-      console.log('[RESYNC] Sending request with media_key:', activeMediaKey)
       const response = await fetch('/api/resync', {
         method: 'POST',
         headers: {
@@ -955,17 +886,6 @@ export default function TranscriptEditor({
       }
 
       const data = await response.json()
-      // data contains { status, lines, docx_base64, oncue_xml_base64 }
-      console.log('[RESYNC] Response received:', {
-        status: data.status,
-        lineCount: data.lines?.length,
-        firstLine: data.lines?.[0] ? {
-          id: data.lines[0].id,
-          text: data.lines[0].text?.substring(0, 30),
-          start: data.lines[0].start,
-          end: data.lines[0].end,
-        } : null,
-      })
 
       // Use the response data directly instead of refetching
       // (GCS write propagation can cause fetchTranscript to get stale data)
@@ -974,7 +894,6 @@ export default function TranscriptEditor({
         pushHistory(lines)
         setLines(data.lines)
         setIsDirty(true)
-        console.log('[RESYNC] Applied', data.lines.length, 'lines directly from response')
       }
 
       // Update session meta with new artifacts
