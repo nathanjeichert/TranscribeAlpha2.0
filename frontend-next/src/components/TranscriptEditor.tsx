@@ -939,8 +939,61 @@ export default function TranscriptEditor({
   const expiresLabel = sessionMeta?.expires_at ? new Date(sessionMeta.expires_at).toLocaleString() : '—'
   const updatedLabel = sessionMeta?.updated_at ? new Date(sessionMeta.updated_at).toLocaleString() : '—'
 
+  // Handle page-level drag and drop for transcript/media import
+  const handlePageDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingOver(true)
+  }, [])
+
+  const handlePageDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // Only set to false if we're leaving the main container
+    if (e.currentTarget === e.target) {
+      setIsDraggingOver(false)
+    }
+  }, [])
+
+  const handlePageDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    for (const file of files) {
+      const ext = file.name.toLowerCase().split('.').pop()
+      if (ext === 'xml' || ext === 'docx') {
+        setImportTranscriptFile(file)
+      } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
+        setImportMediaFile(file)
+        if (localMediaPreviewUrl) {
+          URL.revokeObjectURL(localMediaPreviewUrl)
+        }
+        const url = URL.createObjectURL(file)
+        setLocalMediaPreviewUrl(url)
+        setLocalMediaType(file.type)
+      }
+    }
+  }, [localMediaPreviewUrl])
+
   return (
-    <div className="space-y-6">
+    <div
+      className="space-y-6 relative"
+      onDragOver={handlePageDragOver}
+      onDragLeave={handlePageDragLeave}
+      onDrop={handlePageDrop}
+    >
+      {/* Page-level drop overlay */}
+      {isDraggingOver && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-primary-900/60 backdrop-blur-sm pointer-events-none">
+          <div className="rounded-2xl border-4 border-dashed border-white bg-primary-800/80 px-12 py-10 text-center shadow-2xl">
+            <p className="text-2xl font-bold text-white">Drop files to import</p>
+            <p className="mt-2 text-sm text-primary-200">
+              Transcript (XML or DOCX) + Media file
+            </p>
+          </div>
+        </div>
+      )}
       <div className="card">
         <div className="card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
@@ -1175,42 +1228,10 @@ export default function TranscriptEditor({
                 </form>
               </div>
 
-              <div
-                className={`rounded-lg border-2 ${isDraggingOver ? 'border-primary-500 bg-primary-50' : 'border-primary-200 bg-white'} p-4 space-y-3 transition-colors`}
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setIsDraggingOver(true)
-                }}
-                onDragLeave={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setIsDraggingOver(false)
-                }}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setIsDraggingOver(false)
-                  const files = Array.from(e.dataTransfer.files)
-                  for (const file of files) {
-                    const ext = file.name.toLowerCase().split('.').pop()
-                    if (ext === 'xml' || ext === 'docx') {
-                      setImportTranscriptFile(file)
-                    } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
-                      setImportMediaFile(file)
-                      if (localMediaPreviewUrl) {
-                        URL.revokeObjectURL(localMediaPreviewUrl)
-                      }
-                      const url = URL.createObjectURL(file)
-                      setLocalMediaPreviewUrl(url)
-                      setLocalMediaType(file.type)
-                    }
-                  }
-                }}
-              >
+              <div className="rounded-lg border-2 border-primary-200 bg-white p-4 space-y-3">
                 <h3 className="text-sm font-medium text-primary-900">Import Transcript</h3>
                 <p className="text-xs text-primary-600">
-                  Drag & drop files here, or use the inputs below.
+                  Drag & drop files anywhere on the page, or use the inputs below.
                 </p>
                 {importError && (
                   <p className="text-xs text-red-600">{importError}</p>

@@ -441,14 +441,34 @@ def parse_docx_to_turns(docx_bytes: bytes) -> List[dict]:
 
     Expected format per paragraph: "SPEAKER:   Text of what they said..."
     Returns list of dicts with 'speaker' and 'text' keys.
+
+    Automatically skips title page content (Generated Transcript, Case Name, etc.)
     """
     buffer = io.BytesIO(docx_bytes)
     doc = Document(buffer)
+
+    # Title page patterns to skip (case-insensitive)
+    title_page_patterns = [
+        r'^generated\s+transcript\s*$',
+        r'^case\s+name:\s*',
+        r'^case\s+number:\s*',
+        r'^date:\s*',
+        r'^time:\s*',
+        r'^location:\s*',
+        r'^original\s+file:\s*',
+        r'^duration:\s*',
+        r'^firm\s*(name|or\s+organization)?\s*:\s*',
+    ]
+    title_page_regex = re.compile('|'.join(title_page_patterns), re.IGNORECASE)
 
     turns = []
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
+            continue
+
+        # Skip title page content
+        if title_page_regex.match(text):
             continue
 
         # Look for speaker pattern: "SPEAKER:   text" (colon + spaces)
@@ -473,7 +493,7 @@ def parse_docx_to_turns(docx_bytes: bytes) -> List[dict]:
                     'text': text,
                 })
 
-    logger.info(f"Parsed {len(turns)} turns from DOCX")
+    logger.info(f"Parsed {len(turns)} turns from DOCX (skipped title page content)")
     return turns
 
 
