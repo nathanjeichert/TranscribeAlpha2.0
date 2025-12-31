@@ -62,6 +62,7 @@ try:
         seconds_to_timestamp,
         WordTimestamp,
         create_docx,
+        parse_docx_to_turns,
         ffmpeg_executable_path,
         convert_video_to_audio,
         get_media_duration,
@@ -76,6 +77,7 @@ except ImportError:
             seconds_to_timestamp,
             WordTimestamp,
             create_docx,
+            parse_docx_to_turns,
             ffmpeg_executable_path,
             convert_video_to_audio,
             get_media_duration,
@@ -89,6 +91,7 @@ except ImportError:
         seconds_to_timestamp = transcriber.seconds_to_timestamp
         WordTimestamp = transcriber.WordTimestamp
         create_docx = transcriber.create_docx
+        parse_docx_to_turns = transcriber.parse_docx_to_turns
         ffmpeg_executable_path = transcriber.ffmpeg_executable_path
 
 # Import authentication module
@@ -2830,9 +2833,9 @@ async def get_clip_session(clip_id: str, current_user: dict = Depends(get_curren
 
 
 @app.post("/api/transcripts/import")
-async def import_oncue_transcript(
-    xml_file: UploadFile = File(...),
-    media_file: Optional[UploadFile] = File(None),
+async def import_transcript(
+    transcript_file: UploadFile = File(...),
+    media_file: UploadFile = File(...),
     case_name: str = Form(""),
     case_number: str = Form(""),
     firm_name: str = Form(""),
@@ -2841,55 +2844,30 @@ async def import_oncue_transcript(
     location: str = Form(""),
     current_user: dict = Depends(get_current_user),
 ):
-    # Debug logging for import
-    logger.info(f"Import request: xml_file={xml_file.filename}, media_file={media_file.filename if media_file else 'None'}")
+    """
+    Import a transcript from OnCue XML or DOCX file.
 
-    xml_bytes = await xml_file.read()
-    if not xml_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded XML file is empty")
+    - XML: Parses OnCue format, uses embedded timestamps
+    - DOCX: Parses speaker/text, runs Rev AI alignment for timestamps
 
-    xml_text = xml_bytes.decode("utf-8", errors="replace")
-    parsed = parse_oncue_xml(xml_text)
+    Media file is required for both to enable playback and re-sync.
+    """
+    filename = transcript_file.filename or ""
+    file_ext = filename.lower().split('.')[-1] if '.' in filename else ''
 
-    title_data = parsed["title_data"]
-    overrides = {
-        "CASE_NAME": case_name or title_data.get("CASE_NAME", ""),
-        "CASE_NUMBER": case_number or title_data.get("CASE_NUMBER", ""),
-        "FIRM_OR_ORGANIZATION_NAME": firm_name or title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
-        "DATE": input_date or title_data.get("DATE", ""),
-        "TIME": input_time or title_data.get("TIME", ""),
-        "LOCATION": location or title_data.get("LOCATION", ""),
-        "FILE_NAME": title_data.get("FILE_NAME") or xml_file.filename or "imported.xml",
-    }
-    title_data.update(overrides)
+    logger.info(f"Import request: file={filename} (type={file_ext}), media={media_file.filename if media_file else 'None'}")
 
-    # Always use a fresh media key to avoid collisions with prior imports
-    media_key = uuid.uuid4().hex
-    title_data["MEDIA_ID"] = media_key
+    file_bytes = await transcript_file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded transcript file is empty")
 
-    duration_seconds = float(parsed["audio_duration"] or 0)
-    lines_payload = parsed["lines"]
-    normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-    turns = construct_turns_from_lines(normalized_lines)
-    if not turns:
-        raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
-
-    docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
-        turns,
-        title_data,
-        duration_seconds,
-        DEFAULT_LINES_PER_PAGE,
-    )
-
-    docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
-
+    # Upload media first (required for both formats)
     media_blob_name = None
     media_content_type = None
+    duration_seconds = 0.0
+
     if media_file:
-        logger.info(f"Import: media_file present, filename={media_file.filename}, content_type={media_file.content_type}")
         media_bytes = await media_file.read()
-        logger.info(f"Import: read {len(media_bytes) if media_bytes else 0} bytes from media file")
         if media_bytes:
             media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename)[0]
             try:
@@ -2899,12 +2877,126 @@ async def import_oncue_transcript(
                     media_content_type,
                 )
                 logger.info(f"Import: uploaded media to blob {media_blob_name}")
+
+                # Get duration from media
+                audio_path, _, dur, _ = await anyio.to_thread.run_sync(
+                    prepare_audio_for_gemini, media_blob_name, media_content_type
+                )
+                duration_seconds = dur or 0.0
+                # Cleanup temp file
+                if audio_path and os.path.exists(audio_path):
+                    try:
+                        os.remove(audio_path)
+                    except OSError:
+                        pass
             except Exception as e:
-                logger.error("Failed to store media during import: %s", e)
-                media_blob_name = None
-                media_content_type = None
+                logger.error("Failed to process media during import: %s", e)
+                raise HTTPException(status_code=500, detail=f"Failed to process media file: {e}")
     else:
-        logger.info("Import: no media_file provided")
+        raise HTTPException(status_code=400, detail="Media file is required for import")
+
+    # Parse transcript based on file type
+    if file_ext == 'xml':
+        # OnCue XML format
+        xml_text = file_bytes.decode("utf-8", errors="replace")
+        parsed = parse_oncue_xml(xml_text)
+        title_data = parsed["title_data"]
+        xml_duration = float(parsed["audio_duration"] or 0)
+        if xml_duration > 0:
+            duration_seconds = xml_duration
+
+        lines_payload = parsed["lines"]
+        normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
+        turns = construct_turns_from_lines(normalized_lines)
+
+        if not turns:
+            raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
+
+    elif file_ext == 'docx':
+        # DOCX format - parse and run Rev AI alignment
+        docx_turns = parse_docx_to_turns(file_bytes)
+
+        if not docx_turns:
+            raise HTTPException(status_code=400, detail="Unable to parse transcript from DOCX")
+
+        # Convert to TranscriptTurn objects (without timestamps initially)
+        turns = []
+        for t in docx_turns:
+            turns.append(TranscriptTurn(
+                speaker=t['speaker'],
+                text=t['text'],
+                timestamp=None,
+                words=None,
+            ))
+
+        # Run Rev AI alignment to get timestamps
+        rev_api_key = os.getenv("REV_AI_API_KEY")
+        if rev_api_key and media_blob_name:
+            alignment_audio_path = None
+            alignment_start_time = time.time()
+            try:
+                logger.info("Running Rev AI alignment for DOCX import...")
+
+                alignment_audio_path, _, _, _ = await anyio.to_thread.run_sync(
+                    prepare_audio_for_gemini, media_blob_name, media_content_type
+                )
+
+                aligner = RevAIAligner(rev_api_key)
+                turns_payload = [t.model_dump() for t in turns]
+
+                aligned_turns_payload = await anyio.to_thread.run_sync(
+                    aligner.align_transcript, turns_payload, alignment_audio_path, None
+                )
+
+                turns = [TranscriptTurn(**t) for t in aligned_turns_payload]
+                alignment_elapsed = time.time() - alignment_start_time
+                logger.info(f"Rev AI alignment completed in {alignment_elapsed:.1f}s for DOCX import")
+
+            except Exception as e:
+                logger.warning(f"Rev AI alignment failed for DOCX import: {e}")
+                # Continue without timestamps - user can resync later
+            finally:
+                if alignment_audio_path and os.path.exists(alignment_audio_path):
+                    try:
+                        os.remove(alignment_audio_path)
+                    except OSError:
+                        pass
+        else:
+            logger.warning("REV_AI_API_KEY not configured, DOCX import will have no timestamps")
+
+        title_data = {}
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file_ext}. Use .xml (OnCue) or .docx"
+        )
+
+    # Apply form overrides to title_data
+    overrides = {
+        "CASE_NAME": case_name or title_data.get("CASE_NAME", ""),
+        "CASE_NUMBER": case_number or title_data.get("CASE_NUMBER", ""),
+        "FIRM_OR_ORGANIZATION_NAME": firm_name or title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
+        "DATE": input_date or title_data.get("DATE", ""),
+        "TIME": input_time or title_data.get("TIME", ""),
+        "LOCATION": location or title_data.get("LOCATION", ""),
+        "FILE_NAME": title_data.get("FILE_NAME") or filename or "imported",
+    }
+    title_data.update(overrides)
+
+    # Always use a fresh media key
+    media_key = uuid.uuid4().hex
+    title_data["MEDIA_ID"] = media_key
+
+    # Build artifacts
+    docx_bytes_out, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+        turns,
+        title_data,
+        duration_seconds,
+        DEFAULT_LINES_PER_PAGE,
+    )
+
+    docx_b64 = base64.b64encode(docx_bytes_out).decode()
+    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
     created_at = datetime.now(timezone.utc)
 
@@ -2930,7 +3022,7 @@ async def import_oncue_transcript(
 
         save_current_transcript(media_key, transcript_data)
 
-        # Create initial snapshot (manual save) for history feature
+        # Create initial snapshot
         snapshot_id = uuid.uuid4().hex
         snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
         bucket = storage_client.bucket(BUCKET_NAME)
@@ -2939,11 +3031,10 @@ async def import_oncue_transcript(
         logger.info(f"Created initial snapshot for imported transcript: {media_key}")
 
     except Exception as e:
-        logger.error("Failed to save imported transcript to new storage: %s", e)
+        logger.error("Failed to save imported transcript: %s", e)
         raise HTTPException(status_code=500, detail="Unable to persist imported transcript")
 
-    response_payload = dict(transcript_data)
-    return JSONResponse(response_payload)
+    return JSONResponse(dict(transcript_data))
 
 @app.post("/api/upload-preview")
 async def upload_media_preview(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):

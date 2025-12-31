@@ -167,10 +167,11 @@ export default function TranscriptEditor({
   // Skip resetting isDirty/history in SYNC EFFECT when we've just done a local update (e.g., resync)
   const skipSyncEffectReset = useRef(false)
 
-  const [importXmlFile, setImportXmlFile] = useState<File | null>(null)
+  const [importTranscriptFile, setImportTranscriptFile] = useState<File | null>(null)
   const [importMediaFile, setImportMediaFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
   const [localMediaPreviewUrl, setLocalMediaPreviewUrl] = useState<string | null>(null)
   const [localMediaType, setLocalMediaType] = useState<string | undefined>(undefined)
   const [renameFrom, setRenameFrom] = useState('')
@@ -807,18 +808,20 @@ export default function TranscriptEditor({
   const handleImport = useCallback(
     async (event: React.FormEvent) => {
       event.preventDefault()
-      if (!importXmlFile) {
-        setImportError('Select an OnCue XML file to import.')
+      if (!importTranscriptFile) {
+        setImportError('Select a transcript file (XML or DOCX) to import.')
+        return
+      }
+      if (!importMediaFile) {
+        setImportError('Media file is required for import.')
         return
       }
       setImporting(true)
       setImportError(null)
       try {
         const formData = new FormData()
-        formData.append('xml_file', importXmlFile)
-        if (importMediaFile) {
-          formData.append('media_file', importMediaFile)
-        }
+        formData.append('transcript_file', importTranscriptFile)
+        formData.append('media_file', importMediaFile)
 
         const response = await fetch('/api/transcripts/import', {
           method: 'POST',
@@ -844,15 +847,21 @@ export default function TranscriptEditor({
           setActiveMediaKey(importedMediaKey)
         }
         onSessionChange(data)
-        setImportXmlFile(null)
+        setImportTranscriptFile(null)
         setImportMediaFile(null)
+        // Also reset local media preview since we now use the imported session's media
+        if (localMediaPreviewUrl) {
+          URL.revokeObjectURL(localMediaPreviewUrl)
+        }
+        setLocalMediaPreviewUrl(null)
+        setLocalMediaType(undefined)
       } catch (err: any) {
         setImportError(err.message || 'Failed to import transcript')
       } finally {
         setImporting(false)
       }
     },
-    [importXmlFile, importMediaFile, onSessionChange],
+    [importTranscriptFile, importMediaFile, localMediaPreviewUrl, onSessionChange],
   )
 
   const handleResync = useCallback(async () => {
@@ -1166,23 +1175,63 @@ export default function TranscriptEditor({
                 </form>
               </div>
 
-              <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-3">
-                <h3 className="text-sm font-medium text-primary-900">Import Existing Transcript</h3>
+              <div
+                className={`rounded-lg border-2 ${isDraggingOver ? 'border-primary-500 bg-primary-50' : 'border-primary-200 bg-white'} p-4 space-y-3 transition-colors`}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setIsDraggingOver(true)
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setIsDraggingOver(false)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setIsDraggingOver(false)
+                  const files = Array.from(e.dataTransfer.files)
+                  for (const file of files) {
+                    const ext = file.name.toLowerCase().split('.').pop()
+                    if (ext === 'xml' || ext === 'docx') {
+                      setImportTranscriptFile(file)
+                    } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
+                      setImportMediaFile(file)
+                      if (localMediaPreviewUrl) {
+                        URL.revokeObjectURL(localMediaPreviewUrl)
+                      }
+                      const url = URL.createObjectURL(file)
+                      setLocalMediaPreviewUrl(url)
+                      setLocalMediaType(file.type)
+                    }
+                  }
+                }}
+              >
+                <h3 className="text-sm font-medium text-primary-900">Import Transcript</h3>
+                <p className="text-xs text-primary-600">
+                  Drag & drop files here, or use the inputs below.
+                </p>
                 {importError && (
                   <p className="text-xs text-red-600">{importError}</p>
                 )}
                 <form className="space-y-3" onSubmit={handleImport}>
                   <div>
-                    <label className="text-xs font-medium text-primary-700">OnCue XML *</label>
+                    <label className="text-xs font-medium text-primary-700">Transcript (XML or DOCX) *</label>
                     <input
                       type="file"
-                      accept=".xml"
-                      onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
+                      accept=".xml,.docx"
+                      onChange={(event) => setImportTranscriptFile(event.target.files?.[0] ?? null)}
                       className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
                     />
+                    {importTranscriptFile && (
+                      <p className="mt-1 text-xs text-primary-600">
+                        Selected: {importTranscriptFile.name}
+                      </p>
+                    )}
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-primary-700">Media (optional)</label>
+                    <label className="text-xs font-medium text-primary-700">Media File *</label>
                     <input
                       type="file"
                       accept="audio/*,video/*"
@@ -1203,8 +1252,16 @@ export default function TranscriptEditor({
                       }}
                       className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
                     />
+                    {importMediaFile && (
+                      <p className="mt-1 text-xs text-primary-600">
+                        Selected: {importMediaFile.name}
+                      </p>
+                    )}
                   </div>
-                  <button type="submit" className="btn-outline w-full text-sm" disabled={importing}>
+                  <p className="text-[10px] text-primary-500">
+                    DOCX imports run automatic timestamp alignment via Rev AI.
+                  </p>
+                  <button type="submit" className="btn-outline w-full text-sm" disabled={importing || !importTranscriptFile || !importMediaFile}>
                     {importing ? 'Importing…' : 'Import Transcript'}
                   </button>
                 </form>

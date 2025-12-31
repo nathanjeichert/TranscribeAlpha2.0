@@ -2,6 +2,7 @@ import os
 import io
 import json
 import time
+import re
 import tempfile
 import logging
 import shutil
@@ -432,6 +433,48 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
     doc.save(buffer)
     buffer.seek(0)
     return buffer.read()
+
+
+def parse_docx_to_turns(docx_bytes: bytes) -> List[dict]:
+    """
+    Parse a DOCX file (exported from TranscribeAlpha) back into transcript turns.
+
+    Expected format per paragraph: "SPEAKER:   Text of what they said..."
+    Returns list of dicts with 'speaker' and 'text' keys.
+    """
+    buffer = io.BytesIO(docx_bytes)
+    doc = Document(buffer)
+
+    turns = []
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+
+        # Look for speaker pattern: "SPEAKER:   text" (colon + spaces)
+        # Handle various spacing patterns
+        match = re.match(r'^([A-Z][A-Z0-9\s\-\.\']*?):\s{1,5}(.+)$', text, re.IGNORECASE)
+        if match:
+            speaker = match.group(1).strip().upper()
+            content = match.group(2).strip()
+            if speaker and content:
+                turns.append({
+                    'speaker': speaker,
+                    'text': content,
+                })
+        else:
+            # If no speaker pattern found, append to previous turn as continuation
+            # or create a new turn with UNKNOWN speaker
+            if turns and not text.startswith('['):  # Avoid timestamps
+                turns[-1]['text'] += ' ' + text
+            elif text and not text.startswith('['):
+                turns.append({
+                    'speaker': 'UNKNOWN',
+                    'text': text,
+                })
+
+    logger.info(f"Parsed {len(turns)} turns from DOCX")
+    return turns
 
 
 # Helper to get media duration with ffprobe, avoids pydub's internal lookup issues
