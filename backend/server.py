@@ -2071,8 +2071,9 @@ async def transcribe(
         media_content_type = None
 
     # Generate transcription based on selected model
+    asr_start_time = time.time()
     if transcription_model == "assemblyai":
-        logger.info("Starting AssemblyAI transcription process...")
+        logger.info("Starting AssemblyAI transcription...")
         try:
             turns, docx_bytes, duration_seconds = process_transcription(
                 file_bytes,
@@ -2080,7 +2081,8 @@ async def transcribe(
                 speaker_list,
                 title_data,
             )
-            logger.info(f"AssemblyAI transcription completed. Generated {len(turns)} turns.")
+            asr_elapsed = time.time() - asr_start_time
+            logger.info(f"AssemblyAI completed in {asr_elapsed:.1f}s. Generated {len(turns)} turns.")
         except Exception as e:
             import traceback
             error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
@@ -2088,7 +2090,7 @@ async def transcribe(
             raise HTTPException(status_code=500, detail=f"AssemblyAI transcription failed: {str(e)}")
 
     elif transcription_model == "gemini":
-        logger.info("Starting Gemini transcription process...")
+        logger.info("Starting Gemini transcription...")
         try:
             # Process audio file for Gemini (need to extract audio and get duration)
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -2143,7 +2145,8 @@ async def transcribe(
                 if not turns:
                     raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
 
-                logger.info(f"Gemini transcription completed. Generated {len(turns)} turns.")
+                asr_elapsed = time.time() - asr_start_time
+                logger.info(f"Gemini completed in {asr_elapsed:.1f}s. Generated {len(turns)} turns.")
 
         except HTTPException:
             raise
@@ -2157,8 +2160,9 @@ async def transcribe(
     rev_api_key = os.getenv("REV_AI_API_KEY")
     if rev_api_key and media_blob_name:
         alignment_audio_path = None
+        alignment_start_time = time.time()
         try:
-            logger.info("Applying Rev AI forced alignment for accurate timestamps...")
+            logger.info("Starting Rev AI forced alignment...")
 
             # Download media and convert to audio if needed (same as resync flow)
             alignment_audio_path, _, _, _ = await anyio.to_thread.run_sync(
@@ -2177,7 +2181,8 @@ async def transcribe(
 
             # Convert back to TranscriptTurn objects
             turns = [TranscriptTurn(**t) for t in aligned_turns_payload]
-            logger.info(f"Rev AI alignment completed. Updated {len(turns)} turns with accurate timestamps.")
+            alignment_elapsed = time.time() - alignment_start_time
+            logger.info(f"Rev AI alignment completed in {alignment_elapsed:.1f}s. Updated {len(turns)} turns.")
 
         except Exception as e:
             # Fallback: keep original timestamps from ASR
