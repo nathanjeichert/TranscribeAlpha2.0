@@ -250,7 +250,7 @@ def save_current_transcript(media_key: str, transcript_data: dict) -> None:
             "created_at": created_at,
             "expires_at": expires_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "user_id": transcript_data.get("user_id", "anonymous"),
+            "user_id": transcript_data.get("user_id"),
         }
         blob.upload_from_string(json.dumps(transcript_data), content_type="application/json")
         logger.info("Saved current transcript for media_key %s", media_key)
@@ -342,7 +342,7 @@ def load_latest_snapshot_for_media(media_key: str, prefer_manual_save: bool = Tr
         return None
 
 
-def list_all_transcripts(user_id: str = "anonymous") -> List[dict]:
+def list_all_transcripts(user_id: str) -> List[dict]:
     """List all transcripts for a user, grouped by media_key."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
@@ -353,12 +353,12 @@ def list_all_transcripts(user_id: str = "anonymous") -> List[dict]:
         for blob in bucket.list_blobs(prefix=prefix):
             if blob.name.endswith("/current.json"):
                 try:
-                    # Check user_id in metadata (for future auth)
-                    blob_user = blob.metadata.get("user_id", "anonymous") if blob.metadata else "anonymous"
-                    if blob_user != user_id:
+                    data = json.loads(blob.download_as_string())
+
+                    # Check user_id from JSON content (blob.metadata isn't populated by list_blobs)
+                    if data.get("user_id") != user_id:
                         continue
 
-                    data = json.loads(blob.download_as_string())
                     media_key = blob.name.split("/")[1]  # Extract from path
 
                     title_data = data.get("title_data", {})
@@ -491,7 +491,7 @@ def list_snapshots_for_media(media_key: str) -> List[dict]:
     return items
 
 
-def prune_snapshots(media_key: str, user_id: str = "anonymous") -> None:
+def prune_snapshots(media_key: str) -> None:
     """Prune snapshots to keep newest 10, preserving newest manual save."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
@@ -1083,7 +1083,7 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
         "oncue_xml_base64": xml_b64,
         "line_count": len(source_lines),
         "is_manual_save": is_manual_save,
-        "user_id": session_data.get("user_id", "anonymous"),  # Auth-ready
+        "user_id": session_data.get("user_id"),
         # CRITICAL: Include media references for playback recovery
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
@@ -2356,7 +2356,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
         snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
 
         # Prune old snapshots
-        prune_snapshots(media_key, user_id)
+        prune_snapshots(media_key)
 
         return JSONResponse(content=transcript_data)
 
@@ -2502,7 +2502,7 @@ async def list_all_snapshots(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/snapshots/{media_key}")
 async def list_snapshots_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
-    prune_snapshots(media_key, current_user["user_id"])
+    prune_snapshots(media_key)
     return JSONResponse({"snapshots": list_snapshots_for_media(media_key)})
 
 

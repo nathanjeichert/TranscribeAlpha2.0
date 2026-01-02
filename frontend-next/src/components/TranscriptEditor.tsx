@@ -184,6 +184,11 @@ export default function TranscriptEditor({
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const lastSnapshotRef = useRef<number>(0)
 
+  // Refs for auto-save to avoid resetting timer on every edit
+  const linesRef = useRef<EditorLine[]>(initialData?.lines ?? [])
+  const isDirtyRef = useRef(false)
+  const sessionMetaRef = useRef<EditorSessionResponse | null>(initialData ?? null)
+
   // Rev AI Re-sync State
   const [isResyncing, setIsResyncing] = useState(false)
   const [resyncError, setResyncError] = useState<string | null>(null)
@@ -207,7 +212,10 @@ export default function TranscriptEditor({
     [effectiveMediaType],
   )
 
-
+  // Keep refs in sync with state for auto-save interval
+  useEffect(() => { linesRef.current = lines }, [lines])
+  useEffect(() => { isDirtyRef.current = isDirty }, [isDirty])
+  useEffect(() => { sessionMetaRef.current = sessionMeta }, [sessionMeta])
 
   const lineBoundaries = useMemo(
     () =>
@@ -484,10 +492,13 @@ export default function TranscriptEditor({
   }, [activeMediaKey, lines, sessionMeta])
 
   useEffect(() => {
-    if (!activeMediaKey || !sessionMeta) return
+    if (!activeMediaKey) return
 
     const interval = setInterval(async () => {
-      if (!isDirty) return
+      // Read from refs to get latest values without resetting the timer
+      if (!isDirtyRef.current) return
+      const currentSessionMeta = sessionMetaRef.current
+      if (!currentSessionMeta) return
 
       try {
         const now = Date.now()
@@ -498,13 +509,13 @@ export default function TranscriptEditor({
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
-            lines,
-            title_data: sessionMeta.title_data ?? {},
+            lines: linesRef.current,
+            title_data: currentSessionMeta.title_data ?? {},
             is_manual_save: false,  // Auto-save flag
-            audio_duration: sessionMeta.audio_duration,
-            lines_per_page: sessionMeta.lines_per_page,
-            media_blob_name: sessionMeta.media_blob_name,
-            media_content_type: sessionMeta.media_content_type,
+            audio_duration: currentSessionMeta.audio_duration,
+            lines_per_page: currentSessionMeta.lines_per_page,
+            media_blob_name: currentSessionMeta.media_blob_name,
+            media_content_type: currentSessionMeta.media_content_type,
           }),
         })
 
@@ -514,22 +525,22 @@ export default function TranscriptEditor({
         // Also save to localStorage
         saveToLocalStorage(activeMediaKey, {
           mediaKey: activeMediaKey,
-          lines,
-          titleData: sessionMeta.title_data ?? {},
-          mediaBlobName: sessionMeta.media_blob_name,
-          mediaContentType: sessionMeta.media_content_type,
-          audioDuration: sessionMeta.audio_duration,
-          linesPerPage: sessionMeta.lines_per_page,
+          lines: linesRef.current,
+          titleData: currentSessionMeta.title_data ?? {},
+          mediaBlobName: currentSessionMeta.media_blob_name,
+          mediaContentType: currentSessionMeta.media_content_type,
+          audioDuration: currentSessionMeta.audio_duration,
+          linesPerPage: currentSessionMeta.lines_per_page,
           lastSaved: new Date().toISOString(),
         })
 
       } catch (err: any) {
         setSnapshotError(err.message || 'Auto-save failed')
       }
-    }, 60000)  // Changed from 30000 to 60000 (1 minute)
+    }, 60000)  // 60 seconds
 
     return () => clearInterval(interval)
-  }, [activeMediaKey, sessionMeta, isDirty, lines])
+  }, [activeMediaKey])  // Only reset interval when media key changes
 
   const cloneLines = useCallback((source: EditorLine[]) => source.map((line) => ({ ...line })), [])
 
