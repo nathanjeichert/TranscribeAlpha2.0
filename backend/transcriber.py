@@ -122,6 +122,30 @@ class TranscriptTurn(BaseModel):
     text: str
     timestamp: Optional[str] = None
     words: Optional[List[WordTimestamp]] = None  # Word-level timestamps for accurate line timing
+    is_continuation: bool = False  # True if same speaker as previous turn (no speaker label needed)
+
+
+def mark_continuation_turns(turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
+    """
+    Mark turns as continuations when the same speaker has consecutive turns.
+
+    The first turn of each speaker block gets is_continuation=False (shows speaker label).
+    Subsequent turns with the same speaker get is_continuation=True (no speaker label).
+    """
+    if not turns:
+        return turns
+
+    prev_speaker = None
+    for turn in turns:
+        normalized_speaker = turn.speaker.strip().upper()
+        if prev_speaker is not None and normalized_speaker == prev_speaker:
+            turn.is_continuation = True
+        else:
+            turn.is_continuation = False
+        prev_speaker = normalized_speaker
+
+    return turns
+
 
 def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3") -> Optional[str]:
     try:
@@ -281,6 +305,8 @@ def transcribe_with_assemblyai(
             )
 
         logger.info("Converted %s utterances to TranscriptTurn format", len(turns))
+        # Mark continuation turns (same speaker as previous)
+        turns = mark_continuation_turns(turns)
         return turns
 
     except Exception as e:
@@ -411,8 +437,10 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.widow_control = False
 
-            speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
-            speaker_run.font.name = "Courier New"
+            # Only show speaker label if not a continuation turn
+            if not turn.is_continuation:
+                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
+                speaker_run.font.name = "Courier New"
             text_run = p.add_run(turn.text)
             text_run.font.name = "Courier New"
     else:
@@ -424,8 +452,10 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.widow_control = False
 
-            speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
-            speaker_run.font.name = "Courier New"
+            # Only show speaker label if not a continuation turn
+            if not turn.is_continuation:
+                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
+                speaker_run.font.name = "Courier New"
             text_run = p.add_run(turn.text)
             text_run.font.name = "Courier New"
 
@@ -478,19 +508,27 @@ def parse_docx_to_turns(docx_bytes: bytes) -> List[dict]:
             speaker = match.group(1).strip().upper()
             content = match.group(2).strip()
             if speaker and content:
+                # Check if same speaker as previous turn
+                is_continuation = (turns and turns[-1]['speaker'].upper() == speaker)
                 turns.append({
                     'speaker': speaker,
                     'text': content,
+                    'is_continuation': is_continuation,
                 })
         else:
-            # If no speaker pattern found, append to previous turn as continuation
-            # or create a new turn with UNKNOWN speaker
+            # No speaker pattern - this is a continuation of the previous speaker
             if turns and not text.startswith('['):  # Avoid timestamps
-                turns[-1]['text'] += ' ' + text
+                # Create as separate continuation turn (inherits speaker from previous)
+                turns.append({
+                    'speaker': turns[-1]['speaker'],
+                    'text': text,
+                    'is_continuation': True,
+                })
             elif text and not text.startswith('['):
                 turns.append({
                     'speaker': 'UNKNOWN',
                     'text': text,
+                    'is_continuation': False,
                 })
 
     logger.info(f"Parsed {len(turns)} turns from DOCX (skipped title page content)")
@@ -713,8 +751,17 @@ def compute_transcript_line_entries(
         speaker_name = turn.speaker.upper()
         text = turn.text.strip()
 
-        speaker_prefix = " " * SPEAKER_PREFIX_SPACES + speaker_name + SPEAKER_COLON
-        max_first_line_text = MAX_TOTAL_LINE_WIDTH - len(speaker_prefix)
+        # Check if this turn is a continuation of the same speaker
+        is_turn_continuation = getattr(turn, 'is_continuation', False)
+
+        if is_turn_continuation:
+            # Continuation turn: no speaker prefix, use continuation formatting
+            speaker_prefix = ""
+            max_first_line_text = MAX_CONTINUATION_WIDTH - CONTINUATION_SPACES
+        else:
+            # New speaker: include speaker prefix
+            speaker_prefix = " " * SPEAKER_PREFIX_SPACES + speaker_name + SPEAKER_COLON
+            max_first_line_text = MAX_TOTAL_LINE_WIDTH - len(speaker_prefix)
 
         wrapped_lines = wrap_text_for_transcript(text, max_first_line_text)
         if not wrapped_lines:
@@ -789,23 +836,31 @@ def compute_transcript_line_entries(
                     line_stop = stop_sec
                 continuation_timings.append((line_start, line_stop))
 
-        # First (speaker) line
+        # First line of turn (with or without speaker prefix depending on continuation status)
         pgln = page * 100 + line_in_page
         last_pgln = pgln
+
+        if is_turn_continuation:
+            # Continuation turn: format like a continuation line (no speaker)
+            rendered_first_line = " " * CONTINUATION_SPACES + wrapped_lines[0]
+        else:
+            # New speaker: include speaker prefix
+            rendered_first_line = speaker_prefix + wrapped_lines[0]
+
         line_entries.append(
             {
                 "id": f"{turn_idx}-0",
                 "turn_index": turn_idx,
                 "line_index": 0,
-                "speaker": speaker_name,
+                "speaker": speaker_name if not is_turn_continuation else "",
                 "text": wrapped_lines[0],
-                "rendered_text": speaker_prefix + wrapped_lines[0],
+                "rendered_text": rendered_first_line,
                 "start": first_line_start,
                 "end": first_line_stop,
                 "page": page,
                 "line": line_in_page,
                 "pgln": pgln,
-                "is_continuation": False,
+                "is_continuation": is_turn_continuation,
                 "total_lines_in_turn": total_lines,
             }
         )

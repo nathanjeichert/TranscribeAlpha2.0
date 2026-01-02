@@ -1366,9 +1366,12 @@ export default function TranscriptEditor({
                           </div>
                           <div
                             className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
-                            onDoubleClick={() => beginEdit(line, 'speaker')}
+                            onDoubleClick={() => !line.is_continuation && beginEdit(line, 'speaker')}
                           >
-                            {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
+                            {line.is_continuation ? (
+                              // Continuation line: no speaker label
+                              <span className="text-primary-300">—</span>
+                            ) : editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
                               <input
                                 ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
                                 className="input text-xs uppercase"

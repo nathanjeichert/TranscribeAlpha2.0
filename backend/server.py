@@ -1619,6 +1619,16 @@ def transcribe_with_gemini(
     if not normalized:
         raise HTTPException(status_code=502, detail="Gemini did not return any transcript lines")
 
+    # Mark continuation turns (same speaker as previous)
+    prev_speaker = None
+    for item in normalized:
+        current_speaker = item.get("speaker", "").strip().upper()
+        if prev_speaker is not None and current_speaker == prev_speaker:
+            item["is_continuation"] = True
+        else:
+            item["is_continuation"] = False
+        prev_speaker = current_speaker
+
     logger.info("Gemini transcription completed with %d utterances", len(normalized))
     return normalized
 
