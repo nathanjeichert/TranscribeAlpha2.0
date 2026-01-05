@@ -347,7 +347,11 @@ def calculate_line_timestamps_from_words(
     if not line_text_clean:
         return (0.0, 0.0, 0)
 
-    line_words = line_text_clean.split()
+    raw_line_words = line_text_clean.split()
+    line_words = []
+    for word in raw_line_words:
+        if normalize_word_for_match(word):
+            line_words.append(word)
     if not line_words:
         return (0.0, 0.0, 0)
 
@@ -792,68 +796,69 @@ def compute_transcript_line_entries(
         if remaining_text:
             continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
 
-        total_lines = 1 + len(continuation_wrapped)
+        all_lines = [wrapped_lines[0]] + continuation_wrapped
+        total_lines = len(all_lines)
+
+        def interpolate_line_block(block_start: float, block_end: float, count: int) -> List[Tuple[float, float]]:
+            if count <= 0:
+                return []
+            if block_end < block_start:
+                block_end = block_start
+            duration = block_end - block_start
+            step = duration / count if count > 0 else duration
+            return [(block_start + step * idx, block_start + step * (idx + 1)) for idx in range(count)]
+
+        line_timings: List[Tuple[Optional[float], Optional[float]]] = []
 
         if turn.words:
             logger.info("Turn %d has %d words, first word: %s (start=%.1f ms)",
                        turn_idx, len(turn.words), turn.words[0].text, turn.words[0].start)
             word_offset = 0
-            use_word_data = True
 
-            first_line_start, first_line_stop, words_used = calculate_line_timestamps_from_words(
-                wrapped_lines[0],
-                turn.words,
-                word_offset,
-            )
-            if words_used == 0:
-                logger.warning("Turn %d: word matching failed, falling back to interpolation", turn_idx)
-                use_word_data = False
-            else:
-                logger.info("Turn %d first line: %.2f-%.2f seconds (%d words)",
-                           turn_idx, first_line_start, first_line_stop, words_used)
-                word_offset += words_used
-
-            continuation_timings: List[Tuple[float, float]] = []
-            if use_word_data:
-                for cont_line in continuation_wrapped:
-                    line_start, line_stop, words_used = calculate_line_timestamps_from_words(
-                        cont_line,
-                        turn.words,
-                        word_offset,
-                    )
-                    if words_used == 0:
-                        use_word_data = False
-                        break
-                    continuation_timings.append((line_start, line_stop))
+            for line_text in all_lines:
+                line_start, line_stop, words_used = calculate_line_timestamps_from_words(
+                    line_text,
+                    turn.words,
+                    word_offset,
+                )
+                if words_used > 0:
+                    line_timings.append((line_start, line_stop))
                     word_offset += words_used
+                else:
+                    line_timings.append((None, None))
 
-            if not use_word_data:
-                turn_duration = stop_sec - start_sec
-                time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
-                first_line_start = start_sec
-                first_line_stop = start_sec + time_per_line
-                continuation_timings = []
-                for cont_idx in range(len(continuation_wrapped)):
-                    line_start = start_sec + time_per_line * (cont_idx + 1)
-                    line_stop = start_sec + time_per_line * (cont_idx + 2)
-                    if cont_idx == len(continuation_wrapped) - 1:
-                        line_stop = stop_sec
-                    continuation_timings.append((line_start, line_stop))
+            if any(start is None for start, _ in line_timings):
+                filled_timings: List[Tuple[float, float]] = []
+                idx = 0
+                prev_end = start_sec
+                while idx < len(line_timings):
+                    current_start, current_end = line_timings[idx]
+                    if current_start is not None and current_end is not None:
+                        filled_timings.append((current_start, current_end))
+                        prev_end = current_end
+                        idx += 1
+                        continue
+
+                    next_idx = idx
+                    while next_idx < len(line_timings) and line_timings[next_idx][0] is None:
+                        next_idx += 1
+                    next_start = line_timings[next_idx][0] if next_idx < len(line_timings) else stop_sec
+                    if next_start is None:
+                        next_start = stop_sec
+                    block = interpolate_line_block(prev_end, next_start, next_idx - idx)
+                    filled_timings.extend(block)
+                    if block:
+                        prev_end = block[-1][1]
+                    idx = next_idx
+
+                line_timings = [(start, end) for start, end in filled_timings]
         else:
             logger.warning("Turn %d has NO word data, using interpolation", turn_idx)
-            turn_duration = stop_sec - start_sec
-            time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
-
-            first_line_start = start_sec
-            first_line_stop = start_sec + time_per_line
-
-            continuation_timings = []
-            for cont_idx in range(len(continuation_wrapped)):
-                line_start = start_sec + time_per_line * (cont_idx + 1)
-                line_stop = start_sec + time_per_line * (cont_idx + 2)
-                if cont_idx == len(continuation_wrapped) - 1:
-                    line_stop = stop_sec
-                continuation_timings.append((line_start, line_stop))
+            line_timings = interpolate_line_block(start_sec, stop_sec, total_lines)
+        first_line_start, first_line_stop = line_timings[0]
+        continuation_timings: List[Tuple[float, float]] = []
+        for cont_idx in range(1, total_lines):
+            continuation_timings.append(line_timings[cont_idx])
 
         # First line of turn (with or without speaker prefix depending on continuation status)
         pgln = page * 100 + line_in_page
