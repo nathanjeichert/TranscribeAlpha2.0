@@ -241,8 +241,6 @@ class RevAIAligner:
         original_words = []    # Original words with punctuation, indexed globally
         word_to_turn_idx = []  # Maps global word index to (turn_index, word_index_in_turn)
         turn_word_positions = [0] * len(turns)
-        turn_clean_parts = [[] for _ in range(len(turns))]
-        turn_clean_to_original_idx = [[] for _ in range(len(turns))]
 
         for turn_idx, turn in enumerate(turns):
             turn_text = turn.get('text', '')
@@ -259,8 +257,6 @@ class RevAIAligner:
                 for clean_part in clean_parts:
                     plain_text_words.append(clean_part)
                     clean_word_to_original_idx.append(original_idx)
-                    turn_clean_parts[turn_idx].append(clean_part)
-                    turn_clean_to_original_idx[turn_idx].append(original_idx)
 
         full_text_for_api = " ".join(plain_text_words)
 
@@ -352,46 +348,6 @@ class RevAIAligner:
             # Deep copy turns to avoid mutating input
             updated_turns = copy.deepcopy(turns)
 
-            # Build fallback timestamps from existing word data (if provided)
-            fallback_word_timestamps = {}
-            fallback_words_by_turn = {}
-
-            for turn_idx, turn in enumerate(turns):
-                fallback_words = turn.get('words')
-                if not isinstance(fallback_words, list) or not fallback_words:
-                    continue
-                fallback_words_by_turn[turn_idx] = fallback_words
-
-                fallback_clean_parts = []
-                fallback_clean_to_word_idx = []
-                for word_idx, word in enumerate(fallback_words):
-                    token = str(word.get('text', '')).strip()
-                    clean_parts = normalize_alignment_token(token)
-                    if not clean_parts:
-                        continue
-                    for clean_part in clean_parts:
-                        fallback_clean_parts.append(clean_part)
-                        fallback_clean_to_word_idx.append(word_idx)
-
-                if not fallback_clean_parts or not turn_clean_parts[turn_idx]:
-                    continue
-
-                matcher = SequenceMatcher(None, turn_clean_parts[turn_idx], fallback_clean_parts, autojunk=False)
-                for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-                    if tag != "equal":
-                        continue
-                    for offset in range(i2 - i1):
-                        original_idx = turn_clean_to_original_idx[turn_idx][i1 + offset]
-                        fallback_word = fallback_words[fallback_clean_to_word_idx[j1 + offset]]
-                        start_ms = float(fallback_word.get('start', 0.0))
-                        end_ms = float(fallback_word.get('end', start_ms))
-                        confidence = fallback_word.get('confidence', 1.0)
-                        fallback_word_timestamps.setdefault(original_idx, []).append({
-                            'start': start_ms,
-                            'end': end_ms,
-                            'confidence': confidence,
-                        })
-
             # Build new word lists for each turn with updated timestamps
             turn_word_data = {i: [] for i in range(len(turns))}
             original_word_timestamps = {}
@@ -403,21 +359,8 @@ class RevAIAligner:
                 original_word_timestamps.setdefault(original_idx, []).append(timestamps[aligned_idx])
 
             timed_originals = 0
-            for original_idx, (turn_idx, word_pos) in enumerate(word_to_turn_idx):
+            for original_idx, (turn_idx, _) in enumerate(word_to_turn_idx):
                 ts_list = original_word_timestamps.get(original_idx)
-                if not ts_list:
-                    ts_list = fallback_word_timestamps.get(original_idx)
-                if not ts_list:
-                    fallback_words = fallback_words_by_turn.get(turn_idx, [])
-                    if word_pos < len(fallback_words):
-                        fallback_word = fallback_words[word_pos]
-                        start_ms = float(fallback_word.get('start', 0.0))
-                        end_ms = float(fallback_word.get('end', start_ms))
-                        ts_list = [{
-                            'start': start_ms,
-                            'end': end_ms,
-                            'confidence': fallback_word.get('confidence', 1.0),
-                        }]
                 if not ts_list:
                     continue
                 timed_originals += 1
