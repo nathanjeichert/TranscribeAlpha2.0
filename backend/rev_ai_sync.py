@@ -7,6 +7,7 @@ import re
 import tempfile
 from datetime import timedelta
 from typing import List, Optional, Dict, Any
+from difflib import SequenceMatcher
 
 from google.cloud import storage
 from google import auth
@@ -32,6 +33,23 @@ REV_AI_ALIGNMENT_BASE_URL = "https://api.rev.ai/alignment/v1"
 
 # Cloud Storage bucket for temporary files
 BUCKET_NAME = "transcribealpha-uploads-1750110926"
+
+ALIGNMENT_SPLIT_RE = re.compile(r"[-–—/\\\\]")
+ALIGNMENT_CLEAN_RE = re.compile(r"[^\w]+", re.UNICODE)
+
+
+def normalize_alignment_token(token: str) -> List[str]:
+    if not token:
+        return []
+    normalized = token.replace("’", "'").replace("‘", "'")
+    normalized = normalized.replace("“", "\"").replace("”", "\"")
+    normalized = ALIGNMENT_SPLIT_RE.sub(" ", normalized)
+    parts = []
+    for part in normalized.split():
+        cleaned = ALIGNMENT_CLEAN_RE.sub("", part).lower().strip("_")
+        if cleaned:
+            parts.append(cleaned)
+    return parts
 
 
 class RevAIAligner:
@@ -219,19 +237,26 @@ class RevAIAligner:
 
         # Step 1: Build plain text for Rev AI AND track original words
         plain_text_words = []  # Cleaned words for Rev AI
+        clean_word_to_original_idx = []
         original_words = []    # Original words with punctuation, indexed globally
         word_to_turn_idx = []  # Maps global word index to (turn_index, word_index_in_turn)
+        turn_word_positions = [0] * len(turns)
 
         for turn_idx, turn in enumerate(turns):
             turn_text = turn.get('text', '')
 
-            for word_idx, token in enumerate(turn_text.split()):
-                # Clean version for Rev AI
-                clean_token = re.sub(r'[^\w]', '', token).lower()
-                if clean_token:
-                    plain_text_words.append(clean_token)
-                    original_words.append(token)  # Keep original with punctuation
-                    word_to_turn_idx.append((turn_idx, word_idx))
+            for token in turn_text.split():
+                clean_parts = normalize_alignment_token(token)
+                if not clean_parts:
+                    continue
+                original_idx = len(original_words)
+                original_words.append(token)  # Keep original with punctuation
+                word_to_turn_idx.append((turn_idx, turn_word_positions[turn_idx]))
+                turn_word_positions[turn_idx] += 1
+
+                for clean_part in clean_parts:
+                    plain_text_words.append(clean_part)
+                    clean_word_to_original_idx.append(original_idx)
 
         full_text_for_api = " ".join(plain_text_words)
 
@@ -271,39 +296,53 @@ class RevAIAligner:
             # Wait for result
             result = self.wait_for_job(job_id)
 
-            # Step 3: Extract aligned words from Rev AI response
-            aligned_words = []
-            for monologue in result.get('monologues', []):
-                for element in monologue.get('elements', []):
-                    if element.get('type') == 'text':
-                        aligned_words.append(element)
-
-            logger.info("Rev AI returned %d aligned words (expected %d)", len(aligned_words), len(plain_text_words))
-
-            # Step 4: Build timestamp list from Rev AI (convert to milliseconds)
+            # Step 3: Extract aligned words and timestamps from Rev AI response
+            aligned_tokens = []
             timestamps = []
             last_end_ms = 0.0
-            for rev_word in aligned_words:
-                ts = rev_word.get('ts')
-                end_ts = rev_word.get('end_ts')
-                confidence = rev_word.get('confidence', 1.0)
+            for monologue in result.get('monologues', []):
+                for element in monologue.get('elements', []):
+                    if element.get('type') != 'text':
+                        continue
+                    value = element.get('value') or element.get('text') or ''
+                    token_parts = normalize_alignment_token(value)
+                    if not token_parts:
+                        continue
 
-                if ts is not None:
-                    start_ms = ts * 1000.0
-                else:
-                    start_ms = last_end_ms  # Fallback to end of previous word
+                    ts = element.get('ts')
+                    end_ts = element.get('end_ts')
+                    confidence = element.get('confidence', 1.0)
 
-                if end_ts is not None:
-                    end_ms = end_ts * 1000.0
-                else:
-                    end_ms = start_ms  # Zero duration if unknown
+                    if ts is not None:
+                        start_ms = ts * 1000.0
+                    else:
+                        start_ms = last_end_ms  # Fallback to end of previous word
 
-                timestamps.append({
-                    'start': start_ms,
-                    'end': end_ms,
-                    'confidence': confidence,
-                })
-                last_end_ms = end_ms
+                    if end_ts is not None:
+                        end_ms = end_ts * 1000.0
+                    else:
+                        end_ms = start_ms  # Zero duration if unknown
+
+                    for token in token_parts:
+                        aligned_tokens.append(token)
+                        timestamps.append({
+                            'start': start_ms,
+                            'end': end_ms,
+                            'confidence': confidence,
+                        })
+                    last_end_ms = end_ms
+
+            logger.info("Rev AI returned %d aligned words (expected %d)", len(aligned_tokens), len(plain_text_words))
+
+            matcher = SequenceMatcher(None, plain_text_words, aligned_tokens, autojunk=False)
+            word_matches = {}
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag != "equal":
+                    continue
+                for offset in range(i2 - i1):
+                    word_matches[i1 + offset] = j1 + offset
+
+            logger.info("Alignment matched %d/%d words", len(word_matches), len(plain_text_words))
 
             # Step 5: Update original turns with new timestamps
             # Deep copy turns to avoid mutating input
@@ -311,18 +350,34 @@ class RevAIAligner:
 
             # Build new word lists for each turn with updated timestamps
             turn_word_data = {i: [] for i in range(len(turns))}
+            original_word_timestamps = {}
 
-            for global_idx, (turn_idx, _) in enumerate(word_to_turn_idx):
-                if global_idx < len(timestamps):
-                    ts_data = timestamps[global_idx]
-                    original_word = original_words[global_idx]
-                    turn_word_data[turn_idx].append({
-                        'text': original_word,
-                        'start': ts_data['start'],
-                        'end': ts_data['end'],
-                        'confidence': ts_data['confidence'],
-                        'speaker': turns[turn_idx].get('speaker', 'UNKNOWN'),
-                    })
+            for clean_idx, aligned_idx in word_matches.items():
+                if clean_idx >= len(clean_word_to_original_idx) or aligned_idx >= len(timestamps):
+                    continue
+                original_idx = clean_word_to_original_idx[clean_idx]
+                original_word_timestamps.setdefault(original_idx, []).append(timestamps[aligned_idx])
+
+            timed_originals = 0
+            for original_idx, (turn_idx, _) in enumerate(word_to_turn_idx):
+                ts_list = original_word_timestamps.get(original_idx)
+                if not ts_list:
+                    continue
+                timed_originals += 1
+                start_ms = min(ts['start'] for ts in ts_list)
+                end_ms = max(ts['end'] for ts in ts_list)
+                confidence_values = [ts.get('confidence') for ts in ts_list if ts.get('confidence') is not None]
+                confidence = min(confidence_values) if confidence_values else 1.0
+                original_word = original_words[original_idx]
+                turn_word_data[turn_idx].append({
+                    'text': original_word,
+                    'start': start_ms,
+                    'end': end_ms,
+                    'confidence': confidence,
+                    'speaker': turns[turn_idx].get('speaker', 'UNKNOWN'),
+                })
+
+            logger.info("Alignment timed %d/%d original words", timed_originals, len(original_words))
 
             # Update each turn with new word data and recalculate timestamp
             for turn_idx, turn in enumerate(updated_turns):

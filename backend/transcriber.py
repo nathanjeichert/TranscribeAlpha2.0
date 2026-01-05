@@ -355,10 +355,16 @@ def calculate_line_timestamps_from_words(
     word_search_idx = start_offset
     line_word_idx = 0
 
+    def normalize_word_for_match(word: str) -> str:
+        normalized = word.lower()
+        normalized = normalized.replace("’", "'").replace("‘", "'")
+        normalized = re.sub(r"[^\w]+", "", normalized)
+        return normalized.strip("_")
+
     while line_word_idx < len(line_words) and word_search_idx < len(all_words):
         word_obj = all_words[word_search_idx]
-        word_clean = word_obj.text.lower().strip(".,!?;:")
-        line_word_clean = line_words[line_word_idx].strip(".,!?;:")
+        word_clean = normalize_word_for_match(word_obj.text)
+        line_word_clean = normalize_word_for_match(line_words[line_word_idx])
 
         if word_clean == line_word_clean:
             matched_word_indices.append(word_search_idx)
@@ -743,10 +749,23 @@ def compute_transcript_line_entries(
 
     for turn_idx, turn in enumerate(transcript_turns):
         start_sec = timestamp_to_seconds(turn.timestamp)
-        if turn_idx < len(transcript_turns) - 1:
-            stop_sec = timestamp_to_seconds(transcript_turns[turn_idx + 1].timestamp)
-        else:
-            stop_sec = audio_duration
+        stop_sec: Optional[float] = None
+
+        if turn.words:
+            word_starts = [word.start for word in turn.words if word.start is not None]
+            word_ends = [word.end for word in turn.words if word.end is not None]
+            if word_starts and word_ends:
+                start_sec = min(word_starts) / 1000.0
+                stop_sec = max(word_ends) / 1000.0
+
+        if stop_sec is None:
+            if turn_idx < len(transcript_turns) - 1:
+                stop_sec = timestamp_to_seconds(transcript_turns[turn_idx + 1].timestamp)
+            else:
+                stop_sec = audio_duration
+
+        if stop_sec < start_sec:
+            stop_sec = start_sec
 
         speaker_name = turn.speaker.upper()
         text = turn.text.strip()
