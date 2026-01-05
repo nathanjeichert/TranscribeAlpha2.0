@@ -342,14 +342,14 @@ export default function TranscriptEditor({
   const editingFieldName = editingField?.field
 
   useEffect(() => {
-    if (!editingField) return
+    if (!editingLineId || !editingFieldName) return
     if (editInputRef.current) {
       editInputRef.current.focus()
-      if (editingField.field === 'speaker' && 'select' in editInputRef.current) {
-        ; (editInputRef.current as HTMLInputElement).select()
+      if (editingFieldName === 'speaker' && 'select' in editInputRef.current) {
+        ;(editInputRef.current as HTMLInputElement).select()
       }
     }
-  }, [editingField]) // Only run when lineId or field changes, not when value changes
+  }, [editingLineId, editingFieldName]) // Only run when lineId or field changes, not when value changes
 
   useEffect(() => {
     const player = effectiveMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
