@@ -431,8 +431,8 @@ def transcribe_with_gemini(
             word_end = float(word_item.get("end", word_start))
             words_data.append({
                 "text": word_text,
-                "start": max(word_start, 0.0) * 1000.0,
-                "end": max(word_end, word_start) * 1000.0,
+                "start": max(word_start, 0.0),
+                "end": max(word_end, word_start),
                 "speaker": speaker,
             })
 

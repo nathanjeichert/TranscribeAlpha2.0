@@ -389,7 +389,6 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
                 text=full_text,
                 timestamp=timestamp_str,
                 words=current_words if current_words else None,
-                is_continuation=False,
             )
         )
         current_speaker = None
@@ -398,36 +397,60 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
         current_start = None
 
     for line in normalized_lines:
-        speaker = str(line.get("speaker", "SPEAKER")).strip().upper() or "SPEAKER"
-        text = str(line.get("text", "")).strip()
+        speaker = str(line.get("speaker", "")).strip() or "SPEAKER"
+        text_val = str(line.get("text", "")).strip()
+        start_val = float(line.get("start", 0.0))
+        end_val = float(line.get("end", start_val))
 
-        if current_speaker is None:
-            current_speaker = speaker
-            current_start = float(line.get("start", 0.0))
-        elif speaker != current_speaker or not line.get("is_continuation", False):
+        should_start_new = current_speaker is None or speaker.upper() != current_speaker
+
+        if should_start_new:
             flush_turn()
-            current_speaker = speaker
-            current_start = float(line.get("start", 0.0))
+            current_speaker = speaker.upper()
+            current_start = start_val
 
-        if text:
-            current_text_parts.append(text)
-        elif not current_text_parts:
-            current_text_parts.append("")
+        current_text_parts.append(text_val)
 
         line_words = line.get("words")
-        if line_words and isinstance(line_words, list):
-            for word in line_words:
-                try:
-                    word_obj = WordTimestamp(
-                        text=str(word.get("text", "")),
-                        start=float(word.get("start", 0.0)),
-                        end=float(word.get("end", 0.0)),
-                        confidence=word.get("confidence"),
-                        speaker=word.get("speaker"),
-                    )
-                    current_words.append(word_obj)
-                except Exception:
+        if isinstance(line_words, list) and len(line_words) > 0:
+            for word_data in line_words:
+                if not isinstance(word_data, dict):
                     continue
+                word_text = str(word_data.get("text", "")).strip()
+                if not word_text:
+                    continue
+                word_start = float(word_data.get("start", 0.0))
+                word_end = float(word_data.get("end", word_start))
+                current_words.append(
+                    WordTimestamp(
+                        text=word_text,
+                        start=word_start * 1000.0,
+                        end=max(word_end * 1000.0, word_start * 1000.0),
+                        confidence=None,
+                        speaker=current_speaker,
+                    )
+                )
+        else:
+            tokens = [tok for tok in text_val.split() if tok]
+            if not tokens:
+                continue
+            line_duration = max(end_val - start_val, 0.01)
+            word_count = len(tokens)
+            for word_idx, token in enumerate(tokens):
+                token_start = start_val + (line_duration * word_idx / word_count)
+                if word_idx < word_count - 1:
+                    token_end = start_val + (line_duration * (word_idx + 1) / word_count)
+                else:
+                    token_end = end_val
+                current_words.append(
+                    WordTimestamp(
+                        text=token,
+                        start=token_start * 1000.0,
+                        end=token_end * 1000.0,
+                        confidence=None,
+                        speaker=current_speaker,
+                    )
+                )
 
     flush_turn()
 
