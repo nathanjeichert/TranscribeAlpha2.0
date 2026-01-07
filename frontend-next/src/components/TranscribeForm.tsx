@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import TranscriptEditor, { EditorSaveResponse, EditorSessionResponse } from '@/components/TranscriptEditor'
 import ClipCreator from '@/components/ClipCreator'
-import { getAuthHeaders } from '@/utils/auth'
+import { appendAccessTokenToMediaUrl, authenticatedFetch, getAuthHeaders } from '@/utils/auth'
 
 interface FormData {
   case_name: string
@@ -59,7 +59,7 @@ export default function TranscribeForm() {
   const [mediaKey, setMediaKey] = useState<string | null>(null)
   const [transcriptData, setTranscriptData] = useState<TranscriptData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [progress, setProgress] = useState(0)
+  const [loadingStage, setLoadingStage] = useState<string | null>(null)
   const [error, setError] = useState<string>('')
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState<string>('')
   const [mediaContentType, setMediaContentType] = useState<string | undefined>(undefined)
@@ -73,8 +73,8 @@ export default function TranscribeForm() {
   const [geminiBusy, setGeminiBusy] = useState(false)
   const [geminiError, setGeminiError] = useState<string | null>(null)
 
-
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const stageTimerRef = useRef<number | null>(null)
 
   const updateMediaPreview = useCallback(
     (blobName?: string | null, contentType?: string | null) => {
@@ -82,7 +82,7 @@ export default function TranscribeForm() {
       if (mediaPreviewUrl && mediaIsLocal) {
         URL.revokeObjectURL(mediaPreviewUrl)
       }
-      setMediaPreviewUrl(`/api/media/${blobName}`)
+      setMediaPreviewUrl(appendAccessTokenToMediaUrl(`/api/media/${blobName}`))
       setMediaContentType(contentType ?? undefined)
       setMediaIsLocal(false)
     },
@@ -167,9 +167,7 @@ export default function TranscribeForm() {
   const fetchTranscriptByKey = useCallback(
     async (key: string) => {
       try {
-        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`, {
-          headers: getAuthHeaders(),
-        })
+        const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`)
         if (!response.ok) {
           if (response.status === 404) {
             try {
@@ -219,9 +217,7 @@ export default function TranscribeForm() {
     setHistoryModalLoading(true)
     setHistoryModalError(null)
     try {
-      const response = await fetch('/api/transcripts', {
-        headers: getAuthHeaders(),
-      })
+      const response = await authenticatedFetch('/api/transcripts')
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
         throw new Error(detail?.detail || 'Failed to load history')
@@ -232,9 +228,9 @@ export default function TranscribeForm() {
       const groups: HistoryGroup[] = await Promise.all(
         transcripts.map(async (item) => {
           try {
-            const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(item.media_key)}/history`, {
-              headers: getAuthHeaders(),
-            })
+            const historyResponse = await authenticatedFetch(
+              `/api/transcripts/by-key/${encodeURIComponent(item.media_key)}/history`,
+            )
             let snapshots: SnapshotListItem[] = []
             if (historyResponse.ok) {
               const historyData = await historyResponse.json()
@@ -264,9 +260,9 @@ export default function TranscribeForm() {
       if (!finalGroups.length && (transcriptData?.media_key || mediaKey)) {
         const fallbackKey = transcriptData?.media_key ?? mediaKey!
         try {
-          const historyResponse = await fetch(`/api/transcripts/by-key/${encodeURIComponent(fallbackKey)}/history`, {
-            headers: getAuthHeaders(),
-          })
+          const historyResponse = await authenticatedFetch(
+            `/api/transcripts/by-key/${encodeURIComponent(fallbackKey)}/history`,
+          )
           const historyData = historyResponse.ok ? await historyResponse.json() : { snapshots: [] }
           finalGroups = [
             {
@@ -307,11 +303,10 @@ export default function TranscribeForm() {
       setRestoringSnapshotId(`${key}:${snapshotId}`)
       setHistoryModalError(null)
       try {
-        const response = await fetch(
+        const response = await authenticatedFetch(
           `/api/transcripts/by-key/${encodeURIComponent(key)}/restore/${snapshotId}`,
           {
             method: 'POST',
-            headers: getAuthHeaders(),
           },
         )
         if (!response.ok) {
@@ -340,17 +335,17 @@ export default function TranscribeForm() {
     }
 
     setIsLoading(true)
-    setProgress(0)
+    setLoadingStage('Uploading media...')
     setError('')
     setTranscriptData(null)
     setMediaKey(null)
 
-    const progressInterval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 90) return prev
-        return prev + Math.random() * 15
-      })
-    }, 500)
+    const clearStageTimer = () => {
+      if (stageTimerRef.current) {
+        window.clearTimeout(stageTimerRef.current)
+        stageTimerRef.current = null
+      }
+    }
 
     try {
       const submitFormData = new FormData()
@@ -359,28 +354,74 @@ export default function TranscribeForm() {
         submitFormData.append(key, value.toString())
       })
 
-      const response = await fetch('/api/transcribe', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: submitFormData,
+      const isVideoFile =
+        (selectedFile.type || '').startsWith('video/') ||
+        /\.(mp4|mov|avi|mkv)$/i.test(selectedFile.name)
+
+      const data: TranscriptData = await new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest()
+        request.open('POST', '/api/transcribe', true)
+        const authHeaders = getAuthHeaders()
+        Object.entries(authHeaders).forEach(([key, value]) => {
+          request.setRequestHeader(key, String(value))
+        })
+        request.responseType = 'json'
+
+        request.upload.onprogress = () => {
+          setLoadingStage('Uploading media...')
+        }
+
+        request.upload.onload = () => {
+          clearStageTimer()
+          if (isVideoFile) {
+            setLoadingStage('Converting to audio...')
+            stageTimerRef.current = window.setTimeout(() => {
+              setLoadingStage('Transcribing (this could take a few minutes)...')
+              stageTimerRef.current = null
+            }, 1200)
+          } else {
+            setLoadingStage('Transcribing (this could take a few minutes)...')
+          }
+        }
+
+        request.onload = () => {
+          clearStageTimer()
+          const responseData =
+            request.response ??
+            (() => {
+              try {
+                return JSON.parse(request.responseText)
+              } catch {
+                return null
+              }
+            })()
+
+          if (request.status >= 200 && request.status < 300) {
+            setLoadingStage('Producing transcript...')
+            resolve(responseData as TranscriptData)
+            return
+          }
+
+          const detail = responseData?.detail || 'Transcription failed'
+          reject(new Error(detail))
+        }
+
+        request.onerror = () => {
+          clearStageTimer()
+          reject(new Error('Upload failed. Please try again.'))
+        }
+
+        request.send(submitFormData)
       })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Unknown error occurred' }))
-        throw new Error(errorData.detail || 'Transcription failed')
-      }
-
-      const data: TranscriptData = await response.json()
       hydrateTranscript(data)
-      setProgress(100)
-
-
     } catch (err: any) {
       console.error('Transcription error:', err)
       setError(err.message || 'Transcription failed')
     } finally {
-      clearInterval(progressInterval)
+      clearStageTimer()
       setIsLoading(false)
+      setLoadingStage(null)
     }
   }
 
@@ -439,9 +480,8 @@ export default function TranscribeForm() {
     setGeminiBusy(true)
     setGeminiError(null)
     try {
-      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/gemini-refine`, {
+      const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/gemini-refine`, {
         method: 'POST',
-        headers: getAuthHeaders(),
       })
       if (!response.ok) {
         const detail = await response.json().catch(() => ({}))
@@ -468,9 +508,10 @@ export default function TranscribeForm() {
 
   const previewContentType = mediaContentType ?? selectedFile?.type ?? ''
   const isVideoPreview = previewContentType.startsWith('video/')
-  const clipMediaUrl =
-    (mediaIsLocal && mediaPreviewUrl) ||
-    (transcriptData?.media_blob_name ? `/api/media/${transcriptData.media_blob_name}` : mediaPreviewUrl || undefined)
+  const remoteMediaUrl = transcriptData?.media_blob_name
+    ? appendAccessTokenToMediaUrl(`/api/media/${transcriptData.media_blob_name}`)
+    : mediaPreviewUrl || undefined
+  const clipMediaUrl = (mediaIsLocal && mediaPreviewUrl) || remoteMediaUrl
   const clipMediaType =
     (mediaIsLocal ? mediaContentType ?? selectedFile?.type : undefined) ??
     transcriptData?.media_content_type ??
@@ -716,16 +757,26 @@ export default function TranscribeForm() {
                     disabled={!selectedFile || isLoading}
                     className="btn-primary text-lg px-12 py-4"
                   >
-                    {isLoading ? `Processing... ${progress.toFixed(0)}%` : 'Generate Transcript'}
+                    {isLoading ? 'Processing...' : 'Generate Transcript'}
                   </button>
                 </div>
 
                 {isLoading && (
-                  <div className="w-full bg-primary-200 rounded-full h-3 shadow-inner">
-                    <div
-                      className="bg-gradient-to-r from-primary-600 to-primary-500 h-3 rounded-full transition-all duration-300 shadow-sm"
-                      style={{ width: `${progress}%` }}
-                    />
+                  <div className="flex items-center justify-center gap-3 rounded-lg border border-primary-200 bg-white px-4 py-3 text-sm text-primary-700 shadow-sm">
+                    <svg
+                      className="h-5 w-5 animate-spin text-primary-600"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    <span className="font-medium">{loadingStage || 'Processing transcript...'}</span>
                   </div>
                 )}
               </form>

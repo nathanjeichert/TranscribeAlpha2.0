@@ -154,18 +154,15 @@ EDITOR_SESSION_TTL_DAYS = int(os.getenv("EDITOR_SESSION_TTL_DAYS", "7"))
 CLIP_SESSION_PREFIX = "clip_sessions/"
 CLIP_SESSION_TTL_DAYS = int(os.getenv("CLIP_SESSION_TTL_DAYS", str(EDITOR_SESSION_TTL_DAYS)))
 
-SNAPSHOT_PREFIX = "editor_snapshots/"
 SNAPSHOT_TTL_DAYS = int(os.getenv("SNAPSHOT_TTL_DAYS", "14"))
-SNAPSHOT_PER_SESSION_LIMIT = int(os.getenv("SNAPSHOT_PER_SESSION_LIMIT", "40"))
-SNAPSHOT_PER_MEDIA_LIMIT = int(os.getenv("SNAPSHOT_PER_MEDIA_LIMIT", "10"))
+MEDIA_TTL_DAYS = int(os.getenv("MEDIA_TTL_DAYS", "1"))
+MEDIA_CLEANUP_PREFIXES = ("preview_", "clip_", "raw_")
 
 
 def _clip_blob_name(clip_id: str) -> str:
     return f"{CLIP_SESSION_PREFIX}{clip_id}.json"
 
 
-def _snapshot_blob_name(media_key: str, snapshot_id: str) -> str:
-    return f"{SNAPSHOT_PREFIX}{media_key}/{snapshot_id}.json"
 
 
 def _extract_media_key(data: dict) -> str:
@@ -267,6 +264,10 @@ def load_current_transcript(media_key: str) -> Optional[dict]:
         # Try loading current.json
         blob = bucket.blob(f"transcripts/{media_key}/current.json")
         if blob.exists():
+            try:
+                blob.reload()
+            except Exception:
+                pass
             data = json.loads(blob.download_as_string())
             if not data.get("media_key"):
                 data["media_key"] = media_key
@@ -387,6 +388,7 @@ def save_clip_session(clip_id: str, clip_data: dict) -> None:
             "parent_media_key": clip_data.get("parent_media_key"),
             "created_at": clip_data.get("created_at"),
             "expires_at": clip_data.get("expires_at"),
+            "user_id": clip_data.get("user_id"),
         }
         blob.upload_from_string(json.dumps(clip_data), content_type="application/json")
         logger.info("Saved clip session %s", clip_id)
@@ -418,93 +420,14 @@ def delete_clip_session(clip_id: str) -> None:
         logger.error("Failed to delete clip session %s: %s", clip_id, exc)
 
 
-def save_snapshot(media_key: str, snapshot_id: str, snapshot_data: dict) -> None:
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = _snapshot_blob_name(media_key, snapshot_id)
-        blob = bucket.blob(blob_name)
-        blob.metadata = {
-            "snapshot_id": snapshot_id,
-            "media_key": media_key,
-            "created_at": snapshot_data.get("created_at"),
-            "saved": str(snapshot_data.get("saved", False)),
-            "line_count": str(snapshot_data.get("line_count", "")),
-            "title_label": snapshot_data.get("title_label", ""),
-        }
-        blob.upload_from_string(json.dumps(snapshot_data), content_type="application/json")
-        logger.info("Saved snapshot %s for media key %s", snapshot_id, media_key)
-    except Exception as exc:
-        logger.error("Failed to save snapshot %s for media key %s: %s", snapshot_id, media_key, exc)
-        raise
-
-
-def load_snapshot(media_key: str, snapshot_id: str) -> Optional[dict]:
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(_snapshot_blob_name(media_key, snapshot_id))
-        if not blob.exists():
-            return None
-        raw = blob.download_as_text()
-        return json.loads(raw)
-    except Exception as exc:
-        logger.error("Failed to load snapshot %s for media key %s: %s", snapshot_id, media_key, exc)
-        return None
-
-
-def list_snapshots_for_media(media_key: str) -> List[dict]:
-    bucket = storage_client.bucket(BUCKET_NAME)
-    prefix = f"{SNAPSHOT_PREFIX}{media_key}/"
-    items: List[dict] = []
-    try:
-        for blob in bucket.list_blobs(prefix=prefix):
-            try:
-                metadata = blob.metadata or {}
-                created_at = metadata.get("created_at") or blob.time_created.isoformat()
-                item = {
-                    "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
-                    "session_id": metadata.get("session_id"),
-                    "media_key": metadata.get("media_key") or media_key,
-                    "created_at": created_at,
-                    "size": blob.size,
-                    "saved": metadata.get("saved") == "True" or metadata.get("saved") is True,
-                    "line_count": int(metadata.get("line_count") or 0),
-                    "title_label": metadata.get("title_label") or "",
-                }
-                if not item["media_key"] or item["media_key"] == "unknown" or not item["title_label"]:
-                    try:
-                        payload = json.loads(blob.download_as_text())
-                        item["media_key"] = derive_media_key_from_payload(payload)
-                        if not item["title_label"]:
-                            t = payload.get("title_data") or {}
-                            item["title_label"] = t.get("CASE_NAME") or t.get("FILE_NAME") or ""
-                        if not item["line_count"]:
-                            item["line_count"] = len(payload.get("lines") or [])
-                    except Exception:
-                        pass
-                items.append(item)
-            except Exception:
-                continue
-    except Exception as exc:
-        logger.error("Failed to list snapshots for media key %s: %s", media_key, exc)
-    # Sort newest first
-    items.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
-    return items
-
-
 def prune_snapshots(media_key: str) -> None:
     """Prune snapshots to keep newest 10, preserving newest manual save."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
         limit = 10
 
-        # Support both old and new storage paths during migration
-        old_prefix = f"{SNAPSHOT_PREFIX}{media_key}/"
-        new_prefix = f"transcripts/{media_key}/history/"
-
-        blobs = list(bucket.list_blobs(prefix=new_prefix))
-        if not blobs:
-            # Fallback to old path for backwards compatibility
-            blobs = list(bucket.list_blobs(prefix=old_prefix))
+        prefix = f"transcripts/{media_key}/history/"
+        blobs = list(bucket.list_blobs(prefix=prefix))
 
         # Phase 1: Delete expired snapshots (14+ days old)
         cutoff = datetime.now(timezone.utc) - timedelta(days=SNAPSHOT_TTL_DAYS)
@@ -873,6 +796,9 @@ def normalize_line_payloads(
         duration_seconds = max_end
     elif max_end > duration_seconds:
         duration_seconds = max_end
+
+    if any(line.get("timestamp_error") for line in normalized_lines):
+        return normalized_lines, duration_seconds
 
     normalized_lines = sorted(
         enumerate(normalized_lines),
@@ -1646,22 +1572,20 @@ def transcribe_with_gemini(
 
 
 def cleanup_old_files():
-    """Clean up files older than 1 day from Cloud Storage to prevent billing issues"""
+    """Clean up media files older than MEDIA_TTL_DAYS from Cloud Storage to prevent billing issues."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
-        cutoff_date = datetime.now() - timedelta(days=1)
-        
-        blobs = bucket.list_blobs()
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=MEDIA_TTL_DAYS)
+
         deleted_count = 0
-        
-        for blob in blobs:
-            # Check if blob is older than 1 day
-            if blob.time_created and blob.time_created.replace(tzinfo=None) < cutoff_date:
-                blob.delete()
-                deleted_count += 1
-                logger.info(f"Deleted old file: {blob.name}")
-        
-        logger.info(f"Cleanup completed. Deleted {deleted_count} old files.")
+        for prefix in MEDIA_CLEANUP_PREFIXES:
+            for blob in bucket.list_blobs(prefix=prefix):
+                if blob.time_created and blob.time_created < cutoff_date:
+                    blob.delete()
+                    deleted_count += 1
+                    logger.info("Deleted old media file: %s", blob.name)
+
+        logger.info("Media cleanup completed. Deleted %d files.", deleted_count)
     except Exception as e:
         logger.error(f"Error during cleanup: {str(e)}")
 
@@ -1680,29 +1604,10 @@ def _upload_bytes_to_blob(blob: storage.Blob, file_bytes: bytes, content_type: O
     buffer.seek(0)
     blob.upload_from_file(buffer, size=len(file_bytes), content_type=content_type or "application/octet-stream")
 
-
-def upload_to_cloud_storage(file_bytes: bytes, filename: str) -> str:
-    """Upload file to Cloud Storage and return the blob name"""
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
-        blob = bucket.blob(blob_name)
-        _upload_bytes_to_blob(blob, file_bytes)
-        logger.info(f"Uploaded {filename} to Cloud Storage as {blob_name}")
-        return blob_name
-    except Exception as e:
-        logger.error(f"Error uploading to Cloud Storage: {_format_gcs_error(e)}")
-        raise
-
-def download_from_cloud_storage(blob_name: str) -> bytes:
-    """Download file from Cloud Storage"""
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-        return blob.download_as_bytes()
-    except Exception as e:
-        logger.error(f"Error downloading from Cloud Storage: {str(e)}")
-        raise
+def _upload_file_to_blob(blob: storage.Blob, file_path: str, content_type: Optional[str] = None) -> None:
+    blob.chunk_size = 5 * 1024 * 1024  # 5MB chunking to support larger files consistently
+    with open(file_path, "rb") as stream:
+        blob.upload_from_file(stream, content_type=content_type or "application/octet-stream")
 
 def get_blob_metadata(blob_name: str) -> dict:
     """Get metadata for a blob in Cloud Storage"""
@@ -1711,41 +1616,91 @@ def get_blob_metadata(blob_name: str) -> dict:
         blob = bucket.blob(blob_name)
         if not blob.exists():
             return None
-        
+
+        blob.reload()
         # Parse metadata from blob name and custom metadata
         metadata = blob.metadata or {}
         return {
-            'filename': metadata.get('original_filename', blob_name.split('_')[-1]),
-            'content_type': blob.content_type or metadata.get('content_type', 'application/octet-stream'),
-            'size': blob.size,
-            'created': blob.time_created,
+            "filename": metadata.get("original_filename", blob_name.split("_")[-1]),
+            "content_type": blob.content_type or metadata.get("content_type", "application/octet-stream"),
+            "size": blob.size,
+            "created": blob.time_created,
+            "user_id": metadata.get("user_id"),
+            "media_key": metadata.get("media_key"),
+            "parent_media_key": metadata.get("parent_media_key"),
+            "file_type": metadata.get("file_type"),
         }
     except Exception as e:
         logger.error(f"Error getting blob metadata: {str(e)}")
         return None
 
-def upload_preview_file_to_cloud_storage(file_bytes: bytes, filename: str, content_type: str = None) -> str:
-    """Upload preview file to Cloud Storage with metadata"""
+def upload_preview_file_to_cloud_storage(
+    file_bytes: bytes,
+    filename: str,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    media_key: Optional[str] = None,
+) -> str:
+    """Upload preview file to Cloud Storage with metadata."""
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
         blob_name = f"preview_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
         blob = bucket.blob(blob_name)
-        
-        # Set metadata
-        blob.metadata = {
-            'original_filename': filename,
-            'content_type': content_type or 'application/octet-stream',
-            'file_type': 'preview'
+
+        metadata = {
+            "original_filename": filename,
+            "content_type": content_type or "application/octet-stream",
+            "file_type": "preview",
         }
-        
+        if user_id:
+            metadata["user_id"] = user_id
+        if media_key:
+            metadata["media_key"] = media_key
+
+        blob.metadata = metadata
         if content_type:
             blob.content_type = content_type
-            
+
         _upload_bytes_to_blob(blob, file_bytes, content_type)
-        logger.info(f"Uploaded preview file {filename} to Cloud Storage as {blob_name}")
+        logger.info("Uploaded preview file %s to Cloud Storage as %s", filename, blob_name)
         return blob_name
     except Exception as e:
-        logger.error(f"Error uploading preview file to Cloud Storage: {_format_gcs_error(e)}")
+        logger.error("Error uploading preview file to Cloud Storage: %s", _format_gcs_error(e))
+        raise
+
+
+def upload_preview_file_to_cloud_storage_from_path(
+    file_path: str,
+    filename: str,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    media_key: Optional[str] = None,
+) -> str:
+    """Upload preview file to Cloud Storage from disk with metadata."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob_name = f"preview_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{filename}"
+        blob = bucket.blob(blob_name)
+
+        metadata = {
+            "original_filename": filename,
+            "content_type": content_type or "application/octet-stream",
+            "file_type": "preview",
+        }
+        if user_id:
+            metadata["user_id"] = user_id
+        if media_key:
+            metadata["media_key"] = media_key
+
+        blob.metadata = metadata
+        if content_type:
+            blob.content_type = content_type
+
+        _upload_file_to_blob(blob, file_path, content_type)
+        logger.info("Uploaded preview file %s to Cloud Storage as %s", filename, blob_name)
+        return blob_name
+    except Exception as e:
+        logger.error("Error uploading preview file to Cloud Storage: %s", _format_gcs_error(e))
         raise
 
 
@@ -1764,7 +1719,108 @@ def download_blob_to_path(blob_name: str) -> Tuple[str, Optional[str]]:
     return temp_file.name, blob.content_type
 
 
-def upload_clip_file_to_cloud_storage(file_bytes: bytes, filename: str, content_type: Optional[str]) -> str:
+async def save_upload_to_tempfile(upload: UploadFile) -> Tuple[str, int]:
+    """Stream an UploadFile to disk and return (path, size)."""
+    suffix = os.path.splitext(upload.filename or "")[1]
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    size = 0
+    try:
+        while True:
+            chunk = await upload.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            temp_file.write(chunk)
+    finally:
+        temp_file.close()
+    try:
+        await upload.seek(0)
+    except Exception:
+        pass
+    return temp_file.name, size
+
+
+def _extract_token_from_request(request: Request) -> Optional[str]:
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1]
+    token_param = request.query_params.get("token")
+    return token_param or None
+
+
+def _get_user_from_request(request: Request) -> Optional[dict]:
+    token = _extract_token_from_request(request)
+    if not token:
+        return None
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "access":
+        return None
+    username = payload.get("sub")
+    if not username:
+        return None
+    return {
+        "username": username,
+        "role": payload.get("role", "user"),
+        "user_id": username,
+    }
+
+
+def _user_can_access_media_blob(user_id: str, blob_name: str, metadata: Optional[dict]) -> bool:
+    if metadata and metadata.get("user_id"):
+        return metadata.get("user_id") == user_id
+
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        for blob in bucket.list_blobs(prefix="transcripts/"):
+            if not blob.name.endswith("/current.json"):
+                continue
+            try:
+                data = json.loads(blob.download_as_string())
+            except Exception:
+                continue
+            if data.get("user_id") != user_id:
+                continue
+            if data.get("media_blob_name") == blob_name:
+                return True
+            for clip in data.get("clips") or []:
+                if clip.get("media_blob_name") == blob_name:
+                    return True
+        return False
+    except Exception as exc:
+        logger.warning("Failed to verify media ownership for %s: %s", blob_name, exc)
+        return False
+
+
+def _user_owns_media_key(media_key: str, user_id: str) -> bool:
+    current = load_current_transcript(media_key)
+    if current and current.get("user_id") == user_id:
+        return True
+
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = f"transcripts/{media_key}/history/"
+        for blob in bucket.list_blobs(prefix=prefix):
+            try:
+                snapshot_data = json.loads(blob.download_as_string())
+            except Exception:
+                continue
+            if snapshot_data.get("user_id") == user_id:
+                return True
+        return False
+    except Exception as exc:
+        logger.warning("Failed to verify transcript ownership for %s: %s", media_key, exc)
+        return False
+
+
+def upload_clip_file_to_cloud_storage(
+    file_bytes: bytes,
+    filename: str,
+    content_type: Optional[str],
+    user_id: Optional[str] = None,
+    parent_media_key: Optional[str] = None,
+) -> str:
     try:
         bucket = storage_client.bucket(BUCKET_NAME)
         safe_name = filename or "clip-output"
@@ -1775,6 +1831,10 @@ def upload_clip_file_to_cloud_storage(file_bytes: bytes, filename: str, content_
             "content_type": content_type or "application/octet-stream",
             "file_type": "clip",
         }
+        if user_id:
+            metadata["user_id"] = user_id
+        if parent_media_key:
+            metadata["parent_media_key"] = parent_media_key
         blob.metadata = metadata
         if content_type:
             blob.content_type = content_type
@@ -1792,6 +1852,8 @@ def clip_media_segment(
     clip_end: float,
     content_type: Optional[str],
     clip_label: str,
+    user_id: Optional[str] = None,
+    parent_media_key: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     if not source_blob_name:
         return None, None
@@ -1847,7 +1909,13 @@ def clip_media_segment(
 
         filename_slug = slugify_filename(clip_label or "clip")
         clip_filename = f"{filename_slug}{extension}"
-        clip_blob_name = upload_clip_file_to_cloud_storage(clip_bytes, clip_filename, content_type)
+        clip_blob_name = upload_clip_file_to_cloud_storage(
+            clip_bytes,
+            clip_filename,
+            content_type,
+            user_id=user_id,
+            parent_media_key=parent_media_key,
+        )
         return clip_blob_name, content_type
     finally:
         for temp_path in (source_temp.name, output_temp.name):
@@ -2032,210 +2100,209 @@ async def transcribe(
                 status_code=500,
                 detail="Server configuration error: Gemini API key not configured"
             )
-    
-    # Check file size and handle large files with Cloud Storage
-    file_size = len(await file.read())
-    await file.seek(0)  # Reset file pointer
-    logger.info(f"File size: {file_size / (1024*1024):.2f} MB")
-    
-    # Increase limit to 2GB for Cloud Storage handling
-    if file_size > 2 * 1024 * 1024 * 1024:  # 2GB limit
-        raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
-    
-    file_bytes = await file.read()
-    
-    # For large files (>100MB), use Cloud Storage
-    use_cloud_storage = file_size > 100 * 1024 * 1024
-    blob_name = None
-    
-    if use_cloud_storage:
-        logger.info(f"Large file detected ({file_size / (1024*1024):.2f} MB), uploading to Cloud Storage")
-        blob_name = upload_to_cloud_storage(file_bytes, file.filename)
-        # Run cleanup after upload to manage storage costs
-        cleanup_old_files()
-    speaker_list: Optional[List[str]] = None
-    if speaker_names:
-        # Handle both comma-separated and JSON formats for backward compatibility
-        speaker_names = speaker_names.strip()
-        if speaker_names.startswith('[') and speaker_names.endswith(']'):
-            # JSON format
-            try:
-                speaker_list = json.loads(speaker_names)
-            except json.JSONDecodeError:
-                raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
-        else:
-            # Comma-separated format
-            speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
 
-    # Generate stable MEDIA_ID for this transcript
-    media_key = uuid.uuid4().hex
-    title_data = {
-        "CASE_NAME": case_name,
-        "CASE_NUMBER": case_number,
-        "FIRM_OR_ORGANIZATION_NAME": firm_name,
-        "DATE": input_date,
-        "TIME": input_time,
-        "LOCATION": location,
-        "FILE_NAME": file.filename,
-        "FILE_DURATION": "Calculating...",
-        "MEDIA_ID": media_key,  # Stable identifier for this transcript
-    }
-
-    # Upload media for editor playback
-    media_blob_name = None
-    media_content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+    temp_upload_path = None
     try:
-        media_blob_name = upload_preview_file_to_cloud_storage(
-            file_bytes,
-            file.filename,
-            media_content_type,
-        )
-    except Exception as e:
-        logger.warning("Failed to store media preview for editor session: %s", e)
+        temp_upload_path, file_size = await save_upload_to_tempfile(file)
+        logger.info("File size: %.2f MB", file_size / (1024 * 1024))
+
+        # Increase limit to 2GB
+        if file_size > 2 * 1024 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+
+        if not temp_upload_path:
+            raise HTTPException(status_code=400, detail="Unable to read uploaded file")
+
+        speaker_list: Optional[List[str]] = None
+        if speaker_names:
+            # Handle both comma-separated and JSON formats for backward compatibility
+            speaker_names = speaker_names.strip()
+            if speaker_names.startswith('[') and speaker_names.endswith(']'):
+                # JSON format
+                try:
+                    speaker_list = json.loads(speaker_names)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
+            else:
+                # Comma-separated format
+                speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
+
+        # Generate stable MEDIA_ID for this transcript
+        media_key = uuid.uuid4().hex
+        title_data = {
+            "CASE_NAME": case_name,
+            "CASE_NUMBER": case_number,
+            "FIRM_OR_ORGANIZATION_NAME": firm_name,
+            "DATE": input_date,
+            "TIME": input_time,
+            "LOCATION": location,
+            "FILE_NAME": file.filename,
+            "FILE_DURATION": "Calculating...",
+            "MEDIA_ID": media_key,  # Stable identifier for this transcript
+        }
+
+        # Upload media for editor playback
         media_blob_name = None
-        media_content_type = None
-
-    # Generate transcription based on selected model
-    asr_start_time = time.time()
-    if transcription_model == "assemblyai":
-        logger.info("Starting AssemblyAI transcription...")
+        media_content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
         try:
-            turns, docx_bytes, duration_seconds = process_transcription(
-                file_bytes,
+            media_blob_name = upload_preview_file_to_cloud_storage_from_path(
+                temp_upload_path,
                 file.filename,
-                speaker_list,
-                title_data,
+                media_content_type,
+                user_id=current_user["user_id"],
+                media_key=media_key,
             )
-            asr_elapsed = time.time() - asr_start_time
-            logger.info(f"AssemblyAI completed in {asr_elapsed:.1f}s. Generated {len(turns)} turns.")
         except Exception as e:
-            import traceback
-            error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-            logger.error(f"AssemblyAI transcription error: {error_detail}")
-            raise HTTPException(status_code=500, detail=f"AssemblyAI transcription failed: {str(e)}")
+            logger.warning("Failed to store media preview for editor session: %s", e)
+            media_blob_name = None
+            media_content_type = None
 
-    elif transcription_model == "gemini":
-        logger.info("Starting Gemini transcription...")
-        try:
-            # Process audio file for Gemini (need to extract audio and get duration)
-            with tempfile.TemporaryDirectory() as temp_dir:
-                input_path = os.path.join(temp_dir, file.filename)
-                with open(input_path, "wb") as f:
-                    f.write(file_bytes)
-
-                ext = file.filename.split('.')[-1].lower()
-                audio_path = input_path
-                audio_mime = "audio/mpeg"
-
-                # Convert video to audio if needed
-                SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
-                if ext in SUPPORTED_VIDEO_TYPES:
-                    output_audio = os.path.join(temp_dir, f"{os.path.splitext(file.filename)[0]}.mp3")
-                    audio_path = convert_video_to_audio(input_path, output_audio) or input_path
-                    audio_mime = "audio/mpeg"
-                else:
-                    # Get audio mime type
-                    mime_map = {
-                        "mp3": "audio/mpeg",
-                        "wav": "audio/wav",
-                        "m4a": "audio/mp4",
-                        "flac": "audio/flac",
-                        "ogg": "audio/ogg",
-                        "aac": "audio/aac",
-                        "aiff": "audio/aiff",
-                    }
-                    audio_mime = mime_map.get(ext, "audio/mpeg")
-
-                # Get duration
-                duration_seconds = get_media_duration(audio_path) or 0.0
-
-                # Update title_data with duration
-                hours, rem = divmod(duration_seconds, 3600)
-                minutes, seconds = divmod(rem, 60)
-                title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
-
-                # Run Gemini transcription (blocking call in thread)
-                gemini_lines = await anyio.to_thread.run_sync(
-                    transcribe_with_gemini,
-                    audio_path,
-                    audio_mime,
-                    duration_seconds,
+        duration_seconds = 0.0
+        # Generate transcription based on selected model
+        asr_start_time = time.time()
+        if transcription_model == "assemblyai":
+            logger.info("Starting AssemblyAI transcription...")
+            try:
+                turns, docx_bytes, duration_seconds = process_transcription(
+                    None,
+                    file.filename,
                     speaker_list,
+                    title_data,
+                    input_path=temp_upload_path,
                 )
-
-                # Normalize and convert to TranscriptTurn objects
-                normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
-                turns = construct_turns_from_lines(normalized_lines)
-
-                if not turns:
-                    raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
-
                 asr_elapsed = time.time() - asr_start_time
-                logger.info(f"Gemini completed in {asr_elapsed:.1f}s. Generated {len(turns)} turns.")
+                logger.info(f"AssemblyAI completed in {asr_elapsed:.1f}s. Generated {len(turns)} turns.")
+            except Exception as e:
+                import traceback
+                error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+                logger.error(f"AssemblyAI transcription error: {error_detail}")
+                raise HTTPException(status_code=500, detail=f"AssemblyAI transcription failed: {str(e)}")
 
-        except HTTPException:
-            raise
+        elif transcription_model == "gemini":
+            logger.info("Starting Gemini transcription...")
+            try:
+                # Process audio file for Gemini (need to extract audio and get duration)
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    input_path = temp_upload_path
+
+                    ext = file.filename.split('.')[-1].lower()
+                    audio_path = input_path
+                    audio_mime = "audio/mpeg"
+
+                    # Convert video to audio if needed
+                    SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
+                    if ext in SUPPORTED_VIDEO_TYPES:
+                        output_audio = os.path.join(temp_dir, f"{os.path.splitext(os.path.basename(file.filename))[0]}.mp3")
+                        audio_path = convert_video_to_audio(input_path, output_audio) or input_path
+                        audio_mime = "audio/mpeg"
+                    else:
+                        # Get audio mime type
+                        mime_map = {
+                            "mp3": "audio/mpeg",
+                            "wav": "audio/wav",
+                            "m4a": "audio/mp4",
+                            "flac": "audio/flac",
+                            "ogg": "audio/ogg",
+                            "aac": "audio/aac",
+                            "aiff": "audio/aiff",
+                        }
+                        audio_mime = mime_map.get(ext, "audio/mpeg")
+
+                    # Get duration
+                    duration_seconds = get_media_duration(audio_path) or 0.0
+
+                    # Update title_data with duration
+                    hours, rem = divmod(duration_seconds, 3600)
+                    minutes, seconds = divmod(rem, 60)
+                    title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+                    # Run Gemini transcription (blocking call in thread)
+                    gemini_lines = await anyio.to_thread.run_sync(
+                        transcribe_with_gemini,
+                        audio_path,
+                        audio_mime,
+                        duration_seconds,
+                        speaker_list,
+                    )
+
+                    # Normalize and convert to TranscriptTurn objects
+                    normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
+                    turns = construct_turns_from_lines(normalized_lines)
+
+                    if not turns:
+                        raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
+
+                    asr_elapsed = time.time() - asr_start_time
+                    logger.info(f"Gemini completed in {asr_elapsed:.1f}s. Generated {len(turns)} turns.")
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                import traceback
+                error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
+                logger.error(f"Gemini transcription error: {error_detail}")
+                raise HTTPException(status_code=500, detail=f"Gemini transcription failed: {str(e)}")
+
+        logger.info("Preserving native ASR/Gemini word timestamps for initial transcription")
+
+        docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+            turns,
+            title_data,
+            duration_seconds or 0,
+            DEFAULT_LINES_PER_PAGE,
+        )
+        docx_b64 = base64.b64encode(docx_bytes).decode()
+        oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+
+        created_at = datetime.now(timezone.utc)
+
+        transcript_data = {
+            "media_key": media_key,
+            "created_at": created_at.isoformat(),
+            "title_data": title_data,
+            "audio_duration": float(duration_seconds or 0),
+            "lines_per_page": DEFAULT_LINES_PER_PAGE,
+            "turns": serialize_transcript_turns(turns),
+            "source_turns": serialize_transcript_turns(turns),
+            "lines": line_payloads,
+            "docx_base64": docx_b64,
+            "oncue_xml_base64": oncue_b64,
+            "transcript_text": transcript_text,
+            "transcript": transcript_text,
+            "media_blob_name": media_blob_name,
+            "media_content_type": media_content_type,
+            "updated_at": created_at.isoformat(),
+            "user_id": current_user["user_id"],
+            "clips": [],
+        }
+
+        try:
+            # Save as current state
+            save_current_transcript(media_key, transcript_data)
+
+            # Also create initial snapshot (manual save)
+            snapshot_id = uuid.uuid4().hex
+            snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
+            bucket = storage_client.bucket(BUCKET_NAME)
+            snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
+            snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
+
         except Exception as e:
-            import traceback
-            error_detail = f"Error: {str(e)}\nTraceback: {traceback.format_exc()}"
-            logger.error(f"Gemini transcription error: {error_detail}")
-            raise HTTPException(status_code=500, detail=f"Gemini transcription failed: {str(e)}")
+            logger.error("Failed to store transcript: %s", e)
+            raise HTTPException(status_code=500, detail="Unable to persist transcript")
 
-    logger.info("Preserving native ASR/Gemini word timestamps for initial transcription")
+        response_data = {
+            **transcript_data,
+            "transcript": transcript_text,
+        }
 
-    docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
-        turns,
-        title_data,
-        duration_seconds or 0,
-        DEFAULT_LINES_PER_PAGE,
-    )
-    docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
-
-    created_at = datetime.now(timezone.utc)
-
-    transcript_data = {
-        "media_key": media_key,
-        "created_at": created_at.isoformat(),
-        "title_data": title_data,
-        "audio_duration": float(duration_seconds or 0),
-        "lines_per_page": DEFAULT_LINES_PER_PAGE,
-        "turns": serialize_transcript_turns(turns),
-        "source_turns": serialize_transcript_turns(turns),
-        "lines": line_payloads,
-        "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
-        "transcript_text": transcript_text,
-        "transcript": transcript_text,
-        "media_blob_name": media_blob_name,
-        "media_content_type": media_content_type,
-        "updated_at": created_at.isoformat(),
-        "user_id": current_user["user_id"],
-        "clips": [],
-    }
-
-    try:
-        # Save as current state
-        save_current_transcript(media_key, transcript_data)
-
-        # Also create initial snapshot (manual save)
-        snapshot_id = uuid.uuid4().hex
-        snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
-        bucket = storage_client.bucket(BUCKET_NAME)
-        snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
-        snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
-
-    except Exception as e:
-        logger.error("Failed to store transcript: %s", e)
-        raise HTTPException(status_code=500, detail="Unable to persist transcript")
-
-    response_data = {
-        **transcript_data,
-        "transcript": transcript_text,
-    }
-
-    return JSONResponse(response_data)
-
+        return JSONResponse(response_data)
+    finally:
+        if temp_upload_path and os.path.exists(temp_upload_path):
+            try:
+                os.remove(temp_upload_path)
+            except OSError:
+                pass
 
 # New media-key-based API endpoints
 @app.get("/api/transcripts")
@@ -2253,6 +2320,9 @@ async def list_transcripts_endpoint(current_user: dict = Depends(get_current_use
 async def list_transcript_history_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """List all snapshots for a media_key."""
     try:
+        if not _user_owns_media_key(media_key, current_user["user_id"]):
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
+
         logger.info(f"Fetching history for media_key: {media_key}")
         bucket = storage_client.bucket(BUCKET_NAME)
         prefix = f"transcripts/{media_key}/history/"
@@ -2322,6 +2392,8 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
 
         # Load existing or create new
         existing = load_current_transcript(media_key) or {}
+        if existing and existing.get("user_id") and existing.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
 
         # Update with new data
         transcript_data = {
@@ -2382,6 +2454,9 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
 async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, current_user: dict = Depends(get_current_user)):
     """Restore a specific snapshot as current state."""
     try:
+        if not _user_owns_media_key(media_key, current_user["user_id"]):
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
+
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
 
@@ -2405,95 +2480,17 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/transcripts/snapshots")
-async def list_all_snapshots(current_user: dict = Depends(get_current_user)):
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        items: List[dict] = []
-        for blob in bucket.list_blobs(prefix=SNAPSHOT_PREFIX):
-            try:
-                metadata = blob.metadata or {}
-                created_at = metadata.get("created_at") or blob.time_created.isoformat()
-                actual_media_key = metadata.get("media_key") or os.path.basename(os.path.dirname(blob.name)).replace(SNAPSHOT_PREFIX.strip("/"), "") or "unknown"
-                media_key_for_restore = actual_media_key
-
-                title_label = metadata.get("title_label") or ""
-                saved_flag = metadata.get("saved") == "True" or metadata.get("saved") is True
-                line_count = int(metadata.get("line_count") or 0)
-
-                display_media_key = actual_media_key
-                # Derive display key from payload if metadata is missing or empty
-                if not display_media_key or display_media_key == "unknown":
-                    try:
-                        payload = json.loads(blob.download_as_text())
-                        display_media_key = derive_media_key_from_payload(payload)
-                        title_label = title_label or (payload.get("title_data") or {}).get("CASE_NAME") or (payload.get("title_data") or {}).get("FILE_NAME") or ""
-                        saved_flag = saved_flag or bool(payload.get("saved"))
-                        line_count = line_count or len(payload.get("lines") or [])
-                    except Exception:
-                        display_media_key = actual_media_key or "unknown"
-
-                items.append(
-                    {
-                        "snapshot_id": metadata.get("snapshot_id") or os.path.splitext(os.path.basename(blob.name))[0],
-                        "session_id": metadata.get("session_id"),
-                        "media_key": media_key_for_restore,
-                        "display_media_key": display_media_key,
-                        "created_at": created_at,
-                        "size": blob.size,
-                        "saved": saved_flag,
-                        "line_count": line_count,
-                        "title_label": title_label,
-                    }
-                )
-            except Exception:
-                continue
-        # Sort by created desc and trim per media bucket to limit
-        items.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
-        grouped: dict = {}
-        for snap in items:
-            media_key = snap.get("display_media_key") or snap.get("media_key") or "unknown"
-            grouped.setdefault(media_key, []).append(snap)
-        trimmed: List[dict] = []
-        for media_key, snaps in grouped.items():
-            # prune per media to limit while keeping at least one saved
-            saved = [s for s in snaps if s.get("saved")]
-            newest_saved = saved[0] if saved else None
-            keep = snaps[:SNAPSHOT_PER_MEDIA_LIMIT]
-            if newest_saved and all(s["snapshot_id"] != newest_saved["snapshot_id"] for s in keep):
-                if len(keep) >= SNAPSHOT_PER_MEDIA_LIMIT:
-                    keep[-1] = newest_saved
-                else:
-                    keep.append(newest_saved)
-            trimmed.extend(keep[:SNAPSHOT_PER_MEDIA_LIMIT])
-        trimmed.sort(key=lambda itm: itm.get("created_at") or "", reverse=True)
-        return JSONResponse({"snapshots": trimmed})
-    except Exception as exc:
-        logger.error("Failed to list all snapshots: %s", exc)
-        raise HTTPException(status_code=500, detail="Unable to list snapshots")
-
-
-@app.get("/api/snapshots/{media_key}")
-async def list_snapshots_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
-    prune_snapshots(media_key)
-    return JSONResponse({"snapshots": list_snapshots_for_media(media_key)})
-
-
-@app.get("/api/snapshots/{media_key}/{snapshot_id}")
-async def get_snapshot_by_media(media_key: str, snapshot_id: str, current_user: dict = Depends(get_current_user)):
-    snapshot = load_snapshot(media_key, snapshot_id)
-    if not snapshot:
-        raise HTTPException(status_code=404, detail="Snapshot not found")
-    if not snapshot.get("media_key"):
-        snapshot["media_key"] = derive_media_key_from_payload(snapshot)
-    return JSONResponse(snapshot)
-
-
 @app.post("/api/transcripts/by-key/{media_key:path}/gemini-refine")
 async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(get_current_user)):
     session_data = load_current_transcript(media_key)
     if not session_data:
         raise HTTPException(status_code=404, detail="Transcript not found")
+    if session_data.get("user_id") and session_data.get("user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Access denied to this transcript")
+    if session_data.get("user_id") and session_data.get("user_id") != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Access denied to this transcript")
+    if session_data.get("user_id") and session_data.get("user_id") != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Access denied to this transcript")
 
     media_blob_name = session_data.get("media_blob_name")
     if not media_blob_name:
@@ -2709,6 +2706,8 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         end_absolute,
         session_data.get("media_content_type"),
         clip_name,
+        user_id=session_data.get("user_id"),
+        parent_media_key=media_key,
     )
 
     clip_id = uuid.uuid4().hex
@@ -2718,6 +2717,7 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
     clip_data = {
         "clip_id": clip_id,
         "parent_media_key": media_key,
+        "user_id": session_data.get("user_id"),
         "name": clip_name,
         "created_at": created_at.isoformat(),
         "expires_at": clip_expires_at.isoformat(),
@@ -2783,6 +2783,7 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
 
     clip_response = dict(clip_data)
     clip_response.pop("parent_media_key", None)
+    clip_response.pop("user_id", None)
     clip_response["transcript"] = clip_response.pop("transcript_text", "")
     clip_response["summary"] = clip_summary
 
@@ -2798,6 +2799,9 @@ async def get_clip_session(clip_id: str, current_user: dict = Depends(get_curren
     if not clip_data:
         raise HTTPException(status_code=404, detail="Clip session not found")
 
+    if clip_data.get("user_id") and clip_data.get("user_id") != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="Access denied to this clip")
+
     expires_at = clip_data.get("expires_at")
     if expires_at:
         try:
@@ -2812,6 +2816,7 @@ async def get_clip_session(clip_id: str, current_user: dict = Depends(get_curren
             raise HTTPException(status_code=404, detail="Clip session expired")
 
     response_payload = dict(clip_data)
+    response_payload.pop("user_id", None)
     response_payload["transcript"] = response_payload.pop("transcript_text", "")
     return JSONResponse(response_payload)
 
@@ -2841,221 +2846,259 @@ async def import_transcript(
 
     logger.info(f"Import request: file={filename} (type={file_ext}), media={media_file.filename if media_file else 'None'}")
 
-    file_bytes = await transcript_file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded transcript file is empty")
+    media_key = uuid.uuid4().hex
+    transcript_path = None
+    media_path = None
+    try:
+        transcript_path, transcript_size = await save_upload_to_tempfile(transcript_file)
+        if not transcript_path or transcript_size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded transcript file is empty")
 
-    # Upload media first (required for both formats)
-    media_blob_name = None
-    media_content_type = None
-    duration_seconds = 0.0
+        if not media_file:
+            raise HTTPException(status_code=400, detail="Media file is required for import")
 
-    if media_file:
-        media_bytes = await media_file.read()
-        if media_bytes:
-            media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename)[0]
-            try:
-                media_blob_name = upload_preview_file_to_cloud_storage(
-                    media_bytes,
-                    media_file.filename,
-                    media_content_type,
-                )
-                logger.info(f"Import: uploaded media to blob {media_blob_name}")
+        media_path, media_size = await save_upload_to_tempfile(media_file)
+        if not media_path or media_size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded media file is empty")
 
-                # Get duration from media
-                audio_path, _, dur, _ = await anyio.to_thread.run_sync(
-                    prepare_audio_for_gemini, media_blob_name, media_content_type
-                )
-                duration_seconds = dur or 0.0
-                # Cleanup temp file
-                if audio_path and os.path.exists(audio_path):
-                    try:
-                        os.remove(audio_path)
-                    except OSError:
-                        pass
-            except Exception as e:
-                logger.error("Failed to process media during import: %s", e)
-                raise HTTPException(status_code=500, detail=f"Failed to process media file: {e}")
-    else:
-        raise HTTPException(status_code=400, detail="Media file is required for import")
+        # Upload media first (required for both formats)
+        media_blob_name = None
+        media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename)[0]
+        duration_seconds = 0.0
 
-    # Parse transcript based on file type
-    if file_ext == 'xml':
-        # OnCue XML format
-        xml_text = file_bytes.decode("utf-8", errors="replace")
-        parsed = parse_oncue_xml(xml_text)
-        title_data = parsed["title_data"]
-        xml_duration = float(parsed["audio_duration"] or 0)
-        if xml_duration > 0:
-            duration_seconds = xml_duration
+        try:
+            media_blob_name = upload_preview_file_to_cloud_storage_from_path(
+                media_path,
+                media_file.filename,
+                media_content_type,
+                user_id=current_user["user_id"],
+                media_key=media_key,
+            )
+            logger.info(f"Import: uploaded media to blob {media_blob_name}")
 
-        lines_payload = parsed["lines"]
-        normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
-        turns = construct_turns_from_lines(normalized_lines)
+            # Get duration from media
+            audio_path, _, dur, _ = await anyio.to_thread.run_sync(
+                prepare_audio_for_gemini, media_blob_name, media_content_type
+            )
+            duration_seconds = dur or 0.0
+            # Cleanup temp file
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.error("Failed to process media during import: %s", e)
+            raise HTTPException(status_code=500, detail=f"Failed to process media file: {e}")
 
-        if not turns:
-            raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
+        with open(transcript_path, "rb") as transcript_stream:
+            file_bytes = transcript_stream.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded transcript file is empty")
 
-    elif file_ext == 'docx':
-        # DOCX format - parse and run Rev AI alignment
-        docx_turns = parse_docx_to_turns(file_bytes)
+        # Parse transcript based on file type
+        if file_ext == 'xml':
+            # OnCue XML format
+            xml_text = file_bytes.decode("utf-8", errors="replace")
+            parsed = parse_oncue_xml(xml_text)
+            title_data = parsed["title_data"]
+            xml_duration = float(parsed["audio_duration"] or 0)
+            if xml_duration > 0:
+                duration_seconds = xml_duration
 
-        if not docx_turns:
-            raise HTTPException(status_code=400, detail="Unable to parse transcript from DOCX")
+            lines_payload = parsed["lines"]
+            normalized_lines, duration_seconds = normalize_line_payloads(lines_payload, duration_seconds)
+            turns = construct_turns_from_lines(normalized_lines)
 
-        # Convert to TranscriptTurn objects (without timestamps initially)
-        turns = []
-        for t in docx_turns:
-            turns.append(TranscriptTurn(
-                speaker=t['speaker'],
-                text=t['text'],
-                timestamp=None,
-                words=None,
-                is_continuation=bool(t.get('is_continuation', False)),
-            ))
+            if not turns:
+                raise HTTPException(status_code=400, detail="Unable to construct transcript turns from XML")
 
-        # Run Rev AI alignment to get timestamps
-        rev_api_key = os.getenv("REV_AI_API_KEY")
-        if rev_api_key and media_blob_name:
-            alignment_audio_path = None
-            alignment_start_time = time.time()
-            try:
-                logger.info("Running Rev AI alignment for DOCX import...")
+        elif file_ext == 'docx':
+            # DOCX format - parse and run Rev AI alignment
+            docx_turns = parse_docx_to_turns(file_bytes)
 
-                alignment_audio_path, _, _, _ = await anyio.to_thread.run_sync(
-                    prepare_audio_for_gemini, media_blob_name, media_content_type
-                )
+            if not docx_turns:
+                raise HTTPException(status_code=400, detail="Unable to parse transcript from DOCX")
 
-                aligner = RevAIAligner(rev_api_key)
-                turns_payload = [t.model_dump() for t in turns]
+            # Convert to TranscriptTurn objects (without timestamps initially)
+            turns = []
+            for t in docx_turns:
+                turns.append(TranscriptTurn(
+                    speaker=t['speaker'],
+                    text=t['text'],
+                    timestamp=None,
+                    words=None,
+                    is_continuation=bool(t.get('is_continuation', False)),
+                ))
 
-                aligned_turns_payload = await anyio.to_thread.run_sync(
-                    aligner.align_transcript, turns_payload, alignment_audio_path, None
-                )
+            # Run Rev AI alignment to get timestamps
+            rev_api_key = os.getenv("REV_AI_API_KEY")
+            if rev_api_key and media_blob_name:
+                alignment_audio_path = None
+                alignment_start_time = time.time()
+                try:
+                    logger.info("Running Rev AI alignment for DOCX import...")
 
-                turns = [TranscriptTurn(**t) for t in aligned_turns_payload]
-                alignment_elapsed = time.time() - alignment_start_time
-                logger.info(f"Rev AI alignment completed in {alignment_elapsed:.1f}s for DOCX import")
+                    alignment_audio_path, _, _, _ = await anyio.to_thread.run_sync(
+                        prepare_audio_for_gemini, media_blob_name, media_content_type
+                    )
 
-            except Exception as e:
-                logger.warning(f"Rev AI alignment failed for DOCX import: {e}")
-                # Continue without timestamps - user can resync later
-            finally:
-                if alignment_audio_path and os.path.exists(alignment_audio_path):
-                    try:
-                        os.remove(alignment_audio_path)
-                    except OSError:
-                        pass
+                    aligner = RevAIAligner(rev_api_key)
+                    turns_payload = [t.model_dump() for t in turns]
+
+                    aligned_turns_payload = await anyio.to_thread.run_sync(
+                        aligner.align_transcript, turns_payload, alignment_audio_path, None
+                    )
+
+                    turns = [TranscriptTurn(**t) for t in aligned_turns_payload]
+                    alignment_elapsed = time.time() - alignment_start_time
+                    logger.info(f"Rev AI alignment completed in {alignment_elapsed:.1f}s for DOCX import")
+
+                except Exception as e:
+                    logger.warning(f"Rev AI alignment failed for DOCX import: {e}")
+                    # Continue without timestamps - user can resync later
+                finally:
+                    if alignment_audio_path and os.path.exists(alignment_audio_path):
+                        try:
+                            os.remove(alignment_audio_path)
+                        except OSError:
+                            pass
+            else:
+                logger.warning("REV_AI_API_KEY not configured, DOCX import will have no timestamps")
+
+            title_data = {}
         else:
-            logger.warning("REV_AI_API_KEY not configured, DOCX import will have no timestamps")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {file_ext}. Use .xml (OnCue) or .docx"
+            )
 
-        title_data = {}
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {file_ext}. Use .xml (OnCue) or .docx"
+        # Apply form overrides to title_data
+        overrides = {
+            "CASE_NAME": case_name or title_data.get("CASE_NAME", ""),
+            "CASE_NUMBER": case_number or title_data.get("CASE_NUMBER", ""),
+            "FIRM_OR_ORGANIZATION_NAME": firm_name or title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
+            "DATE": input_date or title_data.get("DATE", ""),
+            "TIME": input_time or title_data.get("TIME", ""),
+            "LOCATION": location or title_data.get("LOCATION", ""),
+            "FILE_NAME": title_data.get("FILE_NAME") or filename or "imported",
+        }
+        title_data.update(overrides)
+
+        # Always use a fresh media key
+        title_data["MEDIA_ID"] = media_key
+
+        # Build artifacts
+        docx_bytes_out, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+            turns,
+            title_data,
+            duration_seconds,
+            DEFAULT_LINES_PER_PAGE,
         )
 
-    # Apply form overrides to title_data
-    overrides = {
-        "CASE_NAME": case_name or title_data.get("CASE_NAME", ""),
-        "CASE_NUMBER": case_number or title_data.get("CASE_NUMBER", ""),
-        "FIRM_OR_ORGANIZATION_NAME": firm_name or title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
-        "DATE": input_date or title_data.get("DATE", ""),
-        "TIME": input_time or title_data.get("TIME", ""),
-        "LOCATION": location or title_data.get("LOCATION", ""),
-        "FILE_NAME": title_data.get("FILE_NAME") or filename or "imported",
-    }
-    title_data.update(overrides)
+        docx_b64 = base64.b64encode(docx_bytes_out).decode()
+        oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
-    # Always use a fresh media key
-    media_key = uuid.uuid4().hex
-    title_data["MEDIA_ID"] = media_key
+        created_at = datetime.now(timezone.utc)
 
-    # Build artifacts
-    docx_bytes_out, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
-        turns,
-        title_data,
-        duration_seconds,
-        DEFAULT_LINES_PER_PAGE,
-    )
+        try:
+            transcript_data = {
+                "media_key": media_key,
+                "created_at": created_at.isoformat(),
+                "updated_at": created_at.isoformat(),
+                "title_data": title_data,
+                "audio_duration": duration_seconds,
+                "lines_per_page": DEFAULT_LINES_PER_PAGE,
+                "turns": serialize_transcript_turns(turns),
+                "source_turns": serialize_transcript_turns(turns),
+                "lines": line_payloads,
+                "docx_base64": docx_b64,
+                "oncue_xml_base64": oncue_b64,
+                "transcript_text": transcript_text,
+                "transcript": transcript_text,
+                "media_blob_name": media_blob_name,
+                "media_content_type": media_content_type,
+                "user_id": current_user["user_id"],
+                "clips": [],
+            }
 
-    docx_b64 = base64.b64encode(docx_bytes_out).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+            save_current_transcript(media_key, transcript_data)
 
-    created_at = datetime.now(timezone.utc)
+            # Create initial snapshot
+            snapshot_id = uuid.uuid4().hex
+            snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
+            bucket = storage_client.bucket(BUCKET_NAME)
+            snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
+            snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
+            logger.info(f"Created initial snapshot for imported transcript: {media_key}")
 
-    try:
-        transcript_data = {
-            "media_key": media_key,
-            "created_at": created_at.isoformat(),
-            "updated_at": created_at.isoformat(),
-            "title_data": title_data,
-            "audio_duration": duration_seconds,
-            "lines_per_page": DEFAULT_LINES_PER_PAGE,
-            "turns": serialize_transcript_turns(turns),
-            "source_turns": serialize_transcript_turns(turns),
-            "lines": line_payloads,
-            "docx_base64": docx_b64,
-            "oncue_xml_base64": oncue_b64,
-            "transcript_text": transcript_text,
-            "transcript": transcript_text,
-            "media_blob_name": media_blob_name,
-            "media_content_type": media_content_type,
-            "user_id": current_user["user_id"],
-            "clips": [],
-        }
+        except Exception as e:
+            logger.error("Failed to save imported transcript: %s", e)
+            raise HTTPException(status_code=500, detail="Unable to persist imported transcript")
 
-        save_current_transcript(media_key, transcript_data)
-
-        # Create initial snapshot
-        snapshot_id = uuid.uuid4().hex
-        snapshot_payload = build_snapshot_payload(transcript_data, is_manual_save=True)
-        bucket = storage_client.bucket(BUCKET_NAME)
-        snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
-        snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
-        logger.info(f"Created initial snapshot for imported transcript: {media_key}")
-
-    except Exception as e:
-        logger.error("Failed to save imported transcript: %s", e)
-        raise HTTPException(status_code=500, detail="Unable to persist imported transcript")
-
-    return JSONResponse(dict(transcript_data))
+        return JSONResponse(dict(transcript_data))
+    finally:
+        for temp_path in (transcript_path, media_path):
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
 @app.post("/api/upload-preview")
 async def upload_media_preview(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     """Upload media file for preview purposes"""
+    temp_path = None
     try:
-        file_bytes = await file.read()
+        temp_path, file_size = await save_upload_to_tempfile(file)
+        if not temp_path or file_size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded media file is empty")
+
         content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
-        
+
         # Upload to Cloud Storage
-        blob_name = upload_preview_file_to_cloud_storage(
-            file_bytes, 
-            file.filename, 
-            content_type
+        blob_name = upload_preview_file_to_cloud_storage_from_path(
+            temp_path,
+            file.filename,
+            content_type,
+            user_id=current_user["user_id"],
         )
-        
-        logger.info(f"Uploaded media file for preview: {file.filename} ({len(file_bytes)} bytes)")
-        
+
+        logger.info("Uploaded media file for preview: %s (%d bytes)", file.filename, file_size)
+
         return JSONResponse({
             "file_id": blob_name,
             "filename": file.filename,
-            "size": len(file_bytes),
-            "content_type": content_type
+            "size": file_size,
+            "content_type": content_type,
         })
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Media preview upload failed: {str(e)}")
+        logger.error("Media preview upload failed: %s", str(e))
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 @app.get("/api/media/{file_id}")
 async def serve_media_file(file_id: str, request: Request):
     """Serve media file for preview"""
     try:
+        request_user = _get_user_from_request(request)
+        if not request_user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
         metadata = get_blob_metadata(file_id)
         if not metadata:
             raise HTTPException(status_code=404, detail="Media file not found")
+
+        if not _user_can_access_media_blob(request_user["user_id"], file_id, metadata):
+            raise HTTPException(status_code=403, detail="Access denied to media file")
 
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(file_id)

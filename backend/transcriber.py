@@ -595,25 +595,31 @@ def get_media_duration(file_path: str) -> Optional[float]:
     return None
 
 def process_transcription(
-    file_bytes: bytes,
+    file_bytes: Optional[bytes],
     filename: str,
     speaker_names: Optional[List[str]],
     title_data: dict,
+    input_path: Optional[str] = None,
 ):
     with tempfile.TemporaryDirectory() as temp_dir:
-        input_path = os.path.join(temp_dir, filename)
-        with open(input_path, "wb") as f:
-            f.write(file_bytes)
+        if input_path:
+            source_path = input_path
+        else:
+            if file_bytes is None:
+                raise ValueError("file_bytes required when input_path is not provided")
+            source_path = os.path.join(temp_dir, filename)
+            with open(source_path, "wb") as f:
+                f.write(file_bytes)
 
         ext = filename.split('.')[-1].lower()
         audio_path = None
         if ext in SUPPORTED_VIDEO_TYPES:
-            output_audio_filename = f"{os.path.splitext(filename)[0]}.mp3"
+            output_audio_filename = f"{os.path.splitext(os.path.basename(filename))[0]}.mp3"
             output_path = os.path.join(temp_dir, output_audio_filename)
-            audio_path = convert_video_to_audio(input_path, output_path)
+            audio_path = convert_video_to_audio(source_path, output_path)
             ext = "mp3"
         elif ext in SUPPORTED_AUDIO_TYPES:
-            audio_path = input_path
+            audio_path = source_path
         else:
             raise ValueError("Unsupported file type")
 
@@ -934,8 +940,6 @@ def compute_transcript_line_entries(
         line_errors: List[bool] = []
 
         if turn.words:
-            logger.info("Turn %d has %d words, first word: %s (start=%.1f ms)",
-                       turn_idx, len(turn.words), turn.words[0].text, turn.words[0].start)
             word_offset = 0
 
             for line_text in all_lines:

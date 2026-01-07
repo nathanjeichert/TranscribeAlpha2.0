@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getAuthHeaders } from '@/utils/auth'
+import { appendAccessTokenToMediaUrl, authenticatedFetch } from '@/utils/auth'
 
 interface EditorLine {
   id: string
@@ -196,9 +196,9 @@ export default function TranscriptEditor({
 
   const effectiveMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
-    if (mediaUrl) return mediaUrl
+    if (mediaUrl) return appendAccessTokenToMediaUrl(mediaUrl)
     if (sessionMeta?.media_blob_name) {
-      return `/api/media/${sessionMeta.media_blob_name}`
+      return appendAccessTokenToMediaUrl(`/api/media/${sessionMeta.media_blob_name}`)
     }
     return undefined
   }, [localMediaPreviewUrl, mediaUrl, sessionMeta])
@@ -245,9 +245,7 @@ export default function TranscriptEditor({
 
       try {
         // Try loading from server first
-        const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(targetKey)}`, {
-          headers: getAuthHeaders(),
-        })
+        const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(targetKey)}`)
 
         if (!response.ok) {
           if (response.status === 404) {
@@ -511,9 +509,9 @@ export default function TranscriptEditor({
         if (now - lastSnapshotRef.current < 5000) return  // Debounce
 
         // Auto-save creates both current state AND snapshot
-        await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
+        await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             lines: linesRef.current,
             title_data: currentSessionMeta.title_data ?? {},
@@ -769,9 +767,9 @@ export default function TranscriptEditor({
     setError(null)
 
     try {
-      const response = await fetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
+      const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           lines,
           title_data: sessionMeta?.title_data ?? {},
@@ -840,9 +838,8 @@ export default function TranscriptEditor({
         formData.append('transcript_file', importTranscriptFile)
         formData.append('media_file', importMediaFile)
 
-        const response = await fetch('/api/transcripts/import', {
+        const response = await authenticatedFetch('/api/transcripts/import', {
           method: 'POST',
-          headers: getAuthHeaders(),
           body: formData,
         })
         if (!response.ok) {
@@ -895,11 +892,10 @@ export default function TranscriptEditor({
     setResyncError(null)
 
     try {
-      const response = await fetch('/api/resync', {
+      const response = await authenticatedFetch('/api/resync', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...getAuthHeaders(),
         },
         body: JSON.stringify({
           media_key: activeMediaKey,
@@ -1386,12 +1382,9 @@ export default function TranscriptEditor({
                           </div>
                           <div
                             className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
-                            onDoubleClick={() => !line.is_continuation && beginEdit(line, 'speaker')}
+                            onDoubleClick={() => beginEdit(line, 'speaker')}
                           >
-                            {line.is_continuation ? (
-                              // Continuation line: no speaker label
-                              <span className="text-primary-300">—</span>
-                            ) : editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
+                            {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
                               <input
                                 ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
                                 className="input text-xs uppercase"
@@ -1413,7 +1406,7 @@ export default function TranscriptEditor({
                                 }}
                               />
                             ) : (
-                              <span className="uppercase">{line.speaker}</span>
+                              <span className="uppercase">{line.speaker || '—'}</span>
                             )}
                           </div>
                           <div

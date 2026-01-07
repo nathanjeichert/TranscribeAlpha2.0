@@ -177,6 +177,24 @@ export function getAuthHeaders(): HeadersInit {
 }
 
 /**
+ * Append the current access token to media URLs that can't send headers.
+ */
+export function appendAccessTokenToMediaUrl(url: string): string {
+  if (!url || !url.includes('/api/media/')) {
+    return url;
+  }
+  if (url.includes('token=')) {
+    return url;
+  }
+  const token = getAccessToken();
+  if (!token) {
+    return url;
+  }
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
+/**
  * Check if the access token is expired
  */
 export function isTokenExpired(): boolean {

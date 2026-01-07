@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorSessionResponse, ClipSummary } from '@/components/TranscriptEditor'
-import { getAuthHeaders } from '@/utils/auth'
+import { appendAccessTokenToMediaUrl, authenticatedFetch } from '@/utils/auth'
 
 interface ClipCreatorProps {
   session: EditorSessionResponse | null
@@ -154,11 +154,11 @@ export default function ClipCreator({
 
   const effectiveMediaUrl = useMemo(() => {
     if (mediaUrl && mediaUrl.trim()) {
-      return mediaUrl
+      return appendAccessTokenToMediaUrl(mediaUrl)
     }
     const blobName = session?.media_blob_name
     if (blobName && blobName.trim()) {
-      return `/api/media/${blobName}`
+      return appendAccessTokenToMediaUrl(`/api/media/${blobName}`)
     }
     return null
   }, [mediaUrl, session?.media_blob_name])
@@ -391,9 +391,7 @@ export default function ClipCreator({
       }
       try {
         setHistoryLoadingId(clipId)
-        const response = await fetch(`/api/clips/${clipId}`, {
-          headers: getAuthHeaders(),
-        })
+        const response = await authenticatedFetch(`/api/clips/${clipId}`)
         if (!response.ok) {
           return null
         }
@@ -479,9 +477,9 @@ export default function ClipCreator({
     setCreationMessage(null)
 
     try {
-      const response = await fetch('/api/clips', {
+      const response = await authenticatedFetch('/api/clips', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
 
@@ -527,9 +525,8 @@ export default function ClipCreator({
           formData.append('media_file', importMediaFile)
         }
 
-        const response = await fetch('/api/transcripts/import', {
+        const response = await authenticatedFetch('/api/transcripts/import', {
           method: 'POST',
-          headers: getAuthHeaders(),
           body: formData,
         })
         if (!response.ok) {
@@ -634,7 +631,7 @@ export default function ClipCreator({
             </button>
             {summary.media_blob_name && (
               <a
-                href={`/api/media/${summary.media_blob_name}`}
+                href={appendAccessTokenToMediaUrl(`/api/media/${summary.media_blob_name}`)}
                 className="btn-outline text-xs"
                 target="_blank"
                 rel="noopener noreferrer"
@@ -934,7 +931,7 @@ export default function ClipCreator({
                   </button>
                   {activeClip.media_blob_name && (
                     <a
-                      href={`/api/media/${activeClip.media_blob_name}`}
+                      href={appendAccessTokenToMediaUrl(`/api/media/${activeClip.media_blob_name}`)}
                       className="btn-outline text-sm"
                       target="_blank"
                       rel="noopener noreferrer"
