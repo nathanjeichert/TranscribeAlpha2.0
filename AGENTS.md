@@ -20,16 +20,21 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 ```
 TranscribeAlpha/
 ├── backend/                    # Python backend (FastAPI)
-│   ├── server.py              # Main FastAPI app (~1400 lines)
-│   │                          # - All API endpoints
-│   │                          # - Cloud Storage operations
-│   │                          # - Snapshot/session management
-│   │                          # - Static file serving
-│   ├── transcriber.py         # Transcription pipeline
-│   │                          # - AssemblyAI integration
-│   │                          # - DOCX generation
-│   │                          # - OnCue XML generation
-│   │                          # - ffmpeg media processing
+│   ├── server.py              # FastAPI app wiring (routers, middleware, static files)
+│   ├── config.py              # Env-driven constants (CORS, TTLs, defaults)
+│   ├── models.py              # Pydantic models (TranscriptTurn, WordTimestamp, Gemini structs)
+│   ├── transcript_formatting.py # DOCX/XML generation + line timing helpers
+│   ├── transcript_utils.py    # Session serialization + line normalization helpers
+│   ├── storage.py             # Cloud Storage ops + snapshots/sessions persistence
+│   ├── media_processing.py    # ffmpeg helpers, clip extraction, audio prep
+│   ├── gemini.py              # Gemini transcription + refine flow
+│   ├── api/                   # FastAPI routers
+│   │   ├── auth.py            # Auth endpoints
+│   │   ├── transcripts.py     # Transcribe/import/save/resync endpoints
+│   │   ├── media.py           # Media upload/streaming endpoints
+│   │   ├── clips.py           # Clip creation/lookup endpoints
+│   │   └── health.py          # Health + cleanup endpoints
+│   ├── transcriber.py         # AssemblyAI integration + media probing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
 │   │                          # - Re-sync transcript with audio after edits
 │   │                          # - DOCX import alignment
@@ -65,20 +70,22 @@ TranscribeAlpha/
 
 ## Key Design Decisions
 
-### Why server.py is Large
-The `server.py` file intentionally consolidates:
-- All API endpoints in one place for easy navigation
-- Cloud Storage operations close to the endpoints that use them
-- Session/snapshot logic with the APIs that manage them
-
-**Do not split this file** without explicit user request. The current structure works well for a single-service deployment.
+### Router-first HTTP layer
+The HTTP layer is now organized around routers under `backend/api/`, with `backend/server.py`
+kept intentionally thin to wire middleware, include routers, and mount the static frontend.
 
 ### Module Responsibilities
 
 | Module | Responsibility | Should Contain |
 |--------|----------------|----------------|
-| `server.py` | HTTP layer, routing, storage | Endpoints, request/response handling, GCS ops |
-| `transcriber.py` | Core transcription logic | AI integration, document generation, media processing |
+| `server.py` | HTTP app wiring | Router inclusion, middleware, startup cleanup, static mount |
+| `backend/api/*.py` | HTTP layer | Endpoints and request/response handling |
+| `transcriber.py` | Core transcription logic | AssemblyAI integration, media probing, transcription flow |
+| `transcript_formatting.py` | Transcript rendering | DOCX/XML generation, line timing rules |
+| `transcript_utils.py` | Transcript/session helpers | Line normalization, snapshot payloads, serialization |
+| `storage.py` | Persistence layer | GCS ops, snapshots, session storage |
+| `media_processing.py` | Media utilities | ffmpeg conversion, clip extraction, audio prep |
+| `gemini.py` | Gemini flows | ASR and refinement logic |
 | `rev_ai_sync.py` | Forced alignment | Rev AI API calls, timestamp correction |
 | `auth.py` | Authentication | JWT, Secret Manager, user verification |
 
@@ -127,7 +134,10 @@ except ImportError:
 | `/api/transcribe` | POST | Main transcription (file → DOCX + XML) |
 | `/api/upload-preview` | POST | Upload media for preview |
 | `/api/media/{file_id}` | GET | Stream media files |
-| `/api/login` | POST | User authentication |
+| `/api/auth/login` | POST | User authentication |
+| `/api/auth/refresh` | POST | Refresh access token |
+| `/api/auth/logout` | POST | Logout (client deletes tokens) |
+| `/api/auth/me` | GET | Current user info |
 | `/api/transcripts` | GET | List transcripts for the current user |
 | `/api/transcripts/by-key/{media_key}` | GET/PUT | Load/save transcript session |
 | `/api/transcripts/by-key/{media_key}/history` | GET | List snapshots for a transcript |
@@ -201,13 +211,14 @@ gcloud run deploy transcribealpha \
 ## Common Tasks
 
 ### Add New API Endpoint
-1. Add route handler in `backend/server.py`
+1. Add the route handler in the appropriate `backend/api/*.py` router
 2. Use existing patterns for error handling
 3. Add authentication if needed: `current_user: dict = Depends(get_current_user)`
+4. If you add a new router module, include it in `backend/server.py`
 
 ### Modify Transcript Formatting
-- Edit `backend/transcriber.py`
-- Functions: `create_docx()`, `generate_oncue_xml()`
+- Edit `backend/transcript_formatting.py`
+- Functions: `create_docx()`, `generate_oncue_xml()`, `compute_transcript_line_entries()`
 
 ### Update Frontend Component
 - Edit files in `frontend-next/src/components/`

@@ -15,16 +15,16 @@ from google.auth.transport import requests as google_requests
 from google.auth import compute_engine
 from google.auth.compute_engine import credentials as compute_credentials
 
-# Import transcriber models with fallback pattern
+# Import models with fallback pattern
 try:
-    from .transcriber import TranscriptTurn, WordTimestamp
+    from .models import TranscriptTurn, WordTimestamp
 except ImportError:
     try:
-        from transcriber import TranscriptTurn, WordTimestamp
+        from models import TranscriptTurn, WordTimestamp
     except ImportError:
-        import transcriber
-        TranscriptTurn = transcriber.TranscriptTurn
-        WordTimestamp = transcriber.WordTimestamp
+        import models
+        TranscriptTurn = models.TranscriptTurn
+        WordTimestamp = models.WordTimestamp
 
 logger = logging.getLogger(__name__)
 
