@@ -751,16 +751,119 @@ CONTINUATION_SPACES = 0     # Leading spaces for continuation lines in XML (visu
 SPEAKER_COLON = ":   "      # Colon and spaces after speaker name (total 4 chars)
 MAX_TOTAL_LINE_WIDTH = 64   # Maximum total characters per XML line for speaker lines
 MAX_CONTINUATION_WIDTH = 64 # Maximum total characters per XML line for continuation lines
+MIN_LINE_DURATION_SECONDS = 1.25
 
 # OnCue XML constants
 ONCUE_FIRST_PGLN = 101      # First page-line number (page 1, line 1 = 101)
 DEFAULT_VIDEO_ID = "1"      # Default video ID for single-video transcripts
 
 
+def enforce_min_line_durations(
+    line_entries: List[dict],
+    audio_duration: float,
+    min_duration: float = MIN_LINE_DURATION_SECONDS,
+) -> List[dict]:
+    if not line_entries or min_duration <= 0:
+        return line_entries
+
+    starts: List[float] = []
+    ends: List[float] = []
+    for entry in line_entries:
+        try:
+            start_val = float(entry.get("start", 0.0))
+        except (TypeError, ValueError):
+            start_val = 0.0
+        try:
+            end_val = float(entry.get("end", start_val))
+        except (TypeError, ValueError):
+            end_val = start_val
+        if end_val < start_val:
+            end_val = start_val
+        starts.append(start_val)
+        ends.append(end_val)
+
+    count = len(line_entries)
+    gaps: List[float] = []
+    for idx in range(count - 1):
+        gap = starts[idx + 1] - ends[idx]
+        gaps.append(gap if gap > 0 else 0.0)
+
+    left_gap = [0.0] * count
+    right_gap = [0.0] * count
+
+    left_gap[0] = starts[0] if starts[0] > 0 else 0.0
+    for idx in range(1, count):
+        left_gap[idx] = gaps[idx - 1]
+    for idx in range(count - 1):
+        right_gap[idx] = gaps[idx]
+    if audio_duration and audio_duration > 0:
+        right_gap[count - 1] = max(audio_duration - ends[count - 1], 0.0)
+    else:
+        right_gap[count - 1] = 0.0
+
+    desired_left = [0.0] * count
+    desired_right = [0.0] * count
+
+    for idx in range(count):
+        duration = ends[idx] - starts[idx]
+        if duration >= min_duration:
+            continue
+        need = min_duration - duration
+        half = need / 2.0
+        left_take = min(half, left_gap[idx])
+        right_take = min(half, right_gap[idx])
+        remaining = need - (left_take + right_take)
+        if remaining > 0:
+            left_cap = max(left_gap[idx] - left_take, 0.0)
+            right_cap = max(right_gap[idx] - right_take, 0.0)
+            if right_cap > left_cap:
+                extra_right = min(remaining, right_cap)
+                right_take += extra_right
+                remaining -= extra_right
+            extra_left = min(remaining, left_cap)
+            left_take += extra_left
+        desired_left[idx] = left_take
+        desired_right[idx] = right_take
+
+    left_alloc = [0.0] * count
+    right_alloc = [0.0] * count
+    left_alloc[0] = min(desired_left[0], left_gap[0])
+    right_alloc[count - 1] = min(desired_right[count - 1], right_gap[count - 1])
+
+    for idx in range(count - 1):
+        gap = gaps[idx]
+        total = desired_right[idx] + desired_left[idx + 1]
+        if total <= 0:
+            right_alloc[idx] = 0.0
+            left_alloc[idx + 1] = 0.0
+        elif total <= gap:
+            right_alloc[idx] = desired_right[idx]
+            left_alloc[idx + 1] = desired_left[idx + 1]
+        else:
+            scale = gap / total if total > 0 else 0.0
+            right_alloc[idx] = desired_right[idx] * scale
+            left_alloc[idx + 1] = desired_left[idx + 1] * scale
+
+    for idx, entry in enumerate(line_entries):
+        new_start = starts[idx] - left_alloc[idx]
+        new_end = ends[idx] + right_alloc[idx]
+        if new_start < 0:
+            new_start = 0.0
+        if audio_duration and audio_duration > 0 and new_end > audio_duration:
+            new_end = audio_duration
+        if new_end < new_start:
+            new_end = new_start
+        entry["start"] = new_start
+        entry["end"] = new_end
+
+    return line_entries
+
+
 def compute_transcript_line_entries(
     transcript_turns: List[TranscriptTurn],
     audio_duration: float,
     lines_per_page: int = 25,
+    enforce_min_duration: bool = True,
 ) -> Tuple[List[dict], int]:
     """
     Build per-line timing/layout data from transcript turns for re-use in XML and editor exports.
@@ -898,7 +1001,7 @@ def compute_transcript_line_entries(
                 "id": f"{turn_idx}-0",
                 "turn_index": turn_idx,
                 "line_index": 0,
-                "speaker": speaker_name if not is_turn_continuation else "",
+                "speaker": speaker_name,
                 "text": wrapped_lines[0],
                 "rendered_text": rendered_first_line,
                 "start": first_line_start,
@@ -947,10 +1050,19 @@ def compute_transcript_line_entries(
                 page += 1
                 line_in_page = 1
 
+    if enforce_min_duration:
+        enforce_min_line_durations(line_entries, audio_duration, MIN_LINE_DURATION_SECONDS)
+
     return line_entries, last_pgln
 
 
-def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, audio_duration: float, lines_per_page: int = 25) -> str:
+def generate_oncue_xml(
+    transcript_turns: List[TranscriptTurn],
+    metadata: dict,
+    audio_duration: float,
+    lines_per_page: int = 25,
+    enforce_min_duration: bool = True,
+) -> str:
     """
     Generate OnCue-compatible XML from transcript turns.
 
@@ -995,6 +1107,7 @@ def generate_oncue_xml(transcript_turns: List[TranscriptTurn], metadata: dict, a
         transcript_turns,
         audio_duration,
         lines_per_page,
+        enforce_min_duration=enforce_min_duration,
     )
 
     for entry in line_entries:

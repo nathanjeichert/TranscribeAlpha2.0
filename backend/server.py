@@ -654,10 +654,22 @@ def build_session_artifacts(
     title_data: dict,
     duration_seconds: float,
     lines_per_page: int,
+    enforce_min_line_duration: bool = True,
 ):
     docx_bytes = create_docx(title_data, turns)
-    oncue_xml = generate_oncue_xml(turns, title_data, duration_seconds, lines_per_page)
-    line_entries, _ = compute_transcript_line_entries(turns, duration_seconds, lines_per_page)
+    oncue_xml = generate_oncue_xml(
+        turns,
+        title_data,
+        duration_seconds,
+        lines_per_page,
+        enforce_min_duration=enforce_min_line_duration,
+    )
+    line_entries, _ = compute_transcript_line_entries(
+        turns,
+        duration_seconds,
+        lines_per_page,
+        enforce_min_duration=enforce_min_line_duration,
+    )
     transcript_text = format_transcript_text(turns)
     return docx_bytes, oncue_xml, transcript_text, serialize_line_entries(line_entries)
 
@@ -902,13 +914,7 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
         end_val = line["end"]
         text_val = line["text"]
 
-        should_start_new = False
-        if current_speaker is None:
-            should_start_new = True
-        elif line.get("is_continuation", False) is False:
-            should_start_new = True
-        elif speaker != current_speaker:
-            should_start_new = True
+        should_start_new = current_speaker is None or speaker != current_speaker
 
         if should_start_new:
             flush_turn()
@@ -1069,6 +1075,7 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
             title_data,
             audio_duration,
             lines_per_page,
+            enforce_min_line_duration=False,
         )
         xml_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
         source_lines = updated_lines
@@ -2340,6 +2347,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
                 title_data,
                 normalized_duration,
                 transcript_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
+                enforce_min_line_duration=False,
             )
             transcript_data["lines"] = updated_lines
             transcript_data["audio_duration"] = normalized_duration
@@ -2689,6 +2697,7 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         clip_title_data,
         normalized_duration,
         lines_per_page,
+        enforce_min_line_duration=False,
     )
 
     docx_b64 = base64.b64encode(docx_bytes).decode()
@@ -2902,6 +2911,7 @@ async def import_transcript(
                 text=t['text'],
                 timestamp=None,
                 words=None,
+                is_continuation=bool(t.get('is_continuation', False)),
             ))
 
         # Run Rev AI alignment to get timestamps
