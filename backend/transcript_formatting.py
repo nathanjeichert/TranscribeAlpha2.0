@@ -105,47 +105,59 @@ def wrap_text_for_transcript(text: str, max_width: int) -> List[str]:
     return lines if lines else [""]
 
 
+def replace_placeholder_text(element, placeholder: str, replacement: str) -> None:
+    if hasattr(element, "paragraphs"):
+        for paragraph in element.paragraphs:
+            replace_placeholder_text(paragraph, placeholder, replacement)
+    if hasattr(element, "runs"):
+        if placeholder in element.text:
+            inline = element.runs
+            for idx in range(len(inline)):
+                if placeholder in inline[idx].text:
+                    inline[idx].text = inline[idx].text.replace(placeholder, replacement)
+    if hasattr(element, "tables"):
+        for table in element.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    replace_placeholder_text(cell, placeholder, replacement)
+
+
+def _resolve_docx_template_path() -> Optional[str]:
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "transcript_template.docx"),
+        os.path.join(os.getcwd(), "transcript_template.docx"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
 def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> bytes:
     """
-    Generate DOCX transcript from transcript turns and title data.
+    Create a DOCX transcript with template-based formatting.
     """
-    # Create a new document
-    doc = Document()
+    template_path = _resolve_docx_template_path()
+    if template_path:
+        doc = Document(template_path)
+    else:
+        logger.warning("DOCX template not found; falling back to a blank document.")
+        doc = Document()
 
-    # Set margins and page layout
-    sections = doc.sections
-    for section in sections:
-        section.top_margin = Inches(1.0)
-        section.bottom_margin = Inches(1.0)
-        section.left_margin = Inches(1.0)
-        section.right_margin = Inches(1.0)
+    for key, value in title_data.items():
+        placeholder = f"{{{{{key}}}}}"
+        replace_placeholder_text(doc, placeholder, str(value) if value else "")
 
-    # Add title page
-    title_lines = [
-        "Generated Transcript",
-        "",
-        f"Case Name: {title_data.get('CASE_NAME', '')}",
-        f"Case Number: {title_data.get('CASE_NUMBER', '')}",
-        f"Date: {title_data.get('DATE', '')}",
-        f"Time: {title_data.get('TIME', '')}",
-        f"Location: {title_data.get('LOCATION', '')}",
-        f"Original File: {title_data.get('FILE_NAME', '')}",
-        f"Duration: {title_data.get('FILE_DURATION', '')}",
-        f"Firm/Organization: {title_data.get('FIRM_OR_ORGANIZATION_NAME', '')}",
-    ]
+    body_placeholder = "{{TRANSCRIPT_BODY}}"
+    placeholder_paragraph = None
+    for paragraph in doc.paragraphs:
+        if body_placeholder in paragraph.text:
+            placeholder_paragraph = paragraph
+            break
 
-    for line in title_lines:
-        p = doc.add_paragraph(line)
-        p.paragraph_format.space_after = Pt(12)
-        p.paragraph_format.line_spacing = 2.0
-
-    doc.add_page_break()
-
-    # Add transcript turns
-    if transcript_turns:
-        # Remove extra empty paragraph after page break
-        p_element = doc.paragraphs[-1]._element
-        p_element.getparent().remove(p_element)
+    if placeholder_paragraph:
+        paragraph_element = placeholder_paragraph._element
+        paragraph_element.getparent().remove(paragraph_element)
         for turn in transcript_turns:
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Inches(0.0)
@@ -154,7 +166,6 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.widow_control = False
 
-            # Only show speaker label if not a continuation turn
             if not turn.is_continuation:
                 speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
                 speaker_run.font.name = "Courier New"
@@ -169,7 +180,6 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.widow_control = False
 
-            # Only show speaker label if not a continuation turn
             if not turn.is_continuation:
                 speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
                 speaker_run.font.name = "Courier New"
@@ -235,14 +245,17 @@ def parse_docx_to_turns(docx_bytes: bytes) -> List[dict]:
                     'is_continuation': is_continuation,
                 })
         else:
-            # No speaker pattern found - treat as continuation of previous turn
-            if turns:
-                prev = turns[-1]
-                prev['text'] = (prev['text'] + ' ' + text).strip()
-            else:
-                # No previous turn - create a generic one
+            # No speaker pattern - this is a continuation of the previous speaker
+            if turns and not text.startswith('['):
+                # Create as separate continuation turn (inherits speaker from previous)
                 turns.append({
-                    'speaker': 'SPEAKER',
+                    'speaker': turns[-1]['speaker'],
+                    'text': text,
+                    'is_continuation': True,
+                })
+            elif text and not text.startswith('['):
+                turns.append({
+                    'speaker': 'UNKNOWN',
                     'text': text,
                     'is_continuation': False,
                 })
