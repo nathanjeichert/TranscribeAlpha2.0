@@ -13,6 +13,7 @@ interface EditorLine {
   line?: number | null
   pgln?: number | null
   is_continuation?: boolean
+  timestamp_error?: boolean
 }
 
 export interface ClipSummary {
@@ -219,11 +220,15 @@ export default function TranscriptEditor({
 
   const lineBoundaries = useMemo(
     () =>
-      lines.map((line) => ({
-        id: line.id,
-        start: line.start,
-        end: line.end > line.start ? line.end : line.start + 0.05,
-      })),
+      lines.map((line) => {
+        const start = Number.isFinite(line.start) ? line.start : 0
+        const end = Number.isFinite(line.end) ? line.end : start
+        return {
+          id: line.id,
+          start,
+          end: end > start ? end : start + 0.05,
+        }
+      }),
     [lines],
   )
 
@@ -406,6 +411,7 @@ export default function TranscriptEditor({
             ? {
               ...line,
               [field]: normalizedValue,
+              ...(field === 'start' || field === 'end' ? { timestamp_error: false } : null),
             }
             : line,
         )
@@ -1363,6 +1369,9 @@ export default function TranscriptEditor({
                         isActive ? 'bg-yellow-200' : 'bg-white hover:bg-primary-200',
                         isSelected ? 'ring-2 ring-primary-300' : '',
                       ]
+                      const timingInputClass = line.timestamp_error
+                        ? 'w-24 rounded border border-red-400 bg-red-50 px-2 py-1 text-xs text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400'
+                        : 'w-24 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400'
                       return (
                         <div
                           key={line.id}
@@ -1446,7 +1455,8 @@ export default function TranscriptEditor({
                                 onChange={(event) =>
                                   handleLineFieldChange(line.id, 'start', parseFloat(event.target.value))
                                 }
-                                className="w-24 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                                className={timingInputClass}
+                                title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
                               />
                             </div>
                             <div className="flex flex-col items-end gap-1 text-[11px] text-primary-500">
@@ -1459,8 +1469,14 @@ export default function TranscriptEditor({
                                 onChange={(event) =>
                                   handleLineFieldChange(line.id, 'end', parseFloat(event.target.value))
                                 }
-                                className="w-24 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
+                                className={timingInputClass}
+                                title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
                               />
+                              {line.timestamp_error && (
+                                <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600">
+                                  Fix timing
+                                </span>
+                              )}
                             </div>
                             <button
                               type="button"

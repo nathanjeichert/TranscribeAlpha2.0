@@ -643,6 +643,7 @@ def serialize_line_entries(line_entries: List[dict]) -> List[dict]:
                 "line": entry.get("line"),
                 "pgln": entry.get("pgln"),
                 "is_continuation": entry.get("is_continuation", False),
+                "timestamp_error": bool(entry.get("timestamp_error", False)),
             }
         )
     return serialized
@@ -845,6 +846,7 @@ def normalize_line_payloads(
             "start": start_val,
             "end": end_val,
             "is_continuation": bool(line.get("is_continuation", False)),
+            "timestamp_error": bool(line.get("timestamp_error", False)),
         }
 
         # Pass through word-level timestamps if present
@@ -1072,7 +1074,7 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
         source_lines = updated_lines
 
     created_at = datetime.now(timezone.utc).isoformat()
-    return {
+    snapshot_payload = {
         "media_key": snapshot_media_key(session_data),
         "created_at": created_at,
         "title_data": title_data,
@@ -1088,6 +1090,9 @@ def build_snapshot_payload(session_data: dict, lines_override: Optional[List[dic
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
     }
+    if session_data.get("source_turns"):
+        snapshot_payload["source_turns"] = session_data["source_turns"]
+    return snapshot_payload
 
 
 def prepare_audio_for_gemini(blob_name: str, content_type: Optional[str]) -> Tuple[str, str, float, str]:
@@ -2169,48 +2174,7 @@ async def transcribe(
             logger.error(f"Gemini transcription error: {error_detail}")
             raise HTTPException(status_code=500, detail=f"Gemini transcription failed: {str(e)}")
 
-    # Apply Rev AI forced alignment for accurate word-level timestamps
-    rev_api_key = os.getenv("REV_AI_API_KEY")
-    if rev_api_key and media_blob_name:
-        alignment_audio_path = None
-        alignment_start_time = time.time()
-        try:
-            logger.info("Starting Rev AI forced alignment...")
-
-            # Download media and convert to audio if needed (same as resync flow)
-            alignment_audio_path, _, _, _ = await anyio.to_thread.run_sync(
-                prepare_audio_for_gemini, media_blob_name, media_content_type
-            )
-
-            aligner = RevAIAligner(rev_api_key)
-
-            # Convert turns to dicts for the aligner
-            turns_payload = [t.model_dump() for t in turns]
-
-            # Run alignment (preserves original text, only updates timestamps)
-            aligned_turns_payload = await anyio.to_thread.run_sync(
-                aligner.align_transcript, turns_payload, alignment_audio_path, None
-            )
-
-            # Convert back to TranscriptTurn objects
-            turns = [TranscriptTurn(**t) for t in aligned_turns_payload]
-            alignment_elapsed = time.time() - alignment_start_time
-            logger.info(f"Rev AI alignment completed in {alignment_elapsed:.1f}s. Updated {len(turns)} turns.")
-
-        except Exception as e:
-            # Fallback: keep original timestamps from ASR
-            logger.warning(f"Rev AI alignment failed, using native timestamps: {e}")
-        finally:
-            # Cleanup temporary audio file
-            if alignment_audio_path and os.path.exists(alignment_audio_path):
-                try:
-                    os.remove(alignment_audio_path)
-                except OSError:
-                    pass
-    elif not rev_api_key:
-        logger.info("REV_AI_API_KEY not configured, using native ASR timestamps")
-    elif not media_blob_name:
-        logger.warning("Media blob not available for alignment, using native ASR timestamps")
+    logger.info("Preserving native ASR/Gemini word timestamps for initial transcription")
 
     docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
         turns,
@@ -2230,6 +2194,7 @@ async def transcribe(
         "audio_duration": float(duration_seconds or 0),
         "lines_per_page": DEFAULT_LINES_PER_PAGE,
         "turns": serialize_transcript_turns(turns),
+        "source_turns": serialize_transcript_turns(turns),
         "lines": line_payloads,
         "docx_base64": docx_b64,
         "oncue_xml_base64": oncue_b64,
@@ -3019,6 +2984,7 @@ async def import_transcript(
             "audio_duration": duration_seconds,
             "lines_per_page": DEFAULT_LINES_PER_PAGE,
             "turns": serialize_transcript_turns(turns),
+            "source_turns": serialize_transcript_turns(turns),
             "lines": line_payloads,
             "docx_base64": docx_b64,
             "oncue_xml_base64": oncue_b64,
@@ -3238,10 +3204,11 @@ async def resync_transcript(
         # 5. Call Rev AI
         # Convert turns to dicts for the aligner
         turns_payload = [t.model_dump() for t in turns]
+        source_turns_payload = session_data.get("source_turns")
 
         # We pass the local audio_path. The aligner prefers file upload.
         updated_turns_payload = await anyio.to_thread.run_sync(
-            aligner.align_transcript, turns_payload, audio_path, None
+            aligner.align_transcript, turns_payload, audio_path, None, source_turns_payload
         )
 
         updated_turns = [TranscriptTurn(**t) for t in updated_turns_payload]
@@ -3260,6 +3227,7 @@ async def resync_transcript(
 
         # 7. Update Session
         session_data["lines"] = new_line_entries
+        session_data["turns"] = serialize_transcript_turns(updated_turns)
         session_data["docx_base64"] = base64.b64encode(docx_bytes).decode()
         session_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode()
         session_data["transcript_text"] = transcript_text

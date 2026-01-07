@@ -6,7 +6,7 @@ import requests
 import re
 import tempfile
 from datetime import timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from difflib import SequenceMatcher
 
 from google.cloud import storage
@@ -223,7 +223,13 @@ class RevAIAligner:
 
         raise Exception(f"Alignment job timed out after {max_wait} seconds")
 
-    def align_transcript(self, turns: List[dict], audio_file_path: Optional[str] = None, audio_url: Optional[str] = None) -> List[dict]:
+    def align_transcript(
+        self,
+        turns: List[dict],
+        audio_file_path: Optional[str] = None,
+        audio_url: Optional[str] = None,
+        source_turns: Optional[List[dict]] = None,
+    ) -> List[dict]:
         """
         Align transcript with audio using Rev AI Forced Alignment API.
 
@@ -344,31 +350,140 @@ class RevAIAligner:
 
             logger.info("Alignment matched %d/%d words", len(word_matches), len(plain_text_words))
 
+            # Step 4.5: Build source (ASR/Gemini) timestamp map for fallback
+            source_word_timestamps = {}
+            if source_turns:
+                source_words = []
+                source_clean_tokens = []
+                source_clean_to_word_idx = []
+                for turn in source_turns:
+                    for word in turn.get('words') or []:
+                        word_text = str(word.get('text', '')).strip()
+                        if not word_text:
+                            continue
+                        try:
+                            start_ms = float(word.get('start', 0.0))
+                            end_ms = float(word.get('end', start_ms))
+                        except (TypeError, ValueError):
+                            continue
+                        source_words.append({
+                            'text': word_text,
+                            'start': start_ms,
+                            'end': end_ms,
+                            'confidence': word.get('confidence'),
+                        })
+                        source_idx = len(source_words) - 1
+                        for part in normalize_alignment_token(word_text):
+                            source_clean_tokens.append(part)
+                            source_clean_to_word_idx.append(source_idx)
+
+                if source_clean_tokens and plain_text_words:
+                    source_matcher = SequenceMatcher(None, plain_text_words, source_clean_tokens, autojunk=False)
+                    for tag, i1, i2, j1, j2 in source_matcher.get_opcodes():
+                        if tag != "equal":
+                            continue
+                        for offset in range(i2 - i1):
+                            current_clean_idx = i1 + offset
+                            source_clean_idx = j1 + offset
+                            if current_clean_idx >= len(clean_word_to_original_idx) or source_clean_idx >= len(source_clean_to_word_idx):
+                                continue
+                            original_idx = clean_word_to_original_idx[current_clean_idx]
+                            source_word_idx = source_clean_to_word_idx[source_clean_idx]
+                            source_word_timestamps.setdefault(original_idx, []).append(source_words[source_word_idx])
+
             # Step 5: Update original turns with new timestamps
             # Deep copy turns to avoid mutating input
             updated_turns = copy.deepcopy(turns)
 
-            # Build new word lists for each turn with updated timestamps
-            turn_word_data = {i: [] for i in range(len(turns))}
             original_word_timestamps = {}
-
             for clean_idx, aligned_idx in word_matches.items():
                 if clean_idx >= len(clean_word_to_original_idx) or aligned_idx >= len(timestamps):
                     continue
                 original_idx = clean_word_to_original_idx[clean_idx]
                 original_word_timestamps.setdefault(original_idx, []).append(timestamps[aligned_idx])
 
-            timed_originals = 0
-            for original_idx, (turn_idx, _) in enumerate(word_to_turn_idx):
-                ts_list = original_word_timestamps.get(original_idx)
-                if not ts_list:
-                    continue
-                timed_originals += 1
+            rev_word_ranges = {}
+            rev_word_confidence = {}
+            for original_idx, ts_list in original_word_timestamps.items():
                 start_ms = min(ts['start'] for ts in ts_list)
                 end_ms = max(ts['end'] for ts in ts_list)
                 confidence_values = [ts.get('confidence') for ts in ts_list if ts.get('confidence') is not None]
                 confidence = min(confidence_values) if confidence_values else 1.0
+                rev_word_ranges[original_idx] = (start_ms, end_ms)
+                rev_word_confidence[original_idx] = confidence
+
+            def find_adjacent_rev(idx: int, max_distance: int) -> Tuple[Optional[int], Optional[int]]:
+                prev_idx = None
+                next_idx = None
+                for offset in range(1, max_distance + 1):
+                    candidate = idx - offset
+                    if candidate >= 0 and candidate in rev_word_ranges:
+                        prev_idx = candidate
+                        break
+                for offset in range(1, max_distance + 1):
+                    candidate = idx + offset
+                    if candidate < len(original_words) and candidate in rev_word_ranges:
+                        next_idx = candidate
+                        break
+                return prev_idx, next_idx
+
+            turn_word_data = {i: [] for i in range(len(turns))}
+            timed_originals = 0
+            filled_adjacent = 0
+            filled_source = 0
+            filled_wide = 0
+            missing_words = 0
+
+            for original_idx, (turn_idx, _) in enumerate(word_to_turn_idx):
                 original_word = original_words[original_idx]
+                start_ms = None
+                end_ms = None
+                confidence = None
+
+                if original_idx in rev_word_ranges:
+                    start_ms, end_ms = rev_word_ranges[original_idx]
+                    confidence = rev_word_confidence.get(original_idx)
+                else:
+                    prev_idx, next_idx = find_adjacent_rev(original_idx, 1)
+                    if prev_idx is not None and next_idx is not None:
+                        prev_end = rev_word_ranges[prev_idx][1]
+                        next_start = rev_word_ranges[next_idx][0]
+                        gap_ms = next_start - prev_end
+                        if 0 <= gap_ms <= 3000:
+                            midpoint = prev_end + gap_ms / 2.0
+                            start_ms = midpoint
+                            end_ms = midpoint
+                            filled_adjacent += 1
+
+                if start_ms is None:
+                    ts_list = source_word_timestamps.get(original_idx)
+                    if ts_list:
+                        start_ms = min(ts['start'] for ts in ts_list)
+                        end_ms = max(ts['end'] for ts in ts_list)
+                        confidence_values = [ts.get('confidence') for ts in ts_list if ts.get('confidence') is not None]
+                        confidence = min(confidence_values) if confidence_values else None
+                        filled_source += 1
+
+                if start_ms is None:
+                    prev_idx, next_idx = find_adjacent_rev(original_idx, 3)
+                    if prev_idx is not None and next_idx is not None:
+                        prev_end = rev_word_ranges[prev_idx][1]
+                        next_start = rev_word_ranges[next_idx][0]
+                        gap_ms = next_start - prev_end
+                        if 0 <= gap_ms <= 5500:
+                            midpoint = prev_end + gap_ms / 2.0
+                            start_ms = midpoint
+                            end_ms = midpoint
+                            filled_wide += 1
+
+                if start_ms is None or end_ms is None:
+                    start_ms = -1.0
+                    end_ms = -1.0
+                    missing_words += 1
+
+                if start_ms >= 0 and end_ms >= 0:
+                    timed_originals += 1
+
                 turn_word_data[turn_idx].append({
                     'text': original_word,
                     'start': start_ms,
@@ -377,16 +492,24 @@ class RevAIAligner:
                     'speaker': turns[turn_idx].get('speaker', 'UNKNOWN'),
                 })
 
-            logger.info("Alignment timed %d/%d original words", timed_originals, len(original_words))
+            logger.info(
+                "Alignment timed %d/%d words (adjacent=%d, source=%d, widened=%d, missing=%d)",
+                timed_originals,
+                len(original_words),
+                filled_adjacent,
+                filled_source,
+                filled_wide,
+                missing_words,
+            )
 
             # Update each turn with new word data and recalculate timestamp
             for turn_idx, turn in enumerate(updated_turns):
                 words = turn_word_data.get(turn_idx, [])
                 turn['words'] = words
 
-                # Update turn timestamp based on first word
-                if words:
-                    turn_start_sec = words[0]['start'] / 1000.0
+                valid_words = [word for word in words if word.get('start', -1) >= 0 and word.get('end', -1) >= 0]
+                if valid_words:
+                    turn_start_sec = valid_words[0]['start'] / 1000.0
                     m, s = int(turn_start_sec // 60), int(turn_start_sec % 60)
                     turn['timestamp'] = f"[{m:02d}:{s:02d}]"
 

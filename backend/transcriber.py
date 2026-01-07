@@ -321,7 +321,7 @@ def calculate_line_timestamps_from_words(
     text_line: str,
     all_words: List[WordTimestamp],
     start_offset: int = 0
-) -> Tuple[float, float, int]:
+) -> Tuple[float, float, int, bool]:
     """
     Calculate accurate start/stop timestamps for a wrapped line using word-level data.
 
@@ -334,26 +334,21 @@ def calculate_line_timestamps_from_words(
         start_offset: Index in all_words to start searching from (for continuation lines)
 
     Returns:
-        Tuple of (start_seconds, stop_seconds, words_consumed)
+        Tuple of (start_seconds, stop_seconds, words_consumed, boundary_missing)
         - start_seconds: Start time of first word in line (seconds, float)
         - stop_seconds: End time of last word in line (seconds, float)
         - words_consumed: Number of words from all_words that were used
+        - boundary_missing: True if the first or last word in the line lacks a valid timestamp
     """
     if not all_words or not text_line.strip():
         logger.debug("calculate_line_timestamps: empty words or text_line")
-        return (0.0, 0.0, 0)
+        return (0.0, 0.0, 0, True)
 
     line_text_clean = text_line.strip().lower()
     if not line_text_clean:
-        return (0.0, 0.0, 0)
+        return (0.0, 0.0, 0, True)
 
-    line_words = line_text_clean.split()
-    if not line_words:
-        return (0.0, 0.0, 0)
-
-    matched_word_indices: List[int] = []
-    word_search_idx = start_offset
-    line_word_idx = 0
+    raw_line_words = line_text_clean.split()
 
     def normalize_word_for_match(word: str) -> str:
         normalized = word.lower()
@@ -361,37 +356,65 @@ def calculate_line_timestamps_from_words(
         normalized = re.sub(r"[^\w]+", "", normalized)
         return normalized.strip("_")
 
+    line_words = [word for word in raw_line_words if normalize_word_for_match(word)]
+    if not line_words:
+        return (0.0, 0.0, 0, True)
+
+    matched_pairs: List[Tuple[int, int]] = []
+    word_search_idx = start_offset
+    line_word_idx = 0
+
     while line_word_idx < len(line_words) and word_search_idx < len(all_words):
         word_obj = all_words[word_search_idx]
         word_clean = normalize_word_for_match(word_obj.text)
         line_word_clean = normalize_word_for_match(line_words[line_word_idx])
 
         if word_clean == line_word_clean:
-            matched_word_indices.append(word_search_idx)
+            matched_pairs.append((line_word_idx, word_search_idx))
             line_word_idx += 1
             word_search_idx += 1
         else:
             word_search_idx += 1
 
-    if not matched_word_indices:
+    def has_valid_timestamp(word: WordTimestamp) -> bool:
+        return word.start is not None and word.end is not None and word.start >= 0 and word.end >= 0
+
+    if not matched_pairs:
         logger.warning("No word matches found for line: '%s...' (first word in array: '%s')",
                       text_line[:50], all_words[start_offset].text if start_offset < len(all_words) else 'N/A')
         if start_offset < len(all_words):
             word = all_words[start_offset]
-            return (word.start / 1000.0, word.end / 1000.0, 1)
-        return (0.0, 0.0, 0)
+            if has_valid_timestamp(word):
+                return (word.start / 1000.0, word.end / 1000.0, 1, True)
+        return (0.0, 0.0, 0, True)
 
-    first_word = all_words[matched_word_indices[0]]
-    last_word = all_words[matched_word_indices[-1]]
+    line_to_word = {line_idx: word_idx for line_idx, word_idx in matched_pairs}
+    first_line_idx = 0
+    last_line_idx = len(line_words) - 1
+
+    boundary_missing = False
+    first_word_idx = line_to_word.get(first_line_idx)
+    last_word_idx = line_to_word.get(last_line_idx)
+    if first_word_idx is None or not has_valid_timestamp(all_words[first_word_idx]):
+        boundary_missing = True
+    if last_word_idx is None or not has_valid_timestamp(all_words[last_word_idx]):
+        boundary_missing = True
+
+    valid_matches = [word_idx for _, word_idx in matched_pairs if has_valid_timestamp(all_words[word_idx])]
+    if not valid_matches:
+        return (0.0, 0.0, 0, True)
+
+    first_word = all_words[valid_matches[0]]
+    last_word = all_words[valid_matches[-1]]
 
     start_seconds = first_word.start / 1000.0
     stop_seconds = last_word.end / 1000.0
-    words_consumed = len(matched_word_indices)
+    words_consumed = len(matched_pairs)
 
     logger.debug("Line timestamps: %.2f-%.2f (%d words matched) for '%s...'",
                 start_seconds, stop_seconds, words_consumed, text_line[:30])
 
-    return (start_seconds, stop_seconds, words_consumed)
+    return (start_seconds, stop_seconds, words_consumed, boundary_missing)
 
 
 def replace_placeholder_text(element, placeholder: str, replacement: str) -> None:
@@ -752,8 +775,8 @@ def compute_transcript_line_entries(
         stop_sec: Optional[float] = None
 
         if turn.words:
-            word_starts = [word.start for word in turn.words if word.start is not None]
-            word_ends = [word.end for word in turn.words if word.end is not None]
+            word_starts = [word.start for word in turn.words if word.start is not None and word.start >= 0]
+            word_ends = [word.end for word in turn.words if word.end is not None and word.end >= 0]
             if word_starts and word_ends:
                 start_sec = min(word_starts) / 1000.0
                 stop_sec = max(word_ends) / 1000.0
@@ -792,68 +815,72 @@ def compute_transcript_line_entries(
         if remaining_text:
             continuation_wrapped = wrap_text_for_transcript(remaining_text, max_continuation_text)
 
-        total_lines = 1 + len(continuation_wrapped)
+        all_lines = [wrapped_lines[0]] + continuation_wrapped
+        total_lines = len(all_lines)
+
+        def interpolate_line_block(block_start: float, block_end: float, count: int) -> List[Tuple[float, float]]:
+            if count <= 0:
+                return []
+            if block_end < block_start:
+                block_end = block_start
+            duration = block_end - block_start
+            step = duration / count if count > 0 else duration
+            return [(block_start + step * idx, block_start + step * (idx + 1)) for idx in range(count)]
+
+        line_timings: List[Optional[Tuple[float, float]]] = []
+        line_errors: List[bool] = []
 
         if turn.words:
             logger.info("Turn %d has %d words, first word: %s (start=%.1f ms)",
                        turn_idx, len(turn.words), turn.words[0].text, turn.words[0].start)
             word_offset = 0
-            use_word_data = True
 
-            first_line_start, first_line_stop, words_used = calculate_line_timestamps_from_words(
-                wrapped_lines[0],
-                turn.words,
-                word_offset,
-            )
-            if words_used == 0:
-                logger.warning("Turn %d: word matching failed, falling back to interpolation", turn_idx)
-                use_word_data = False
-            else:
-                logger.info("Turn %d first line: %.2f-%.2f seconds (%d words)",
-                           turn_idx, first_line_start, first_line_stop, words_used)
-                word_offset += words_used
-
-            continuation_timings: List[Tuple[float, float]] = []
-            if use_word_data:
-                for cont_line in continuation_wrapped:
-                    line_start, line_stop, words_used = calculate_line_timestamps_from_words(
-                        cont_line,
-                        turn.words,
-                        word_offset,
-                    )
-                    if words_used == 0:
-                        use_word_data = False
-                        break
-                    continuation_timings.append((line_start, line_stop))
+            for line_text in all_lines:
+                line_start, line_stop, words_used, boundary_missing = calculate_line_timestamps_from_words(
+                    line_text,
+                    turn.words,
+                    word_offset,
+                )
+                if words_used == 0:
+                    line_timings.append(None)
+                    line_errors.append(True)
+                else:
+                    line_timings.append((line_start, line_stop))
+                    line_errors.append(boundary_missing)
                     word_offset += words_used
-
-            if not use_word_data:
-                turn_duration = stop_sec - start_sec
-                time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
-                first_line_start = start_sec
-                first_line_stop = start_sec + time_per_line
-                continuation_timings = []
-                for cont_idx in range(len(continuation_wrapped)):
-                    line_start = start_sec + time_per_line * (cont_idx + 1)
-                    line_stop = start_sec + time_per_line * (cont_idx + 2)
-                    if cont_idx == len(continuation_wrapped) - 1:
-                        line_stop = stop_sec
-                    continuation_timings.append((line_start, line_stop))
         else:
             logger.warning("Turn %d has NO word data, using interpolation", turn_idx)
-            turn_duration = stop_sec - start_sec
-            time_per_line = turn_duration / total_lines if total_lines > 0 else turn_duration
+            line_timings = [None for _ in range(total_lines)]
+            line_errors = [True for _ in range(total_lines)]
 
-            first_line_start = start_sec
-            first_line_stop = start_sec + time_per_line
+        if any(timing is None for timing in line_timings):
+            filled_timings: List[Tuple[float, float]] = []
+            idx = 0
+            prev_end = start_sec
+            while idx < total_lines:
+                timing = line_timings[idx]
+                if timing is not None:
+                    filled_timings.append(timing)
+                    prev_end = timing[1]
+                    idx += 1
+                    continue
 
-            continuation_timings = []
-            for cont_idx in range(len(continuation_wrapped)):
-                line_start = start_sec + time_per_line * (cont_idx + 1)
-                line_stop = start_sec + time_per_line * (cont_idx + 2)
-                if cont_idx == len(continuation_wrapped) - 1:
-                    line_stop = stop_sec
-                continuation_timings.append((line_start, line_stop))
+                next_idx = idx
+                while next_idx < total_lines and line_timings[next_idx] is None:
+                    next_idx += 1
+                next_start = line_timings[next_idx][0] if next_idx < total_lines else stop_sec
+                block = interpolate_line_block(prev_end, next_start, next_idx - idx)
+                filled_timings.extend(block)
+                if block:
+                    prev_end = block[-1][1]
+                idx = next_idx
+
+            line_timings = [timing for timing in filled_timings]
+
+        first_line_start, first_line_stop = line_timings[0] if line_timings else (start_sec, start_sec)
+        continuation_timings: List[Tuple[float, float]] = []
+        for cont_idx in range(1, total_lines):
+            continuation_timings.append(line_timings[cont_idx])
 
         # First line of turn (with or without speaker prefix depending on continuation status)
         pgln = page * 100 + line_in_page
@@ -881,6 +908,7 @@ def compute_transcript_line_entries(
                 "pgln": pgln,
                 "is_continuation": is_turn_continuation,
                 "total_lines_in_turn": total_lines,
+                "timestamp_error": line_errors[0] if line_errors else False,
             }
         )
 
@@ -910,6 +938,7 @@ def compute_transcript_line_entries(
                     "pgln": pgln,
                     "is_continuation": True,
                     "total_lines_in_turn": total_lines,
+                    "timestamp_error": line_errors[cont_idx + 1] if line_errors else False,
                 }
             )
 
