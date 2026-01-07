@@ -31,8 +31,8 @@ TranscribeAlpha/
 │   │                          # - OnCue XML generation
 │   │                          # - ffmpeg media processing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
-│   │                          # - Initial transcription timestamp alignment
 │   │                          # - Re-sync transcript with audio after edits
+│   │                          # - DOCX import alignment
 │   │                          # - Word-level timestamp correction
 │   ├── auth.py                # JWT authentication
 │   │                          # - Google Secret Manager integration
@@ -84,18 +84,27 @@ The `server.py` file intentionally consolidates:
 
 ### Transcription Pipeline
 
-The transcription flow uses a two-stage process for optimal accuracy:
+The transcription flow uses ASR timestamps first, with optional Rev AI alignment later:
 
 ```
-Audio/Video → ASR (AssemblyAI or Gemini) → Rev AI Alignment → DOCX/XML
+Audio/Video → ASR (AssemblyAI or Gemini) → DOCX/XML
+                         ↘ Rev AI Alignment (re-sync + DOCX import only)
 ```
 
-1. **ASR Stage**: AssemblyAI or Gemini extracts text and speaker labels
-2. **Alignment Stage**: Rev AI forced alignment provides accurate word-level timestamps
-3. **Artifact Generation**: DOCX and OnCue XML generated with aligned timestamps
+1. **ASR Stage**: AssemblyAI or Gemini extracts text + word timestamps
+2. **Artifact Generation**: DOCX and OnCue XML generated from ASR timestamps
+3. **Alignment Stage (optional)**: Rev AI forced alignment re-syncs edited transcripts or aligns DOCX imports
 
-If `REV_AI_API_KEY` is not configured, native ASR timestamps are used as fallback.
+If `REV_AI_API_KEY` is not configured, re-sync and DOCX import alignment are skipped.
 The alignment step preserves original text (punctuation, capitalization) while only updating timestamps.
+
+**Line timing rules**
+- Generated line timestamps enforce a 1.25s minimum duration by expanding into adjacent gaps without overlap.
+- User-edited line timings are preserved (minimum-duration enforcement is skipped during manual saves).
+
+**Speaker label display**
+- The editor shows a speaker label on every line for easy reassignment.
+- DOCX/XML outputs collapse consecutive identical speakers by omitting repeated labels (via `is_continuation`).
 
 ### Import Pattern
 The codebase uses a multi-context import pattern to work in different execution contexts:
@@ -119,8 +128,12 @@ except ImportError:
 | `/api/upload-preview` | POST | Upload media for preview |
 | `/api/media/{file_id}` | GET | Stream media files |
 | `/api/login` | POST | User authentication |
-| `/api/save-session` | POST | Save editor session |
-| `/api/load-session` | GET | Load editor session |
+| `/api/transcripts` | GET | List transcripts for the current user |
+| `/api/transcripts/by-key/{media_key}` | GET/PUT | Load/save transcript session |
+| `/api/transcripts/by-key/{media_key}/history` | GET | List snapshots for a transcript |
+| `/api/transcripts/by-key/{media_key}/restore/{snapshot_id}` | POST | Restore a snapshot |
+| `/api/transcripts/import` | POST | Import XML/DOCX with media |
+| `/api/transcripts/by-key/{media_key}/gemini-refine` | POST | Gemini refine pass |
 | `/api/resync` | POST | Re-align transcript with audio (Rev AI) |
 | `/api/clips/*` | Various | Clip creation/management |
 | `/health` | GET | Health check + cleanup trigger |
@@ -222,6 +235,7 @@ After any change, verify:
 3. Transcript download works (DOCX + XML)
 4. Editor loads and saves correctly
 5. Media playback functions
+6. History modal shows snapshots after edits
 
 ---
 
