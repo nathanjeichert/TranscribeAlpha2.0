@@ -2242,6 +2242,46 @@ async def list_transcripts_endpoint(current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/transcripts/by-key/{media_key:path}/history")
+async def list_transcript_history_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
+    """List all snapshots for a media_key."""
+    try:
+        logger.info(f"Fetching history for media_key: {media_key}")
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = f"transcripts/{media_key}/history/"
+        logger.info(f"Looking for snapshots at prefix: {prefix}")
+
+        snapshots = []
+        blob_count = 0
+        for blob in bucket.list_blobs(prefix=prefix):
+            blob_count += 1
+            try:
+                data = json.loads(blob.download_as_string())
+                # Support both old 'saved' and new 'is_manual_save' flags
+                is_manual = data.get("is_manual_save", data.get("saved", False))
+                snapshots.append({
+                    "snapshot_id": blob.name.split("/")[-1].replace(".json", ""),
+                    "created_at": data.get("created_at"),
+                    "is_manual_save": is_manual,
+                    "line_count": data.get("line_count", 0),
+                    "title_label": data.get("title_label", "Transcript"),
+                })
+            except Exception as e:
+                logger.warning(f"Failed to parse snapshot blob {blob.name}: {e}")
+                continue
+
+        logger.info(f"Found {blob_count} blobs, {len(snapshots)} valid snapshots")
+
+        # Sort newest first
+        snapshots.sort(key=lambda x: x["created_at"] or "", reverse=True)
+
+        return JSONResponse(content={"snapshots": snapshots})
+
+    except Exception as e:
+        logger.error(f"Failed to list history for {media_key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/transcripts/by-key/{media_key:path}")
 async def get_transcript_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """Get current transcript state or latest snapshot by media_key."""
@@ -2327,46 +2367,6 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
 
     except Exception as e:
         logger.error(f"Save failed for {media_key}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/transcripts/by-key/{media_key:path}/history")
-async def list_transcript_history_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
-    """List all snapshots for a media_key."""
-    try:
-        logger.info(f"Fetching history for media_key: {media_key}")
-        bucket = storage_client.bucket(BUCKET_NAME)
-        prefix = f"transcripts/{media_key}/history/"
-        logger.info(f"Looking for snapshots at prefix: {prefix}")
-
-        snapshots = []
-        blob_count = 0
-        for blob in bucket.list_blobs(prefix=prefix):
-            blob_count += 1
-            try:
-                data = json.loads(blob.download_as_string())
-                # Support both old 'saved' and new 'is_manual_save' flags
-                is_manual = data.get("is_manual_save", data.get("saved", False))
-                snapshots.append({
-                    "snapshot_id": blob.name.split("/")[-1].replace(".json", ""),
-                    "created_at": data.get("created_at"),
-                    "is_manual_save": is_manual,
-                    "line_count": data.get("line_count", 0),
-                    "title_label": data.get("title_label", "Transcript"),
-                })
-            except Exception as e:
-                logger.warning(f"Failed to parse snapshot blob {blob.name}: {e}")
-                continue
-
-        logger.info(f"Found {blob_count} blobs, {len(snapshots)} valid snapshots")
-
-        # Sort newest first
-        snapshots.sort(key=lambda x: x["created_at"] or "", reverse=True)
-
-        return JSONResponse(content={"snapshots": snapshots})
-
-    except Exception as e:
-        logger.error(f"Failed to list history for {media_key}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
