@@ -92,20 +92,29 @@ export default function TranscribeForm() {
   const hydrateTranscript = useCallback(
     (data: TranscriptData) => {
       setTranscriptData((previous) => {
+        const prevKey = previous?.media_key ?? previous?.title_data?.MEDIA_ID ?? null
+        const nextKey = data.media_key ?? data.title_data?.MEDIA_ID ?? null
+        const sameKey = Boolean(prevKey && nextKey && prevKey === nextKey)
         const merged: TranscriptData = {
-          ...(previous ?? {}),
+          ...(sameKey ? previous : {}),
           ...data,
-          docx_base64: data.docx_base64 ?? previous?.docx_base64,
-          oncue_xml_base64: data.oncue_xml_base64 ?? previous?.oncue_xml_base64,
-          media_blob_name: data.media_blob_name ?? previous?.media_blob_name,
-          media_content_type: data.media_content_type ?? previous?.media_content_type,
-          audio_duration: data.audio_duration ?? previous?.audio_duration ?? 0,
-          lines_per_page: data.lines_per_page ?? previous?.lines_per_page ?? 25,
-          title_data: data.title_data ?? previous?.title_data ?? {},
-          lines: data.lines ?? previous?.lines ?? [],
-          clips: data.clips ?? previous?.clips ?? [],
-          transcript: data.transcript ?? data.transcript_text ?? previous?.transcript ?? previous?.transcript_text ?? null,
-          transcript_text: data.transcript_text ?? data.transcript ?? previous?.transcript_text ?? previous?.transcript ?? null,
+          docx_base64: data.docx_base64 ?? (sameKey ? previous?.docx_base64 : undefined),
+          oncue_xml_base64: data.oncue_xml_base64 ?? (sameKey ? previous?.oncue_xml_base64 : undefined),
+          media_blob_name: data.media_blob_name ?? (sameKey ? previous?.media_blob_name : undefined),
+          media_content_type: data.media_content_type ?? (sameKey ? previous?.media_content_type : undefined),
+          audio_duration: data.audio_duration ?? (sameKey ? previous?.audio_duration : undefined) ?? 0,
+          lines_per_page: data.lines_per_page ?? (sameKey ? previous?.lines_per_page : undefined) ?? 25,
+          title_data: data.title_data ?? (sameKey ? previous?.title_data : undefined) ?? {},
+          lines: data.lines ?? (sameKey ? previous?.lines : undefined) ?? [],
+          clips: data.clips ?? (sameKey ? previous?.clips : undefined) ?? [],
+          transcript: data.transcript
+            ?? data.transcript_text
+            ?? (sameKey ? previous?.transcript ?? previous?.transcript_text : null)
+            ?? null,
+          transcript_text: data.transcript_text
+            ?? data.transcript
+            ?? (sameKey ? previous?.transcript_text ?? previous?.transcript : null)
+            ?? null,
         }
         return merged
       })

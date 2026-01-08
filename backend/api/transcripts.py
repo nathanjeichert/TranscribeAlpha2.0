@@ -572,6 +572,33 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
         if not snapshot_data.get("media_key"):
             snapshot_data["media_key"] = media_key
 
+        lines = snapshot_data.get("lines") or []
+        if lines:
+            title_data = snapshot_data.get("title_data") or {}
+            lines_per_page = snapshot_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+            audio_duration = float(snapshot_data.get("audio_duration") or 0.0)
+            try:
+                normalized_lines, normalized_duration = normalize_line_payloads(lines, audio_duration)
+                turns = construct_turns_from_lines(normalized_lines)
+                if turns:
+                    docx_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
+                        turns,
+                        title_data,
+                        normalized_duration,
+                        lines_per_page,
+                        enforce_min_line_duration=False,
+                    )
+                    snapshot_data["lines"] = updated_lines
+                    snapshot_data["audio_duration"] = normalized_duration
+                    snapshot_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
+                    snapshot_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
+                    snapshot_data["transcript_text"] = transcript_text
+                    snapshot_data["transcript"] = transcript_text
+            except Exception as exc:
+                logger.warning("Failed to rebuild snapshot artifacts for %s: %s", media_key, exc)
+
+        snapshot_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
         save_current_transcript(media_key, snapshot_data)
 
         return JSONResponse(content=snapshot_data)
