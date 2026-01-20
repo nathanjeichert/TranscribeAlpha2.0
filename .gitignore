@@ -1,5 +1,6 @@
 .streamlit/
 __pycache__/
+.DS_Store
 
 # Next.js
 frontend-next/.next/
