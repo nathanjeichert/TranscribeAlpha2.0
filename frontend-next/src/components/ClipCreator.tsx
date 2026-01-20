@@ -221,11 +221,9 @@ export default function ClipCreator({
     setLineStart(first.line != null ? String(first.line) : '')
     setPageEnd(last.page != null ? String(last.page) : '')
     setLineEnd(last.line != null ? String(last.line) : '')
-    if (selectionMode !== 'manual') {
-      setManualStartId(first.id)
-      setManualEndId(last.id)
-    }
-  }, [session, selectionMode])
+    setManualStartId(first.id)
+    setManualEndId(last.id)
+  }, [session])
 
   const parsePageInput = (value: string) => {
     const trimmed = value.trim()
@@ -333,6 +331,29 @@ export default function ClipCreator({
       end: Math.max(first.start + 0.01, last.end),
     }
   }, [selectedRange, selectedLines])
+
+  useEffect(() => {
+    if (!clipBounds || !selectedRange || !lines.length) return
+
+    const startLine = lines[selectedRange.startIndex]
+    const endLine = lines[selectedRange.endIndex]
+    if (!startLine || !endLine) return
+
+    setTimeStart(formatSeconds(startLine.start))
+    setTimeEnd(formatSeconds(endLine.end))
+
+    if (startLine.page != null && startLine.line != null) {
+      setPageStart(String(startLine.page))
+      setLineStart(String(startLine.line))
+    }
+    if (endLine.page != null && endLine.line != null) {
+      setPageEnd(String(endLine.page))
+      setLineEnd(String(endLine.line))
+    }
+
+    setManualStartId(startLine.id)
+    setManualEndId(endLine.id)
+  }, [selectedRange])
 
   useEffect(() => {
     if (!previewing) {
