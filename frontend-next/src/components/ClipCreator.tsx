@@ -961,53 +961,25 @@ export default function ClipCreator({
 
           {activeClip && (
             <div className="card">
-              <div className="card-header">
+              <div className="card-header flex justify-between items-center">
                 <h2 className="text-xl font-medium">Selected clip</h2>
+                <button
+                  type="button"
+                  className="text-primary-500 hover:text-primary-700 text-sm"
+                  onClick={() => setActiveClip(null)}
+                >
+                  Clear selection
+                </button>
               </div>
               <div className="card-body space-y-4">
                 <div>
                   <div className="text-lg font-semibold text-primary-900">{activeClip.name}</div>
                   <div className="text-sm text-primary-600">
-                    {formatSeconds(activeClip.duration)} • Source {formatSeconds(activeClip.start_time)} – {formatSeconds(activeClip.end_time)}
+                    Duration: {formatSeconds(activeClip.duration)}
                   </div>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    className="btn-primary text-sm"
-                    onClick={() =>
-                      onDownload(
-                        activeClip.docx_base64,
-                        buildFilename(activeClip.name.replace(/\s+/g, '-').toLowerCase(), '.docx'),
-                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                      )
-                    }
-                  >
-                    Download DOCX
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-primary text-sm"
-                    onClick={() =>
-                      onDownload(
-                        activeClip.oncue_xml_base64,
-                        buildFilename(activeClip.name.replace(/\s+/g, '-').toLowerCase(), '.xml'),
-                        'application/xml',
-                      )
-                    }
-                  >
-                    Download XML
-                  </button>
-                  {activeClip.media_blob_name && (
-                    <a
-                      href={appendAccessTokenToMediaUrl(`/api/media/${activeClip.media_blob_name}`)}
-                      className="btn-outline text-sm"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Download clip media
-                    </a>
-                  )}
+                  <div className="text-sm text-primary-500">
+                    Source: {formatSeconds(activeClip.start_time)} – {formatSeconds(activeClip.end_time)}
+                  </div>
                 </div>
                 <div>
                   {cardSectionTitle('Transcript preview')}
