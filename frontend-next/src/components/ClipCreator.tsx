@@ -685,7 +685,7 @@ export default function ClipCreator({
               <p className="text-xs text-primary-500">Select the transcript exported from OnCue.</p>
             </div>
             <div className="space-y-2">
-              <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media (optional)</label>
+              <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media *</label>
               <input
                 key={`import-media-${importResetKey}`}
                 type="file"
@@ -693,7 +693,7 @@ export default function ClipCreator({
                 onChange={(event) => setImportMediaFile(event.target.files?.[0] ?? null)}
                 className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
               />
-              <p className="text-xs text-primary-500">Include matching video or audio to enable preview playback.</p>
+              <p className="text-xs text-primary-500">Required. The corresponding video or audio file for clip extraction and preview.</p>
             </div>
             <div className="md:col-span-2">
               <button type="submit" className="btn-outline w-full md:w-auto" disabled={importing}>
