@@ -1,6 +1,4 @@
 import base64
-import mimetypes
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict
@@ -70,7 +68,6 @@ try:
         parse_timecode_to_seconds,
         resolve_line_index,
         sanitize_clip_label,
-        slugify_filename,
     )
 except ImportError:
     try:
@@ -82,7 +79,6 @@ except ImportError:
             parse_timecode_to_seconds,
             resolve_line_index,
             sanitize_clip_label,
-            slugify_filename,
         )
     except ImportError:
         import transcript_utils as transcript_utils_module
@@ -93,7 +89,15 @@ except ImportError:
         parse_timecode_to_seconds = transcript_utils_module.parse_timecode_to_seconds
         resolve_line_index = transcript_utils_module.resolve_line_index
         sanitize_clip_label = transcript_utils_module.sanitize_clip_label
-        slugify_filename = transcript_utils_module.slugify_filename
+
+try:
+    from ..transcript_formatting import create_clip_docx
+except ImportError:
+    try:
+        from transcript_formatting import create_clip_docx
+    except ImportError:
+        import transcript_formatting as transcript_formatting_module
+        create_clip_docx = transcript_formatting_module.create_clip_docx
 
 router = APIRouter()
 
@@ -200,28 +204,20 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
     if not turns:
         raise HTTPException(status_code=400, detail="Unable to construct transcript turns for clip")
 
-    title_overrides = payload.get("title_overrides") if isinstance(payload.get("title_overrides"), dict) else {}
-    clip_title_data = dict(session_data.get("title_data") or {})
-    for key, value in title_overrides.items():
-        if value is None:
-            continue
-        clip_title_data[key] = str(value)
-
     clip_count = len(ensure_session_clip_list(session_data))
     default_name = f"Clip {clip_count + 1}"
     clip_name = sanitize_clip_label(payload.get("clip_label"), default_name)
 
-    base_filename = clip_title_data.get("FILE_NAME") or "clip-output"
-    filename_root, filename_ext = os.path.splitext(base_filename)
-    if not filename_ext:
-        guessed_ext = mimetypes.guess_extension(session_data.get("media_content_type") or "")
-        filename_ext = guessed_ext or ""
-    clip_filename = f"{filename_root}_{slugify_filename(clip_name)}{filename_ext}" if filename_root else f"{slugify_filename(clip_name)}{filename_ext}"
-    clip_title_data["FILE_NAME"] = clip_filename
+    clip_title_data = dict(session_data.get("title_data") or {})
+    title_overrides = payload.get("title_overrides") if isinstance(payload.get("title_overrides"), dict) else {}
+    for key, value in title_overrides.items():
+        if value is not None:
+            clip_title_data[key] = str(value)
 
     hours, remainder = divmod(normalized_duration, 3600)
     minutes, seconds = divmod(remainder, 60)
-    clip_title_data["FILE_DURATION"] = f"{int(hours):02d}:{int(minutes):02d}:{int(round(seconds)):02d}"
+    clip_title_data["CLIP_DURATION"] = f"{int(hours):02d}:{int(minutes):02d}:{int(round(seconds)):02d}"
+    clip_title_data["CLIP_TITLE"] = clip_name
 
     docx_bytes, oncue_xml, transcript_text, clip_line_entries = build_session_artifacts(
         turns,
@@ -230,6 +226,7 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         lines_per_page,
         enforce_min_line_duration=False,
     )
+    docx_bytes = create_clip_docx(clip_title_data, turns, clip_name)
 
     docx_b64 = base64.b64encode(docx_bytes).decode()
     oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()

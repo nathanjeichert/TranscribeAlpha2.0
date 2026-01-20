@@ -473,14 +473,53 @@ def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Invalid OnCue XML: {exc}")
 
     deposition = root.find(".//deposition")
+    depo_video = root.find(".//depoVideo")
+
+    def first_attr(element: Optional[ET.Element], keys: List[str]) -> str:
+        if element is None:
+            return ""
+        for key in keys:
+            value = element.attrib.get(key)
+            if value:
+                return value.strip()
+        return ""
+
+    def first_text(keys: List[str]) -> str:
+        for key in keys:
+            node = root.find(f".//{key}")
+            if node is not None and node.text:
+                text_value = node.text.strip()
+                if text_value:
+                    return text_value
+        return ""
+
+    case_name = first_attr(deposition, ["caseName", "case", "case_name", "caption"]) or first_text(
+        ["caseName", "case", "caption", "case_name"]
+    )
+    case_number = first_attr(deposition, ["caseNumber", "caseNo", "case_number"]) or first_text(
+        ["caseNumber", "caseNo", "case_number"]
+    )
+    firm_name = first_attr(
+        deposition,
+        ["firm", "firmName", "organization", "organizationName", "firmOrOrganization"],
+    ) or first_text(["firm", "firmName", "organization", "organizationName", "firmOrOrganization"])
+    date_value = first_attr(deposition, ["date"]) or first_text(["date"])
+    time_value = first_attr(deposition, ["time"]) or first_text(["time"])
+    location_value = first_attr(deposition, ["location", "place"]) or first_text(["location", "place"])
+    file_name = (
+        first_attr(depo_video, ["filename"])
+        or first_attr(deposition, ["filename", "fileName", "file_name"])
+        or first_text(["FILE_NAME", "fileName", "file_name"])
+    )
+
     title_data = {
-        "CASE_NAME": "",
-        "CASE_NUMBER": "",
-        "FIRM_OR_ORGANIZATION_NAME": "",
-        "DATE": deposition.get("date") if deposition is not None else "",
-        "TIME": "",
-        "LOCATION": "",
-        "FILE_NAME": deposition.get("filename") if deposition is not None else "imported.xml",
+        "CASE_NAME": case_name,
+        "CASE_NUMBER": case_number,
+        "FIRM_OR_ORGANIZATION_NAME": firm_name,
+        "DATE": date_value,
+        "TIME": time_value,
+        "LOCATION": location_value,
+        "FILE_NAME": file_name or "imported.xml",
         "FILE_DURATION": "",
     }
 

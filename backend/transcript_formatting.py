@@ -133,6 +133,18 @@ def _resolve_docx_template_path() -> Optional[str]:
     return None
 
 
+def _resolve_clip_template_path() -> Optional[str]:
+    """Resolve path to clip-specific DOCX template."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "clip_template.docx"),
+        os.path.join(os.getcwd(), "clip_template.docx"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
 def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> bytes:
     """
     Create a DOCX transcript with template-based formatting.
@@ -162,6 +174,80 @@ def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> byt
             p = doc.add_paragraph()
             p.paragraph_format.left_indent = Inches(0.0)
             p.paragraph_format.first_line_indent = Inches(1.0)  # Standard legal transcript indent
+            p.paragraph_format.line_spacing = 2.0
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.widow_control = False
+
+            if not turn.is_continuation:
+                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
+                speaker_run.font.name = "Courier New"
+            text_run = p.add_run(turn.text)
+            text_run.font.name = "Courier New"
+    else:
+        for turn in transcript_turns:
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Inches(0.0)
+            p.paragraph_format.first_line_indent = Inches(1.0)
+            p.paragraph_format.line_spacing = 2.0
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.widow_control = False
+
+            if not turn.is_continuation:
+                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
+                speaker_run.font.name = "Courier New"
+            text_run = p.add_run(turn.text)
+            text_run.font.name = "Courier New"
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def create_clip_docx(title_data: dict, transcript_turns: List[TranscriptTurn], clip_title: str) -> bytes:
+    """
+    Create a DOCX transcript for a clip using the clip-specific template.
+
+    Args:
+        title_data: Session metadata (CASE_NAME, FILE_NAME, etc.)
+        transcript_turns: The transcript content
+        clip_title: The name/label for this clip
+
+    Returns:
+        DOCX file as bytes
+    """
+    template_path = _resolve_clip_template_path()
+    if not template_path:
+        logger.warning("Clip template not found; falling back to standard template.")
+        template_path = _resolve_docx_template_path()
+
+    if template_path:
+        doc = Document(template_path)
+    else:
+        logger.warning("No DOCX template found; using blank document.")
+        doc = Document()
+
+    clip_title_data = dict(title_data)
+    clip_title_data["CLIP_TITLE"] = clip_title
+
+    for key, value in clip_title_data.items():
+        placeholder = f"{{{{{key}}}}}"
+        replace_placeholder_text(doc, placeholder, str(value) if value else "")
+
+    body_placeholder = "{{TRANSCRIPT_BODY}}"
+    placeholder_paragraph = None
+    for paragraph in doc.paragraphs:
+        if body_placeholder in paragraph.text:
+            placeholder_paragraph = paragraph
+            break
+
+    if placeholder_paragraph:
+        paragraph_element = placeholder_paragraph._element
+        paragraph_element.getparent().remove(paragraph_element)
+        for turn in transcript_turns:
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Inches(0.0)
+            p.paragraph_format.first_line_indent = Inches(1.0)
             p.paragraph_format.line_spacing = 2.0
             p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.widow_control = False
