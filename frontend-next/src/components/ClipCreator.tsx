@@ -154,6 +154,9 @@ export default function ClipCreator({
   const [importExpanded, setImportExpanded] = useState(true)
 
   const effectiveMediaUrl = useMemo(() => {
+    if (activeClip?.media_blob_name) {
+      return appendAccessTokenToMediaUrl(`/api/media/${activeClip.media_blob_name}`)
+    }
     if (mediaUrl && mediaUrl.trim()) {
       return appendAccessTokenToMediaUrl(mediaUrl)
     }
@@ -162,7 +165,7 @@ export default function ClipCreator({
       return appendAccessTokenToMediaUrl(`/api/media/${blobName}`)
     }
     return null
-  }, [mediaUrl, session?.media_blob_name])
+  }, [mediaUrl, session?.media_blob_name, activeClip?.media_blob_name])
 
   const effectiveMediaType = useMemo(() => {
     if (mediaType && mediaType.trim()) {
