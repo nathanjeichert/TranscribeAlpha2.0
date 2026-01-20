@@ -151,6 +151,7 @@ export default function ClipCreator({
   const [importError, setImportError] = useState<string | null>(null)
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [importResetKey, setImportResetKey] = useState(0)
+  const [importExpanded, setImportExpanded] = useState(true)
 
   const effectiveMediaUrl = useMemo(() => {
     if (mediaUrl && mediaUrl.trim()) {
@@ -203,6 +204,10 @@ export default function ClipCreator({
     const defaultName = `Clip ${(session.clips?.length ?? 0) + 1}`
     setClipName(defaultName)
     setSelectionMode('time')
+  }, [session])
+
+  useEffect(() => {
+    setImportExpanded(!session)
   }, [session])
 
   useEffect(() => {
@@ -679,50 +684,63 @@ export default function ClipCreator({
         </div>
       )}
       <div className="card">
-        <div className="card-header">
+        <div
+          className="card-header cursor-pointer flex justify-between items-center"
+          onClick={() => setImportExpanded(!importExpanded)}
+        >
           <h2 className="text-xl font-medium">Import Transcript</h2>
+          <svg
+            className={`w-5 h-5 text-primary-500 transition-transform ${importExpanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
         </div>
-        <div className="card-body space-y-4">
-          <p className="text-sm text-primary-700">
-            Bring an existing OnCue XML transcript into the clip builder. Optionally include the corresponding media file
-            for preview and clip exports.
-          </p>
-          {importError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importError}</div>
-          )}
-          {importMessage && (
-            <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{importMessage}</div>
-          )}
-          <form className="grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={handleImportTranscript}>
-            <div className="space-y-2">
-              <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">OnCue XML *</label>
-              <input
-                key={`import-xml-${importResetKey}`}
-                type="file"
-                accept=".xml"
-                onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
-                className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
-              />
-              <p className="text-xs text-primary-500">Select the transcript exported from OnCue.</p>
-            </div>
-            <div className="space-y-2">
-              <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media *</label>
-              <input
-                key={`import-media-${importResetKey}`}
-                type="file"
-                accept="audio/*,video/*"
-                onChange={(event) => setImportMediaFile(event.target.files?.[0] ?? null)}
-                className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
-              />
-              <p className="text-xs text-primary-500">Required. The corresponding video or audio file for clip extraction and preview.</p>
-            </div>
-            <div className="md:col-span-2">
-              <button type="submit" className="btn-outline w-full md:w-auto" disabled={importing}>
-                {importing ? 'Importing…' : 'Import transcript'}
-              </button>
-            </div>
-          </form>
-        </div>
+        {importExpanded && (
+          <div className="card-body space-y-4">
+            <p className="text-sm text-primary-700">
+              Bring an existing OnCue XML transcript into the clip builder. Optionally include the corresponding media file
+              for preview and clip exports.
+            </p>
+            {importError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importError}</div>
+            )}
+            {importMessage && (
+              <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{importMessage}</div>
+            )}
+            <form className="grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={handleImportTranscript}>
+              <div className="space-y-2">
+                <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">OnCue XML *</label>
+                <input
+                  key={`import-xml-${importResetKey}`}
+                  type="file"
+                  accept=".xml"
+                  onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
+                  className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
+                />
+                <p className="text-xs text-primary-500">Select the transcript exported from OnCue.</p>
+              </div>
+              <div className="space-y-2">
+                <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media *</label>
+                <input
+                  key={`import-media-${importResetKey}`}
+                  type="file"
+                  accept="audio/*,video/*"
+                  onChange={(event) => setImportMediaFile(event.target.files?.[0] ?? null)}
+                  className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
+                />
+                <p className="text-xs text-primary-500">Required. The corresponding video or audio file for clip extraction and preview.</p>
+              </div>
+              <div className="md:col-span-2">
+                <button type="submit" className="btn-outline w-full md:w-auto" disabled={importing}>
+                  {importing ? 'Importing…' : 'Import transcript'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
 
       {!hasSession ? (
