@@ -19,7 +19,10 @@ EXCLUDE_DIR_NAMES = {
     "node_modules",
     "out",
 }
-EXCLUDE_FILE_NAMES = {".DS_Store"}
+EXCLUDE_FILE_NAMES = {
+    ".DS_Store",
+    "Nielsen, Martin 2019-07-23.xml",
+}
 
 
 PART_SPECS = {
