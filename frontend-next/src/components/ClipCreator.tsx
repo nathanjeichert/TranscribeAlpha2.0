@@ -627,7 +627,7 @@ export default function ClipCreator({
               )}
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 items-center justify-center md:justify-end">
             <button
               type="button"
               className="btn-outline text-xs"
