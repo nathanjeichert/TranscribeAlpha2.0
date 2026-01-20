@@ -762,7 +762,9 @@ export default function ClipCreator({
               {selectionMode === 'time' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-primary-700 mb-1">Start time</label>
+                    <label className="block text-sm font-medium text-primary-700 mb-1">
+                      Start time <span className="font-normal text-primary-500">(snaps to line)</span>
+                    </label>
                     <input
                       type="text"
                       className="input-field"
@@ -772,7 +774,9 @@ export default function ClipCreator({
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-primary-700 mb-1">End time</label>
+                    <label className="block text-sm font-medium text-primary-700 mb-1">
+                      End time <span className="font-normal text-primary-500">(snaps to line)</span>
+                    </label>
                     <input
                       type="text"
                       className="input-field"
@@ -782,6 +786,9 @@ export default function ClipCreator({
                     />
                   </div>
                 </div>
+                <p className="text-xs text-primary-500 md:col-span-2">
+                  Clips include complete transcript lines. Times will adjust to line boundaries.
+                </p>
               )}
 
               {selectionMode === 'pageLine' && (
