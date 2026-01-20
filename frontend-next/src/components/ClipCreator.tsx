@@ -910,13 +910,33 @@ export default function ClipCreator({
               </div>
               <div className="card-body space-y-4">
                 {effectiveMediaUrl ? (
-                  <div className="bg-primary-900 rounded-lg p-4">
-                    {isVideo ? (
-                      <video ref={videoRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full rounded" />
-                    ) : (
-                      <audio ref={audioRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full" />
+                  <>
+                    <div className="bg-primary-900 rounded-lg p-4">
+                      {isVideo ? (
+                        <video ref={videoRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full rounded" />
+                      ) : (
+                        <audio ref={audioRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full" />
+                      )}
+                    </div>
+                    {clipBounds && session?.audio_duration && !activeClip && (
+                      <div className="mt-3">
+                        <div className="text-xs text-primary-500 mb-1">Clip region</div>
+                        <div className="h-2 bg-primary-200 rounded-full relative overflow-hidden">
+                          <div
+                            className="absolute h-full bg-primary-500 rounded-full"
+                            style={{
+                              left: `${(clipBounds.start / session.audio_duration) * 100}%`,
+                              width: `${((clipBounds.end - clipBounds.start) / session.audio_duration) * 100}%`,
+                            }}
+                          />
+                        </div>
+                        <div className="flex justify-between text-xs text-primary-400 mt-1">
+                          <span>0:00</span>
+                          <span>{formatSeconds(session.audio_duration)}</span>
+                        </div>
+                      </div>
                     )}
-                  </div>
+                  </>
                 ) : (
                   <p className="text-primary-700">No media preview available for this session.</p>
                 )}
