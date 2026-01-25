@@ -11,6 +11,10 @@ RUN npm run build
 # Python backend stage
 FROM python:3.11-slim AS backend
 
+# App variant: "oncue" (default) or "criminal"
+ARG APP_VARIANT=oncue
+ENV APP_VARIANT=${APP_VARIANT}
+
 # Set working directory
 WORKDIR /app
 

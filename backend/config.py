@@ -1,5 +1,10 @@
 import os
 
+# App variant configuration
+# "oncue" = OnCue XML + DOCX exports (default)
+# "criminal" = HTML viewer + DOCX exports (for DA/PD offices)
+APP_VARIANT = os.getenv("APP_VARIANT", "oncue")
+
 # Environment-based CORS configuration
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 ALLOWED_ORIGINS = ["*"] if ENVIRONMENT == "development" else [

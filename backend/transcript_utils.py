@@ -9,13 +9,27 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 try:
-    from .config import DEFAULT_LINES_PER_PAGE
+    from .config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
 except ImportError:
     try:
-        from config import DEFAULT_LINES_PER_PAGE
+        from config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
     except ImportError:
         import config as config_module
         DEFAULT_LINES_PER_PAGE = config_module.DEFAULT_LINES_PER_PAGE
+        APP_VARIANT = config_module.APP_VARIANT
+
+# Viewer module for criminal variant
+try:
+    from .viewer import render_viewer_html
+except ImportError:
+    try:
+        from viewer import render_viewer_html
+    except ImportError:
+        try:
+            import viewer as viewer_module
+            render_viewer_html = viewer_module.render_viewer_html
+        except ImportError:
+            render_viewer_html = None  # Viewer not available
 
 try:
     from .models import TranscriptTurn, WordTimestamp
@@ -166,6 +180,138 @@ def build_session_artifacts(
     )
     serialized_entries = serialize_line_entries(line_entries)
     return docx_bytes, oncue_xml, transcript_text, serialized_entries
+
+
+def build_viewer_payload(
+    line_entries: List[dict],
+    title_data: dict,
+    audio_duration: float,
+    lines_per_page: int,
+    media_filename: str = "media.mp4",
+    media_content_type: str = "video/mp4",
+) -> Dict[str, Any]:
+    """
+    Build the JSON payload for the standalone HTML viewer.
+
+    Args:
+        line_entries: Serialized line entries from compute_transcript_line_entries
+        title_data: Metadata dict (CASE_NAME, FILE_NAME, DATE, LOCATION, etc.)
+        audio_duration: Total duration in seconds
+        lines_per_page: Lines per page for pagination
+        media_filename: Relative path to media file
+        media_content_type: MIME type of media file
+
+    Returns:
+        Dict payload ready for render_viewer_html
+    """
+    # Format duration as HH:MM:SS
+    total_secs = int(audio_duration)
+    hours, remainder = divmod(total_secs, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        duration_str = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        duration_str = f"{minutes:02d}:{secs:02d}"
+
+    # Build title metadata
+    meta_title = {
+        "CASE_NAME": title_data.get("CASE_NAME", ""),
+        "CASE_NUMBER": title_data.get("CASE_NUMBER", ""),
+        "FIRM_OR_ORGANIZATION_NAME": title_data.get("FIRM_OR_ORGANIZATION_NAME", ""),
+        "DATE": title_data.get("DATE", ""),
+        "TIME": title_data.get("TIME", ""),
+        "LOCATION": title_data.get("LOCATION", ""),
+        "FILE_NAME": title_data.get("FILE_NAME", media_filename),
+        "FILE_DURATION": duration_str,
+    }
+
+    # Extract unique speakers
+    speakers = list(set(
+        entry.get("speaker", "")
+        for entry in line_entries
+        if entry.get("speaker")
+    ))
+
+    # Build lines array for viewer
+    lines = []
+    for idx, entry in enumerate(line_entries):
+        lines.append({
+            "id": entry.get("id", f"line-{idx}"),
+            "speaker": entry.get("speaker", ""),
+            "text": entry.get("text", ""),
+            "rendered_text": entry.get("rendered_text", ""),
+            "start": entry.get("start", 0),
+            "end": entry.get("end", 0),
+            "page_number": entry.get("page_number", 1),
+            "line_number": entry.get("line_number", idx + 1),
+            "pgln": entry.get("pgln", 101 + idx),
+            "is_continuation": entry.get("is_continuation", False),
+        })
+
+    # Build pages array
+    pages = []
+    page_lines: Dict[int, List[int]] = {}
+    for idx, line in enumerate(lines):
+        page_num = line.get("page_number", 1)
+        if page_num not in page_lines:
+            page_lines[page_num] = []
+        page_lines[page_num].append(idx)
+
+    for page_num in sorted(page_lines.keys()):
+        line_indexes = page_lines[page_num]
+        pages.append({
+            "page_number": page_num,
+            "line_indexes": line_indexes,
+            "pgln_start": lines[line_indexes[0]]["pgln"] if line_indexes else 101,
+            "pgln_end": lines[line_indexes[-1]]["pgln"] if line_indexes else 101,
+        })
+
+    return {
+        "meta": {
+            "title": meta_title,
+            "duration_seconds": audio_duration,
+            "lines_per_page": lines_per_page,
+            "speakers": speakers,
+        },
+        "media": {
+            "filename": media_filename,
+            "content_type": media_content_type,
+            "relative_path": media_filename,
+        },
+        "lines": lines,
+        "pages": pages,
+    }
+
+
+def generate_viewer_html_from_artifacts(
+    line_entries: List[dict],
+    title_data: dict,
+    audio_duration: float,
+    lines_per_page: int,
+    media_filename: str = "media.mp4",
+    media_content_type: str = "video/mp4",
+) -> str:
+    """
+    Generate standalone HTML viewer from session artifacts.
+
+    Returns:
+        HTML string for the standalone viewer
+
+    Raises:
+        RuntimeError: If viewer module is not available
+    """
+    if render_viewer_html is None:
+        raise RuntimeError("Viewer module not available")
+
+    payload = build_viewer_payload(
+        line_entries,
+        title_data,
+        audio_duration,
+        lines_per_page,
+        media_filename,
+        media_content_type,
+    )
+    return render_viewer_html(payload)
 
 
 def ensure_session_clip_list(session_data: dict) -> List[dict]:

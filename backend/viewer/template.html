@@ -1,0 +1,880 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcript Viewer</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    :root {
+      --page-width: 8.5in;
+      --page-padding: 1in;
+      --content-width: calc(var(--page-width) - 2 * var(--page-padding));
+      --font-size: 12pt;
+      --line-height: 2.0;
+      --lines-per-page: 25;
+      --char-width: 7.2px;
+      --chars-per-line: 64;
+
+      /* Colors */
+      --bg-app: #0f172a;
+      --bg-document: #f1f5f9;
+      --bg-page: #ffffff;
+      --text-primary: #1e293b;
+      --text-secondary: #64748b;
+      --text-muted: #94a3b8;
+      --accent: #facc15;
+      --accent-bg: #fef3c7;
+      --border-subtle: rgba(148, 163, 184, 0.2);
+      --shadow-page: 0 4px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg-app);
+      color: var(--text-primary);
+      font-family: system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .app {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header - Sleek/Modern */
+    .app-header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 16px 24px;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 100;
+      transform: translateY(-100%);
+      opacity: 0;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+
+    .app-header.visible {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    .header-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .header-info h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      color: #f8fafc;
+      letter-spacing: 0.5px;
+    }
+
+    .header-info p {
+      margin: 4px 0 0;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .header-meta {
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .header-meta span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Main Layout */
+    .app-main {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      padding-top: 0;
+    }
+
+    /* Video Pane - Left Side */
+    .video-pane {
+      flex: 0 0 45%;
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      min-width: 0;
+    }
+
+    .video-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    /* Controls - Sleek/Modern */
+    .controls {
+      padding: 16px 20px;
+      background: linear-gradient(0deg, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.8) 100%);
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .controls-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .control-btn {
+      appearance: none;
+      border: none;
+      background: rgba(255, 255, 255, 0.1);
+      color: #f8fafc;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.1s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .control-btn:active {
+      transform: scale(0.95);
+    }
+
+    .control-btn.play-btn {
+      width: 48px;
+      height: 48px;
+      background: var(--accent);
+      color: #1e293b;
+    }
+
+    .control-btn.play-btn:hover {
+      background: #fde047;
+    }
+
+    .progress-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .time-display {
+      font-size: 12px;
+      font-family: 'SF Mono', 'Consolas', monospace;
+      color: var(--text-muted);
+      min-width: 45px;
+      text-align: center;
+    }
+
+    .progress-bar {
+      flex: 1;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.1s linear;
+    }
+
+    .progress-bar:hover .progress-fill {
+      background: #fde047;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+      outline: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    .volume-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .volume-icon {
+      font-size: 16px;
+      color: var(--text-muted);
+    }
+
+    #volumeSlider {
+      width: 80px;
+    }
+
+    /* Document Pane - Right Side */
+    .document-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-document);
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .document-header {
+      padding: 12px 24px;
+      background: #fff;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .page-indicator {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .page-nav {
+      display: flex;
+      gap: 8px;
+    }
+
+    .page-nav button {
+      appearance: none;
+      border: 1px solid var(--border-subtle);
+      background: #fff;
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .page-nav button:hover:not(:disabled) {
+      background: var(--bg-document);
+      border-color: var(--text-muted);
+    }
+
+    .page-nav button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .document-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 32px;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* Document Page - Formal Legal Aesthetic */
+    .doc-page {
+      width: var(--page-width);
+      max-width: 100%;
+      background: var(--bg-page);
+      box-shadow: var(--shadow-page);
+      border-radius: 2px;
+      padding: var(--page-padding);
+      display: none;
+    }
+
+    .doc-page.active {
+      display: block;
+    }
+
+    .doc-lines {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: var(--font-size);
+      line-height: var(--line-height);
+      color: var(--text-primary);
+    }
+
+    .doc-line {
+      display: flex;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      margin: 0;
+      padding: 0 8px;
+      border-radius: 2px;
+    }
+
+    .doc-line:hover {
+      background: rgba(59, 130, 246, 0.06);
+    }
+
+    .doc-line.current {
+      background: var(--accent-bg);
+    }
+
+    .doc-line-number {
+      width: 36px;
+      min-width: 36px;
+      text-align: right;
+      padding-right: 16px;
+      color: var(--text-muted);
+      font-weight: 500;
+      user-select: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .doc-line.current .doc-line-number {
+      color: #92400e;
+    }
+
+    .doc-line-text {
+      flex: 1;
+      white-space: pre;
+      overflow: hidden;
+    }
+
+    /* Speaker line has first-line indent */
+    .doc-line-text.speaker-line {
+      padding-left: 1in;
+      text-indent: -1in;
+    }
+
+    /* Continuation line - no indent */
+    .doc-line-text.continuation-line {
+      padding-left: 0;
+    }
+
+    .doc-empty {
+      text-align: center;
+      padding: 48px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* Responsive */
+    @media (max-width: 1200px) {
+      .app-main {
+        flex-direction: column;
+      }
+
+      .video-pane {
+        flex: 0 0 40vh;
+      }
+
+      .document-pane {
+        flex: 1;
+      }
+
+      .doc-page {
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .header-meta {
+        display: none;
+      }
+
+      .document-scroll {
+        padding: 16px;
+      }
+
+      :root {
+        --page-padding: 0.5in;
+        --font-size: 10pt;
+      }
+    }
+
+    /* Print styles */
+    @media print {
+      .video-pane,
+      .controls,
+      .app-header,
+      .document-header {
+        display: none !important;
+      }
+
+      .document-pane {
+        overflow: visible;
+      }
+
+      .document-scroll {
+        padding: 0;
+        overflow: visible;
+      }
+
+      .doc-page {
+        display: block !important;
+        box-shadow: none;
+        page-break-after: always;
+      }
+
+      .doc-line.current {
+        background: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="app-header" id="appHeader">
+      <div class="header-content">
+        <div class="header-info">
+          <h1 id="caseTitle">Transcript Viewer</h1>
+          <p id="caseDetails"></p>
+        </div>
+        <div class="header-meta">
+          <span id="headerDate"></span>
+          <span id="headerLocation"></span>
+        </div>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <div class="video-pane">
+        <div class="video-container">
+          <video id="mediaPlayer" preload="metadata" playsinline></video>
+        </div>
+        <div class="controls">
+          <div class="controls-row">
+            <button type="button" class="control-btn" id="rewindBtn" aria-label="Rewind 10 seconds">⏪</button>
+            <button type="button" class="control-btn play-btn" id="playBtn" aria-label="Play">▶</button>
+            <button type="button" class="control-btn" id="forwardBtn" aria-label="Forward 10 seconds">⏩</button>
+            <div class="progress-container">
+              <span class="time-display" id="currentTime">0:00</span>
+              <input type="range" id="progressBar" min="0" max="100" step="0.1" value="0" />
+              <span class="time-display" id="totalDuration">0:00</span>
+            </div>
+            <div class="volume-control">
+              <span class="volume-icon" id="volumeIcon">🔊</span>
+              <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="document-pane">
+        <div class="document-header">
+          <span class="page-indicator" id="pageIndicator">Page 1 of 1</span>
+          <div class="page-nav">
+            <button type="button" id="prevPageBtn" disabled>← Prev</button>
+            <button type="button" id="nextPageBtn" disabled>Next →</button>
+          </div>
+        </div>
+        <div class="document-scroll" id="documentScroll">
+          <div id="pagesContainer">
+            <div class="doc-empty">Loading transcript...</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
+  <script>
+    (function () {
+      const dataElement = document.getElementById('transcript-data');
+      let payload = {};
+      try {
+        payload = JSON.parse(dataElement.textContent || '{}');
+      } catch (err) {
+        console.error('Failed to parse transcript payload', err);
+      }
+      dataElement.remove();
+
+      // Elements
+      const video = document.getElementById('mediaPlayer');
+      const playBtn = document.getElementById('playBtn');
+      const rewindBtn = document.getElementById('rewindBtn');
+      const forwardBtn = document.getElementById('forwardBtn');
+      const progressBar = document.getElementById('progressBar');
+      const currentTimeEl = document.getElementById('currentTime');
+      const totalDurationEl = document.getElementById('totalDuration');
+      const volumeSlider = document.getElementById('volumeSlider');
+      const volumeIcon = document.getElementById('volumeIcon');
+      const pageIndicator = document.getElementById('pageIndicator');
+      const prevPageBtn = document.getElementById('prevPageBtn');
+      const nextPageBtn = document.getElementById('nextPageBtn');
+      const pagesContainer = document.getElementById('pagesContainer');
+      const documentScroll = document.getElementById('documentScroll');
+      const appHeader = document.getElementById('appHeader');
+      const caseTitle = document.getElementById('caseTitle');
+      const caseDetails = document.getElementById('caseDetails');
+      const headerDate = document.getElementById('headerDate');
+      const headerLocation = document.getElementById('headerLocation');
+
+      // Data
+      const allLines = Array.isArray(payload.lines) ? payload.lines : [];
+      const allPages = Array.isArray(payload.pages) ? payload.pages : [];
+      const titleData = (payload.meta && payload.meta.title) || {};
+      const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
+      const defaultFileName = (payload.media && (payload.media.relative_path || payload.media.filename)) || 'media.mp4';
+      const mediaContentType = payload.media && payload.media.content_type;
+
+      // Setup video source
+      const source = document.createElement('source');
+      source.src = defaultFileName;
+      if (mediaContentType) {
+        source.type = mediaContentType;
+      }
+      video.appendChild(source);
+
+      // Setup header
+      const displayCaseName = titleData.CASE_NAME || 'Transcript Viewer';
+      const displayFileName = titleData.FILE_NAME || defaultFileName;
+      const displayDate = titleData.DATE || '';
+      const displayLocation = titleData.LOCATION || '';
+
+      caseTitle.textContent = displayCaseName;
+      document.title = displayCaseName + ' — Transcript';
+      caseDetails.textContent = displayFileName;
+      if (displayDate) headerDate.textContent = displayDate;
+      if (displayLocation) headerLocation.textContent = displayLocation;
+
+      // State
+      let currentPageIndex = 0;
+      let activeLineIndex = -1;
+      const lineElements = new Map();
+      const pageElements = [];
+
+      // Utilities
+      function formatTime(seconds) {
+        if (!Number.isFinite(seconds)) return '0:00';
+        const totalSeconds = Math.max(0, Math.floor(seconds));
+        const h = Math.floor(totalSeconds / 3600);
+        const m = Math.floor((totalSeconds % 3600) / 60);
+        const s = totalSeconds % 60;
+        if (h > 0) {
+          return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+        return `${m}:${String(s).padStart(2, '0')}`;
+      }
+
+      function updateVolumeIcon(volume) {
+        if (volume === 0) {
+          volumeIcon.textContent = '🔇';
+        } else if (volume < 0.5) {
+          volumeIcon.textContent = '🔉';
+        } else {
+          volumeIcon.textContent = '🔊';
+        }
+      }
+
+      // Build document view
+      function buildDocumentView() {
+        if (!allLines.length || !allPages.length) {
+          pagesContainer.innerHTML = '<div class="doc-empty">No transcript available</div>';
+          return;
+        }
+
+        pagesContainer.innerHTML = '';
+        lineElements.clear();
+        pageElements.length = 0;
+
+        allPages.forEach((page, pageIdx) => {
+          const pageEl = document.createElement('div');
+          pageEl.className = 'doc-page';
+          if (pageIdx === 0) pageEl.classList.add('active');
+
+          const linesEl = document.createElement('div');
+          linesEl.className = 'doc-lines';
+
+          (page.line_indexes || []).forEach((lineIndex) => {
+            const line = allLines[lineIndex];
+            if (!line) return;
+
+            const lineEl = document.createElement('div');
+            lineEl.className = 'doc-line';
+            lineEl.dataset.index = String(lineIndex);
+
+            const numberEl = document.createElement('span');
+            numberEl.className = 'doc-line-number';
+            const displayNumber = line.line_number != null ? line.line_number : (line.pgln || lineIndex + 1);
+            numberEl.textContent = String(displayNumber);
+
+            const textEl = document.createElement('span');
+            textEl.className = 'doc-line-text';
+
+            // Use rendered_text which already has proper formatting
+            const text = line.rendered_text || (line.speaker ? `${line.speaker.toUpperCase()}:   ${line.text}` : line.text);
+            textEl.textContent = text;
+
+            // Mark speaker vs continuation lines for CSS styling
+            if (!line.is_continuation && line.speaker) {
+              textEl.classList.add('speaker-line');
+            } else {
+              textEl.classList.add('continuation-line');
+            }
+
+            lineEl.appendChild(numberEl);
+            lineEl.appendChild(textEl);
+            linesEl.appendChild(lineEl);
+
+            lineElements.set(lineIndex, lineEl);
+
+            // Click to seek
+            lineEl.addEventListener('click', () => {
+              if (typeof line.start === 'number') {
+                video.currentTime = Math.max(0, line.start - 0.05);
+                if (video.paused) {
+                  video.play().catch(() => {});
+                }
+              }
+            });
+          });
+
+          pageEl.appendChild(linesEl);
+          pagesContainer.appendChild(pageEl);
+          pageElements.push(pageEl);
+        });
+
+        updatePageIndicator();
+        updatePageButtons();
+      }
+
+      function showPage(index) {
+        if (index < 0 || index >= pageElements.length) return;
+
+        pageElements.forEach((el, i) => {
+          el.classList.toggle('active', i === index);
+        });
+        currentPageIndex = index;
+        updatePageIndicator();
+        updatePageButtons();
+      }
+
+      function updatePageIndicator() {
+        const total = pageElements.length || 1;
+        pageIndicator.textContent = `Page ${currentPageIndex + 1} of ${total}`;
+      }
+
+      function updatePageButtons() {
+        prevPageBtn.disabled = currentPageIndex <= 0;
+        nextPageBtn.disabled = currentPageIndex >= pageElements.length - 1;
+      }
+
+      // Find active line by current time
+      function findActiveLine(time) {
+        if (!allLines.length) return -1;
+
+        for (let i = 0; i < allLines.length; i++) {
+          const line = allLines[i];
+          const start = Number(line.start) || 0;
+          const end = Number(line.end);
+
+          if (!Number.isFinite(end)) {
+            if (time >= start && i === allLines.length - 1) return i;
+            continue;
+          }
+
+          if (time < start) return Math.max(0, i - 1);
+          if (time >= start && time < end) return i;
+        }
+
+        return allLines.length - 1;
+      }
+
+      function setActiveLine(lineIndex) {
+        // Remove previous highlight
+        lineElements.forEach(el => el.classList.remove('current'));
+
+        if (lineIndex < 0 || lineIndex >= allLines.length) return;
+
+        const lineEl = lineElements.get(lineIndex);
+        if (lineEl) {
+          lineEl.classList.add('current');
+
+          // Find which page this line is on and show it
+          const line = allLines[lineIndex];
+          if (line && line.page_number != null) {
+            const pageIdx = line.page_number - 1;
+            if (pageIdx !== currentPageIndex && pageIdx >= 0 && pageIdx < pageElements.length) {
+              showPage(pageIdx);
+            }
+          }
+
+          // Scroll line into view
+          lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        activeLineIndex = lineIndex;
+      }
+
+      // Time update handler
+      function handleTimeUpdate() {
+        const currentTime = video.currentTime;
+        const duration = video.duration || durationSeconds || 0;
+
+        if (Number.isFinite(duration) && duration > 0) {
+          progressBar.value = String((currentTime / duration) * 100);
+          totalDurationEl.textContent = formatTime(duration);
+        }
+        currentTimeEl.textContent = formatTime(currentTime);
+
+        const lineIndex = findActiveLine(currentTime);
+        if (lineIndex !== activeLineIndex) {
+          setActiveLine(lineIndex);
+        }
+      }
+
+      // Event listeners - Video controls
+      playBtn.addEventListener('click', () => {
+        if (video.paused) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+
+      rewindBtn.addEventListener('click', () => {
+        video.currentTime = Math.max(0, video.currentTime - 10);
+      });
+
+      forwardBtn.addEventListener('click', () => {
+        const duration = video.duration || durationSeconds || 0;
+        video.currentTime = Math.min(duration, video.currentTime + 10);
+      });
+
+      progressBar.addEventListener('input', (e) => {
+        const duration = video.duration || durationSeconds || 0;
+        if (duration) {
+          video.currentTime = (Number(e.target.value) / 100) * duration;
+        }
+      });
+
+      volumeSlider.addEventListener('input', () => {
+        video.volume = Number(volumeSlider.value);
+        updateVolumeIcon(video.volume);
+      });
+
+      // Event listeners - Video state
+      video.addEventListener('play', () => {
+        playBtn.textContent = '❚❚';
+      });
+
+      video.addEventListener('pause', () => {
+        playBtn.textContent = '▶';
+      });
+
+      video.addEventListener('timeupdate', handleTimeUpdate);
+      video.addEventListener('seeked', handleTimeUpdate);
+      video.addEventListener('loadedmetadata', () => {
+        totalDurationEl.textContent = formatTime(video.duration || durationSeconds);
+        handleTimeUpdate();
+      });
+
+      // Event listeners - Page navigation
+      prevPageBtn.addEventListener('click', () => {
+        if (currentPageIndex > 0) {
+          showPage(currentPageIndex - 1);
+        }
+      });
+
+      nextPageBtn.addEventListener('click', () => {
+        if (currentPageIndex < pageElements.length - 1) {
+          showPage(currentPageIndex + 1);
+        }
+      });
+
+      // Header visibility on hover
+      let headerTimeout = null;
+      document.addEventListener('mousemove', (e) => {
+        if (e.clientY <= 60) {
+          appHeader.classList.add('visible');
+          if (headerTimeout) clearTimeout(headerTimeout);
+        } else if (appHeader.classList.contains('visible')) {
+          if (headerTimeout) clearTimeout(headerTimeout);
+          headerTimeout = setTimeout(() => {
+            appHeader.classList.remove('visible');
+          }, 1000);
+        }
+      });
+
+      appHeader.addEventListener('mouseenter', () => {
+        if (headerTimeout) clearTimeout(headerTimeout);
+        appHeader.classList.add('visible');
+      });
+
+      appHeader.addEventListener('mouseleave', () => {
+        headerTimeout = setTimeout(() => {
+          appHeader.classList.remove('visible');
+        }, 500);
+      });
+
+      // Keyboard shortcuts
+      document.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT') return;
+
+        switch (e.key) {
+          case ' ':
+            e.preventDefault();
+            if (video.paused) {
+              video.play().catch(() => {});
+            } else {
+              video.pause();
+            }
+            break;
+          case 'ArrowLeft':
+            video.currentTime = Math.max(0, video.currentTime - 10);
+            break;
+          case 'ArrowRight':
+            video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
+            break;
+          case 'ArrowUp':
+            if (currentPageIndex > 0) showPage(currentPageIndex - 1);
+            break;
+          case 'ArrowDown':
+            if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1);
+            break;
+        }
+      });
+
+      // Initialize
+      buildDocumentView();
+      updateVolumeIcon(1);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+steps:
+  # Build the container image for OnCue variant
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg'
+      - 'APP_VARIANT=oncue'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-oncue:$COMMIT_SHA'
+      - '.'
+
+  # Push the container image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-oncue:$COMMIT_SHA']
+
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'transcribealpha-assemblyai'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-oncue:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '1'
+      - '--max-instances'
+      - '10'
+      - '--port'
+      - '8080'
+      - '--use-http2'
+      - '--set-env-vars'
+      - 'APP_VARIANT=oncue,ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},GEMINI_MODEL_NAME=${_GEMINI_MODEL_NAME},JWT_SECRET_KEY=${_JWT_SECRET_KEY},REV_AI_API_KEY=${_REV_AI_API_KEY},ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
+
+# Store images in Google Artifact Registry
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-oncue:$COMMIT_SHA
+
+# Substitution variables (set these in Cloud Build trigger)
+substitutions:
+  _ASSEMBLYAI_API_KEY: 'your-assemblyai-key-here'
+  _GEMINI_API_KEY: 'your-gemini-key-here'
+  _GEMINI_MODEL_NAME: 'models/gemini-3-pro-preview'
+  _JWT_SECRET_KEY: 'your-jwt-secret-key-here-use-a-long-random-string'
+  _REV_AI_API_KEY: 'your-rev-ai-key-here'
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+# Build timeout
+timeout: '1200s'

@@ -48,6 +48,7 @@ export interface EditorSessionResponse {
   expires_at?: string
   docx_base64?: string | null
   oncue_xml_base64?: string | null
+  viewer_html_base64?: string | null
   transcript?: string | null
   transcript_text?: string | null
   clips?: ClipSummary[]
@@ -62,6 +63,8 @@ interface TranscriptEditorProps {
   mediaType?: string
   docxBase64?: string | null
   xmlBase64?: string | null
+  viewerHtmlBase64?: string | null
+  appVariant?: 'oncue' | 'criminal'
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
   onSessionChange: (session: EditorSessionResponse) => void
@@ -138,6 +141,8 @@ export default function TranscriptEditor({
   mediaType,
   docxBase64,
   xmlBase64,
+  viewerHtmlBase64,
+  appVariant = 'oncue',
   onDownload,
   buildFilename,
   onSessionChange,
@@ -946,6 +951,7 @@ export default function TranscriptEditor({
 
   const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
+  const viewerHtmlData = viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
   const transcriptText = sessionMeta?.transcript ?? sessionMeta?.transcript_text ?? ''
 
   const sessionInfo = sessionMeta?.title_data ?? {}
@@ -1317,15 +1323,27 @@ export default function TranscriptEditor({
                 >
                   Download DOCX
                 </button>
-                <button
-                  className="btn-outline w-full"
-                  onClick={() =>
-                    xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')
-                  }
-                  disabled={!xmlData}
-                >
-                  Download OnCue XML
-                </button>
+                {appVariant === 'oncue' ? (
+                  <button
+                    className="btn-outline w-full"
+                    onClick={() =>
+                      xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')
+                    }
+                    disabled={!xmlData}
+                  >
+                    Download OnCue XML
+                  </button>
+                ) : (
+                  <button
+                    className="btn-outline w-full"
+                    onClick={() =>
+                      viewerHtmlData && onDownload(viewerHtmlData, buildFilename('Viewer', '.html'), 'text/html')
+                    }
+                    disabled={!viewerHtmlData}
+                  >
+                    Download HTML Viewer
+                  </button>
+                )}
                 {transcriptText && (
                   <button
                     className="btn-outline w-full"

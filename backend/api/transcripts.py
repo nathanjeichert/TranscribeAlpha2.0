@@ -32,13 +32,14 @@ except ImportError:
         get_current_user = auth_module.get_current_user
 
 try:
-    from ..config import DEFAULT_LINES_PER_PAGE
+    from ..config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
 except ImportError:
     try:
-        from config import DEFAULT_LINES_PER_PAGE
+        from config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
     except ImportError:
         import config as config_module
         DEFAULT_LINES_PER_PAGE = config_module.DEFAULT_LINES_PER_PAGE
+        APP_VARIANT = config_module.APP_VARIANT
 
 try:
     from ..gemini import run_gemini_edit, transcribe_with_gemini
@@ -144,6 +145,7 @@ try:
         build_session_artifacts,
         build_snapshot_payload,
         construct_turns_from_lines,
+        generate_viewer_html_from_artifacts,
         normalize_line_payloads,
         parse_oncue_xml,
         serialize_transcript_turns,
@@ -154,6 +156,7 @@ except ImportError:
             build_session_artifacts,
             build_snapshot_payload,
             construct_turns_from_lines,
+            generate_viewer_html_from_artifacts,
             normalize_line_payloads,
             parse_oncue_xml,
             serialize_transcript_turns,
@@ -163,12 +166,26 @@ except ImportError:
         build_session_artifacts = transcript_utils_module.build_session_artifacts
         build_snapshot_payload = transcript_utils_module.build_snapshot_payload
         construct_turns_from_lines = transcript_utils_module.construct_turns_from_lines
+        generate_viewer_html_from_artifacts = transcript_utils_module.generate_viewer_html_from_artifacts
         normalize_line_payloads = transcript_utils_module.normalize_line_payloads
         parse_oncue_xml = transcript_utils_module.parse_oncue_xml
         serialize_transcript_turns = transcript_utils_module.serialize_transcript_turns
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/api/config")
+async def get_app_config():
+    """Return app configuration including variant type."""
+    return JSONResponse({
+        "variant": APP_VARIANT,
+        "features": {
+            "oncue_xml": APP_VARIANT == "oncue",
+            "viewer_html": APP_VARIANT == "criminal",
+            "import_oncue": APP_VARIANT == "oncue",
+        }
+    })
 
 
 @router.post("/api/transcribe")
@@ -358,7 +375,6 @@ async def transcribe(
             DEFAULT_LINES_PER_PAGE,
         )
         docx_b64 = base64.b64encode(docx_bytes).decode()
-        oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
         created_at = datetime.now(timezone.utc)
 
@@ -372,7 +388,6 @@ async def transcribe(
             "source_turns": serialize_transcript_turns(turns),
             "lines": line_payloads,
             "docx_base64": docx_b64,
-            "oncue_xml_base64": oncue_b64,
             "transcript_text": transcript_text,
             "transcript": transcript_text,
             "media_blob_name": media_blob_name,
@@ -381,6 +396,23 @@ async def transcribe(
             "user_id": current_user["user_id"],
             "clips": [],
         }
+
+        # Conditionally generate OnCue XML or HTML viewer based on app variant
+        if APP_VARIANT == "criminal":
+            # Generate HTML viewer for criminal variant
+            viewer_html = generate_viewer_html_from_artifacts(
+                line_payloads,
+                title_data,
+                duration_seconds or 0,
+                DEFAULT_LINES_PER_PAGE,
+                media_filename=safe_filename,
+                media_content_type=media_content_type,
+            )
+            transcript_data["viewer_html_base64"] = base64.b64encode(viewer_html.encode("utf-8")).decode()
+        else:
+            # Generate OnCue XML for oncue variant
+            oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+            transcript_data["oncue_xml_base64"] = oncue_b64
 
         try:
             save_current_transcript(media_key, transcript_data)
@@ -529,9 +561,24 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
             transcript_data["lines"] = updated_lines
             transcript_data["audio_duration"] = normalized_duration
             transcript_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
-            transcript_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
             transcript_data["transcript_text"] = transcript_text
             transcript_data["transcript"] = transcript_text
+
+            # Conditionally generate OnCue XML or HTML viewer based on app variant
+            if APP_VARIANT == "criminal":
+                media_filename = title_data.get("FILE_NAME", "media.mp4")
+                media_content_type = transcript_data.get("media_content_type", "video/mp4")
+                viewer_html = generate_viewer_html_from_artifacts(
+                    updated_lines,
+                    title_data,
+                    normalized_duration,
+                    transcript_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE),
+                    media_filename=media_filename,
+                    media_content_type=media_content_type,
+                )
+                transcript_data["viewer_html_base64"] = base64.b64encode(viewer_html.encode("utf-8")).decode("ascii")
+            else:
+                transcript_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
         except Exception as e:
             logger.warning("Failed to regenerate documents: %s", e)
 
@@ -591,9 +638,24 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
                     snapshot_data["lines"] = updated_lines
                     snapshot_data["audio_duration"] = normalized_duration
                     snapshot_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
-                    snapshot_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
                     snapshot_data["transcript_text"] = transcript_text
                     snapshot_data["transcript"] = transcript_text
+
+                    # Conditionally generate OnCue XML or HTML viewer based on app variant
+                    if APP_VARIANT == "criminal":
+                        media_filename = title_data.get("FILE_NAME", "media.mp4")
+                        media_content_type = snapshot_data.get("media_content_type", "video/mp4")
+                        viewer_html = generate_viewer_html_from_artifacts(
+                            updated_lines,
+                            title_data,
+                            normalized_duration,
+                            lines_per_page,
+                            media_filename=media_filename,
+                            media_content_type=media_content_type,
+                        )
+                        snapshot_data["viewer_html_base64"] = base64.b64encode(viewer_html.encode("utf-8")).decode("ascii")
+                    else:
+                        snapshot_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
             except Exception as exc:
                 logger.warning("Failed to rebuild snapshot artifacts for %s: %s", media_key, exc)
 
@@ -664,7 +726,6 @@ async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(
         )
 
         docx_b64 = base64.b64encode(docx_bytes).decode()
-        oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
         hours, rem = divmod(normalized_duration, 3600)
         minutes, seconds = divmod(rem, 60)
@@ -680,10 +741,26 @@ async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(
         session_data["title_data"] = title_data
         session_data["audio_duration"] = normalized_duration
         session_data["docx_base64"] = docx_b64
-        session_data["oncue_xml_base64"] = oncue_b64
         session_data["transcript_text"] = transcript_text
         session_data["transcript"] = transcript_text
         session_data["updated_at"] = updated_at.isoformat()
+
+        # Conditionally generate OnCue XML or HTML viewer based on app variant
+        if APP_VARIANT == "criminal":
+            media_filename = title_data.get("FILE_NAME", "media.mp4")
+            media_content_type = session_data.get("media_content_type", "video/mp4")
+            viewer_html = generate_viewer_html_from_artifacts(
+                updated_lines_payload,
+                title_data,
+                normalized_duration,
+                lines_per_page,
+                media_filename=media_filename,
+                media_content_type=media_content_type,
+            )
+            session_data["viewer_html_base64"] = base64.b64encode(viewer_html.encode("utf-8")).decode()
+        else:
+            oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+            session_data["oncue_xml_base64"] = oncue_b64
 
         save_current_transcript(media_key, session_data)
 
@@ -877,7 +954,6 @@ async def import_transcript(
         )
 
         docx_b64 = base64.b64encode(docx_bytes_out).decode()
-        oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
         created_at = datetime.now(timezone.utc)
 
@@ -893,7 +969,6 @@ async def import_transcript(
                 "source_turns": serialize_transcript_turns(turns),
                 "lines": line_payloads,
                 "docx_base64": docx_b64,
-                "oncue_xml_base64": oncue_b64,
                 "transcript_text": transcript_text,
                 "transcript": transcript_text,
                 "media_blob_name": media_blob_name,
@@ -901,6 +976,22 @@ async def import_transcript(
                 "user_id": current_user["user_id"],
                 "clips": [],
             }
+
+            # Conditionally generate OnCue XML or HTML viewer based on app variant
+            if APP_VARIANT == "criminal":
+                media_filename = title_data.get("FILE_NAME", "media.mp4")
+                viewer_html = generate_viewer_html_from_artifacts(
+                    line_payloads,
+                    title_data,
+                    duration_seconds,
+                    DEFAULT_LINES_PER_PAGE,
+                    media_filename=media_filename,
+                    media_content_type=media_content_type,
+                )
+                transcript_data["viewer_html_base64"] = base64.b64encode(viewer_html.encode("utf-8")).decode()
+            else:
+                oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+                transcript_data["oncue_xml_base64"] = oncue_b64
 
             save_current_transcript(media_key, transcript_data)
 
@@ -1012,18 +1103,36 @@ async def resync_transcript(
         session_data["lines"] = new_line_entries
         session_data["turns"] = serialize_transcript_turns(updated_turns)
         session_data["docx_base64"] = base64.b64encode(docx_bytes).decode()
-        session_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode()
         session_data["transcript_text"] = transcript_text
         session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        save_current_transcript(media_key, session_data)
-
-        return {
+        # Conditionally generate OnCue XML or HTML viewer based on app variant
+        response_data = {
             "status": "success",
             "lines": new_line_entries,
             "docx_base64": session_data["docx_base64"],
-            "oncue_xml_base64": session_data["oncue_xml_base64"],
         }
+
+        if APP_VARIANT == "criminal":
+            media_filename = title_data.get("FILE_NAME", "media.mp4")
+            media_content_type = session_data.get("media_content_type", "video/mp4")
+            viewer_html = generate_viewer_html_from_artifacts(
+                new_line_entries,
+                title_data,
+                audio_duration,
+                lines_per_page,
+                media_filename=media_filename,
+                media_content_type=media_content_type,
+            )
+            session_data["viewer_html_base64"] = base64.b64encode(viewer_html.encode("utf-8")).decode()
+            response_data["viewer_html_base64"] = session_data["viewer_html_base64"]
+        else:
+            session_data["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode()
+            response_data["oncue_xml_base64"] = session_data["oncue_xml_base64"]
+
+        save_current_transcript(media_key, session_data)
+
+        return response_data
 
     except HTTPException:
         raise

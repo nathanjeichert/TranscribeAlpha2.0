@@ -72,6 +72,7 @@ export default function TranscribeForm() {
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null)
   const [geminiBusy, setGeminiBusy] = useState(false)
   const [geminiError, setGeminiError] = useState<string | null>(null)
+  const [appVariant, setAppVariant] = useState<'oncue' | 'criminal'>('oncue')
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const stageTimerRef = useRef<number | null>(null)
@@ -100,6 +101,7 @@ export default function TranscribeForm() {
           ...data,
           docx_base64: data.docx_base64 ?? (sameKey ? previous?.docx_base64 : undefined),
           oncue_xml_base64: data.oncue_xml_base64 ?? (sameKey ? previous?.oncue_xml_base64 : undefined),
+          viewer_html_base64: data.viewer_html_base64 ?? (sameKey ? previous?.viewer_html_base64 : undefined),
           media_blob_name: data.media_blob_name ?? (sameKey ? previous?.media_blob_name : undefined),
           media_content_type: data.media_content_type ?? (sameKey ? previous?.media_content_type : undefined),
           audio_duration: data.audio_duration ?? (sameKey ? previous?.audio_duration : undefined) ?? 0,
@@ -137,6 +139,21 @@ export default function TranscribeForm() {
       }
     }
   }, [mediaPreviewUrl, mediaIsLocal])
+
+  // Fetch app config to determine variant (oncue vs criminal)
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.variant === 'criminal' || data.variant === 'oncue') {
+          setAppVariant(data.variant)
+        }
+      })
+      .catch(() => {
+        // Default to oncue if config fetch fails
+        setAppVariant('oncue')
+      })
+  }, [])
 
   const handleSessionChange = useCallback(
     (session: EditorSessionResponse) => {
@@ -851,17 +868,31 @@ export default function TranscribeForm() {
                         >
                           📄 Download DOCX
                         </button>
-                        <button
-                          onClick={() => {
-                            if (transcriptData.oncue_xml_base64) {
-                              downloadFile(transcriptData.oncue_xml_base64, generateFilename('transcript', '.xml'), 'application/xml')
-                            }
-                          }}
-                          className="btn-primary text-center py-3"
-                          disabled={!transcriptData.oncue_xml_base64}
-                        >
-                          📋 Download OnCue XML
-                        </button>
+                        {appVariant === 'oncue' ? (
+                          <button
+                            onClick={() => {
+                              if (transcriptData.oncue_xml_base64) {
+                                downloadFile(transcriptData.oncue_xml_base64, generateFilename('transcript', '.xml'), 'application/xml')
+                              }
+                            }}
+                            className="btn-primary text-center py-3"
+                            disabled={!transcriptData.oncue_xml_base64}
+                          >
+                            📋 Download OnCue XML
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              if (transcriptData.viewer_html_base64) {
+                                downloadFile(transcriptData.viewer_html_base64, generateFilename('viewer', '.html'), 'text/html')
+                              }
+                            }}
+                            className="btn-primary text-center py-3"
+                            disabled={!transcriptData.viewer_html_base64}
+                          >
+                            🎬 Download HTML Viewer
+                          </button>
+                        )}
                       </div>
                       <div className="flex justify-between items-center">
                         <p className="text-sm text-primary-600">
@@ -900,6 +931,8 @@ export default function TranscribeForm() {
               mediaType={mediaContentType ?? selectedFile?.type}
               docxBase64={transcriptData?.docx_base64 ?? undefined}
               xmlBase64={transcriptData?.oncue_xml_base64 ?? undefined}
+              viewerHtmlBase64={transcriptData?.viewer_html_base64 ?? undefined}
+              appVariant={appVariant}
               onDownload={downloadFile}
               buildFilename={generateFilename}
               onSessionChange={handleSessionChange}
