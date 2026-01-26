@@ -954,6 +954,7 @@ export default function TranscribeForm() {
               onDownload={downloadFile}
               buildFilename={generateFilename}
               onOpenHistory={loadHistoryModal}
+              appVariant={appVariant}
             />
           )}
         </div>

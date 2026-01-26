@@ -152,6 +152,7 @@ export default function TranscriptEditor({
   isGeminiBusy,
   geminiError,
 }: TranscriptEditorProps) {
+  const isCriminal = appVariant === 'criminal'
   const [lines, setLines] = useState<EditorLine[]>(initialData?.lines ?? [])
   const [sessionMeta, setSessionMeta] = useState<EditorSessionResponse | null>(initialData ?? null)
   const [loading, setLoading] = useState(false)
@@ -829,7 +830,9 @@ export default function TranscriptEditor({
     async (event: React.FormEvent) => {
       event.preventDefault()
       if (!importTranscriptFile) {
-        setImportError('Select a transcript file (XML or DOCX) to import.')
+        setImportError(
+          isCriminal ? 'Select a transcript file (HTML or DOCX) to import.' : 'Select a transcript file (XML or DOCX) to import.',
+        )
         return
       }
       if (!importMediaFile) {
@@ -880,7 +883,7 @@ export default function TranscriptEditor({
         setImporting(false)
       }
     },
-    [importTranscriptFile, importMediaFile, localMediaPreviewUrl, onSessionChange],
+    [importTranscriptFile, importMediaFile, isCriminal, localMediaPreviewUrl, onSessionChange],
   )
 
   const handleResync = useCallback(async () => {
@@ -981,7 +984,7 @@ export default function TranscriptEditor({
     const files = Array.from(e.dataTransfer.files)
     for (const file of files) {
       const ext = file.name.toLowerCase().split('.').pop()
-      if (ext === 'xml' || ext === 'docx') {
+      if (ext === 'xml' || ext === 'docx' || (isCriminal && (ext === 'html' || ext === 'htm'))) {
         setImportTranscriptFile(file)
       } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
         setImportMediaFile(file)
@@ -993,7 +996,7 @@ export default function TranscriptEditor({
         setLocalMediaType(file.type)
       }
     }
-  }, [localMediaPreviewUrl])
+  }, [isCriminal, localMediaPreviewUrl])
 
   return (
     <div
@@ -1008,7 +1011,7 @@ export default function TranscriptEditor({
           <div className="rounded-2xl border-4 border-dashed border-white bg-primary-800/80 px-12 py-10 text-center shadow-2xl">
             <p className="text-2xl font-bold text-white">Drop files to import</p>
             <p className="mt-2 text-sm text-primary-200">
-              Transcript (XML or DOCX) + Media file
+              Transcript ({isCriminal ? 'HTML or DOCX' : 'XML or DOCX'}) + Media file
             </p>
           </div>
         </div>
@@ -1257,10 +1260,12 @@ export default function TranscriptEditor({
                 )}
                 <form className="space-y-3" onSubmit={handleImport}>
                   <div>
-                    <label className="text-xs font-medium text-primary-700">Transcript (XML or DOCX) *</label>
+                    <label className="text-xs font-medium text-primary-700">
+                      Transcript ({isCriminal ? 'HTML or DOCX' : 'XML or DOCX'}) *
+                    </label>
                     <input
                       type="file"
-                      accept=".xml,.docx"
+                      accept={isCriminal ? '.html,.htm,.docx' : '.xml,.docx'}
                       onChange={(event) => setImportTranscriptFile(event.target.files?.[0] ?? null)}
                       className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
                     />

@@ -13,6 +13,7 @@ interface ClipCreatorProps {
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
   onOpenHistory?: () => void
+  appVariant?: 'oncue' | 'criminal'
 }
 
 interface ClipLineEntry {
@@ -42,6 +43,7 @@ interface ClipDetailResponse {
   end_line_number?: number | null
   docx_base64: string
   oncue_xml_base64: string
+  viewer_html_base64?: string
   transcript: string
   lines: ClipLineEntry[]
   title_data: Record<string, string>
@@ -124,9 +126,11 @@ export default function ClipCreator({
   onDownload,
   buildFilename,
   onOpenHistory,
+  appVariant = 'oncue',
 }: ClipCreatorProps) {
   const lines = useMemo<EditorLine[]>(() => session?.lines ?? [], [session])
   const clipHistory = useMemo<ClipSummary[]>(() => session?.clips ?? [], [session])
+  const isCriminal = appVariant === 'criminal'
 
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('time')
   const [timeStart, setTimeStart] = useState('')
@@ -467,6 +471,16 @@ export default function ClipCreator({
     [buildFilename, fetchClipDetail, onDownload],
   )
 
+  const handleDownloadViewer = useCallback(
+    async (clipId: string) => {
+      const detail = await fetchClipDetail(clipId)
+      if (!detail?.viewer_html_base64) return
+      const filename = buildFilename(detail.name.replace(/\s+/g, '-').toLowerCase(), '.html')
+      onDownload(detail.viewer_html_base64, filename, 'text/html')
+    },
+    [buildFilename, fetchClipDetail, onDownload],
+  )
+
   const handleCreateClip = useCallback(async () => {
     if (!mediaKey || !session) {
       setCreationError('Load or generate a transcript before creating clips.')
@@ -541,7 +555,7 @@ export default function ClipCreator({
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       if (!importXmlFile) {
-        setImportError('Select an OnCue XML file to import.')
+        setImportError('Select a transcript file to import.')
         return
       }
       setImporting(true)
@@ -549,7 +563,7 @@ export default function ClipCreator({
       setImportMessage(null)
       try {
         const formData = new FormData()
-        formData.append('xml_file', importXmlFile)
+        formData.append('transcript_file', importXmlFile)
         if (importMediaFile) {
           formData.append('media_file', importMediaFile)
         }
@@ -651,13 +665,23 @@ export default function ClipCreator({
             >
               DOCX
             </button>
-            <button
-              type="button"
-              className="btn-outline text-xs"
-              onClick={() => handleDownloadXml(summary.clip_id)}
-            >
-              XML
-            </button>
+            {isCriminal ? (
+              <button
+                type="button"
+                className="btn-outline text-xs"
+                onClick={() => handleDownloadViewer(summary.clip_id)}
+              >
+                HTML
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-outline text-xs"
+                onClick={() => handleDownloadXml(summary.clip_id)}
+              >
+                XML
+              </button>
+            )}
             {summary.media_blob_name && (
               <a
                 href={appendAccessTokenToMediaUrl(`/api/media/${summary.media_blob_name}`)}
@@ -704,8 +728,8 @@ export default function ClipCreator({
         {importExpanded && (
           <div className="card-body space-y-4">
             <p className="text-sm text-primary-700">
-              Bring an existing OnCue XML transcript into the clip builder. Optionally include the corresponding media file
-              for preview and clip exports.
+              Bring an existing {isCriminal ? 'HTML viewer' : 'OnCue XML'} transcript into the clip builder. Optionally include the
+              corresponding media file for preview and clip exports.
             </p>
             {importError && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importError}</div>
@@ -715,15 +739,19 @@ export default function ClipCreator({
             )}
             <form className="grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={handleImportTranscript}>
               <div className="space-y-2">
-                <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">OnCue XML *</label>
+                <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">
+                  {isCriminal ? 'HTML Viewer / OnCue XML *' : 'OnCue XML *'}
+                </label>
                 <input
                   key={`import-xml-${importResetKey}`}
                   type="file"
-                  accept=".xml"
+                  accept={isCriminal ? '.html,.htm,.xml' : '.xml'}
                   onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
                   className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
                 />
-                <p className="text-xs text-primary-500">Select the transcript exported from OnCue.</p>
+                <p className="text-xs text-primary-500">
+                  Select the transcript exported from {isCriminal ? 'the HTML viewer or OnCue' : 'OnCue'}.
+                </p>
               </div>
               <div className="space-y-2">
                 <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media *</label>

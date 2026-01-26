@@ -16,14 +16,15 @@ except ImportError:
         get_current_user = auth_module.get_current_user
 
 try:
-    from ..config import CLIP_SESSION_TTL_DAYS, DEFAULT_LINES_PER_PAGE
+    from ..config import CLIP_SESSION_TTL_DAYS, DEFAULT_LINES_PER_PAGE, APP_VARIANT
 except ImportError:
     try:
-        from config import CLIP_SESSION_TTL_DAYS, DEFAULT_LINES_PER_PAGE
+        from config import CLIP_SESSION_TTL_DAYS, DEFAULT_LINES_PER_PAGE, APP_VARIANT
     except ImportError:
         import config as config_module
         CLIP_SESSION_TTL_DAYS = config_module.CLIP_SESSION_TTL_DAYS
         DEFAULT_LINES_PER_PAGE = config_module.DEFAULT_LINES_PER_PAGE
+        APP_VARIANT = config_module.APP_VARIANT
 
 try:
     from ..media_processing import clip_media_segment
@@ -62,32 +63,38 @@ except ImportError:
 try:
     from ..transcript_utils import (
         build_session_artifacts,
+        build_variant_exports,
         construct_turns_from_lines,
         ensure_session_clip_list,
         normalize_line_payloads,
         parse_timecode_to_seconds,
         resolve_line_index,
+        resolve_media_filename,
         sanitize_clip_label,
     )
 except ImportError:
     try:
         from transcript_utils import (
             build_session_artifacts,
+            build_variant_exports,
             construct_turns_from_lines,
             ensure_session_clip_list,
             normalize_line_payloads,
             parse_timecode_to_seconds,
             resolve_line_index,
+            resolve_media_filename,
             sanitize_clip_label,
         )
     except ImportError:
         import transcript_utils as transcript_utils_module
         build_session_artifacts = transcript_utils_module.build_session_artifacts
+        build_variant_exports = transcript_utils_module.build_variant_exports
         construct_turns_from_lines = transcript_utils_module.construct_turns_from_lines
         ensure_session_clip_list = transcript_utils_module.ensure_session_clip_list
         normalize_line_payloads = transcript_utils_module.normalize_line_payloads
         parse_timecode_to_seconds = transcript_utils_module.parse_timecode_to_seconds
         resolve_line_index = transcript_utils_module.resolve_line_index
+        resolve_media_filename = transcript_utils_module.resolve_media_filename
         sanitize_clip_label = transcript_utils_module.sanitize_clip_label
 
 try:
@@ -229,7 +236,6 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
     docx_bytes = create_clip_docx(clip_title_data, turns, clip_name)
 
     docx_b64 = base64.b64encode(docx_bytes).decode()
-    oncue_b64 = base64.b64encode(oncue_xml.encode("utf-8")).decode()
 
     clip_media_blob_name, clip_media_content_type = clip_media_segment(
         session_data.get("media_blob_name"),
@@ -239,6 +245,22 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         clip_name,
         user_id=session_data.get("user_id"),
         parent_media_key=media_key,
+    )
+
+    media_filename = resolve_media_filename(
+        clip_title_data,
+        clip_media_blob_name or session_data.get("media_blob_name"),
+        fallback="media.mp4",
+    )
+    export_payload = build_variant_exports(
+        APP_VARIANT,
+        clip_line_entries,
+        clip_title_data,
+        normalized_duration,
+        lines_per_page,
+        media_filename,
+        clip_media_content_type or session_data.get("media_content_type"),
+        oncue_xml=oncue_xml,
     )
 
     clip_id = uuid.uuid4().hex
@@ -264,7 +286,6 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         "end_page": end_line.get("page"),
         "end_line_number": end_line.get("line"),
         "docx_base64": docx_b64,
-        "oncue_xml_base64": oncue_b64,
         "transcript_text": transcript_text,
         "lines": clip_line_entries,
         "title_data": clip_title_data,
@@ -272,6 +293,7 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         "media_blob_name": clip_media_blob_name,
         "media_content_type": clip_media_content_type,
     }
+    clip_data.update(export_payload)
 
     clip_summary = {
         "clip_id": clip_id,

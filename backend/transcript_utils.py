@@ -64,6 +64,10 @@ except ImportError:
         seconds_to_timestamp = transcript_formatting_module.seconds_to_timestamp
 
 logger = logging.getLogger(__name__)
+_VIEWER_DATA_RE = re.compile(
+    r'<script[^>]*id=["\']transcript-data["\'][^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _extract_media_key(data: dict) -> str:
@@ -312,6 +316,136 @@ def generate_viewer_html_from_artifacts(
         media_content_type,
     )
     return render_viewer_html(payload)
+
+
+def resolve_media_filename(title_data: dict, media_blob_name: Optional[str] = None, fallback: str = "media.mp4") -> str:
+    if isinstance(title_data, dict):
+        name = title_data.get("FILE_NAME")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    if media_blob_name:
+        return str(media_blob_name)
+    return fallback
+
+
+def build_variant_exports(
+    app_variant: str,
+    line_entries: List[dict],
+    title_data: dict,
+    audio_duration: float,
+    lines_per_page: int,
+    media_filename: str,
+    media_content_type: Optional[str],
+    oncue_xml: Optional[str] = None,
+) -> Dict[str, str]:
+    """Build base64 exports for the active variant to avoid drift across flows."""
+    if app_variant == "criminal":
+        viewer_html = generate_viewer_html_from_artifacts(
+            line_entries,
+            title_data,
+            audio_duration,
+            lines_per_page,
+            media_filename=media_filename,
+            media_content_type=media_content_type or "video/mp4",
+        )
+        exports = {"viewer_html_base64": base64.b64encode(viewer_html.encode("utf-8")).decode("ascii")}
+        if oncue_xml is not None:
+            exports["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
+        return exports
+    if oncue_xml is None:
+        raise ValueError("oncue_xml is required for oncue exports")
+    return {"oncue_xml_base64": base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")}
+
+
+def parse_viewer_html(html_text: str) -> Dict[str, Any]:
+    """Parse the embedded payload from a standalone HTML viewer export."""
+    if not html_text:
+        raise ValueError("Viewer HTML is empty")
+    match = _VIEWER_DATA_RE.search(html_text)
+    if not match:
+        raise ValueError("Viewer HTML payload not found")
+    json_blob = match.group(1).strip()
+    if not json_blob:
+        raise ValueError("Viewer HTML payload is empty")
+
+    try:
+        payload = json.loads(json_blob)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Viewer HTML payload is not valid JSON") from exc
+
+    meta = payload.get("meta") if isinstance(payload, dict) else {}
+    title_data = meta.get("title") if isinstance(meta, dict) else {}
+    duration_seconds = float(meta.get("duration_seconds") or 0.0) if isinstance(meta, dict) else 0.0
+    lines_per_page = meta.get("lines_per_page") if isinstance(meta, dict) else None
+    try:
+        lines_per_page = int(lines_per_page) if lines_per_page else DEFAULT_LINES_PER_PAGE
+    except (TypeError, ValueError):
+        lines_per_page = DEFAULT_LINES_PER_PAGE
+
+    media = payload.get("media") if isinstance(payload, dict) else {}
+    media_filename = media.get("relative_path") or media.get("filename") if isinstance(media, dict) else None
+    media_content_type = media.get("content_type") if isinstance(media, dict) else None
+
+    raw_lines = payload.get("lines") if isinstance(payload, dict) else []
+    normalized_lines: List[dict] = []
+    if isinstance(raw_lines, list):
+        for idx, entry in enumerate(raw_lines):
+            if not isinstance(entry, dict):
+                continue
+            text_value = entry.get("text")
+            rendered_text = entry.get("rendered_text")
+            text = text_value if isinstance(text_value, str) else rendered_text if isinstance(rendered_text, str) else ""
+            speaker_value = entry.get("speaker")
+            speaker = speaker_value if isinstance(speaker_value, str) and speaker_value.strip() else "SPEAKER"
+            start_val = entry.get("start")
+            end_val = entry.get("end")
+            try:
+                start = float(start_val) if start_val is not None else 0.0
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(end_val) if end_val is not None else start
+            except (TypeError, ValueError):
+                end = start
+
+            page_val = entry.get("page_number")
+            line_val = entry.get("line_number")
+            pgln_val = entry.get("pgln")
+            try:
+                page = int(page_val) if page_val is not None else None
+            except (TypeError, ValueError):
+                page = None
+            try:
+                line = int(line_val) if line_val is not None else None
+            except (TypeError, ValueError):
+                line = None
+            try:
+                pgln = int(pgln_val) if pgln_val is not None else None
+            except (TypeError, ValueError):
+                pgln = None
+
+            normalized_lines.append(
+                {
+                    "id": str(entry.get("id") or f"line-{idx}"),
+                    "speaker": speaker,
+                    "text": text,
+                    "start": start,
+                    "end": end,
+                    "page": page,
+                    "line": line,
+                    "pgln": pgln,
+                    "is_continuation": bool(entry.get("is_continuation", False)),
+                }
+            )
+
+    return {
+        "lines": normalized_lines,
+        "title_data": title_data if isinstance(title_data, dict) else {},
+        "audio_duration": duration_seconds,
+        "lines_per_page": lines_per_page,
+        "media_filename": media_filename,
+        "media_content_type": media_content_type,
+    }
 
 
 def ensure_session_clip_list(session_data: dict) -> List[dict]:
@@ -782,6 +916,9 @@ def build_snapshot_payload(
         "media_blob_name": media_blob_name,
         "media_content_type": media_content_type,
     }
+    viewer_html_b64 = session_data.get("viewer_html_base64")
+    if viewer_html_b64:
+        snapshot_payload["viewer_html_base64"] = viewer_html_b64
     if session_data.get("source_turns"):
         snapshot_payload["source_turns"] = session_data["source_turns"]
     return snapshot_payload
