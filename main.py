@@ -2,6 +2,8 @@
 """
 Main entry point for TranscribeAlpha application.
 This file provides a direct import path for deployment platforms.
+
+Build trigger: 2026-01-26
 """
 
 import sys
