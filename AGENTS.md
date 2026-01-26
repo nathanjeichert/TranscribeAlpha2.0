@@ -15,16 +15,35 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 | Deployment | Google Cloud Run + Cloud Storage |
 | HTTP Server | Hypercorn (HTTP/2 support) |
 
+## App Variants
+
+This codebase supports **two deployment variants** controlled by the `APP_VARIANT` environment variable:
+
+| Variant | Value | Export Formats | Target Users |
+|---------|-------|----------------|--------------|
+| **OnCue** | `oncue` (default) | DOCX + OnCue XML | Legal software integration |
+| **Criminal** | `criminal` | DOCX + HTML Viewer | DA/PD offices |
+
+**What differs between variants:**
+- `oncue`: Generates OnCue XML for proprietary legal software import
+- `criminal`: Generates standalone HTML viewer with embedded media player
+
+**What stays the same:**
+- All features (transcription, editor, Gemini refinement, Rev AI resync, clips)
+- DOCX export formatting
+- Branding ("TranscribeAlpha")
+- Lines per page (25)
+
 ## Codebase Architecture
 
 ```
 TranscribeAlpha/
 ├── backend/                    # Python backend (FastAPI)
 │   ├── server.py              # FastAPI app wiring (routers, middleware, static files)
-│   ├── config.py              # Env-driven constants (CORS, TTLs, defaults)
+│   ├── config.py              # Env-driven constants (CORS, TTLs, APP_VARIANT)
 │   ├── models.py              # Pydantic models (TranscriptTurn, WordTimestamp, Gemini structs)
 │   ├── transcript_formatting.py # DOCX/XML generation + line timing helpers
-│   ├── transcript_utils.py    # Session serialization + line normalization helpers
+│   ├── transcript_utils.py    # Session serialization + viewer HTML generation
 │   ├── storage.py             # Cloud Storage ops + snapshots/sessions persistence
 │   ├── media_processing.py    # ffmpeg helpers, clip extraction, audio prep
 │   ├── gemini.py              # Gemini transcription + refine flow
@@ -34,14 +53,12 @@ TranscribeAlpha/
 │   │   ├── media.py           # Media upload/streaming endpoints
 │   │   ├── clips.py           # Clip creation/lookup endpoints
 │   │   └── health.py          # Health + cleanup endpoints
+│   ├── viewer/                # HTML viewer module (criminal variant)
+│   │   ├── __init__.py        # render_viewer_html() function
+│   │   └── template.html      # Standalone HTML viewer template
 │   ├── transcriber.py         # AssemblyAI integration + media probing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
-│   │                          # - Re-sync transcript with audio after edits
-│   │                          # - DOCX import alignment
-│   │                          # - Word-level timestamp correction
 │   ├── auth.py                # JWT authentication
-│   │                          # - Google Secret Manager integration
-│   │                          # - User management
 │   ├── templates/             # Word document templates
 │   └── requirements.txt       # Python dependencies
 │
@@ -63,15 +80,54 @@ TranscribeAlpha/
 │   └── remove_user.sh        # Remove user
 │
 ├── main.py                    # Entry point (Hypercorn server)
-├── Dockerfile                 # Multi-stage build
-├── cloudbuild.yaml            # Cloud Build configuration
+├── Dockerfile                 # Multi-stage build (accepts APP_VARIANT build arg)
+├── cloudbuild-oncue.yaml      # Cloud Build for oncue variant
+├── cloudbuild-criminal.yaml   # Cloud Build for criminal variant
 └── AGENTS.md                  # This file
 ```
 
 ## Key Design Decisions
 
+### App Variant System
+
+The variant is determined at both build-time and runtime:
+
+**Dockerfile:**
+```dockerfile
+ARG APP_VARIANT=oncue
+ENV APP_VARIANT=${APP_VARIANT}
+```
+
+**config.py:**
+```python
+APP_VARIANT = os.getenv("APP_VARIANT", "oncue")
+```
+
+**API conditional logic (transcripts.py):**
+```python
+if APP_VARIANT == "criminal":
+    # Generate HTML viewer
+    transcript_data["viewer_html_base64"] = ...
+else:
+    # Generate OnCue XML
+    transcript_data["oncue_xml_base64"] = ...
+```
+
+**Frontend detection:**
+- Frontend fetches `/api/config` on mount to determine variant
+- Conditionally shows "Download OnCue XML" vs "Download HTML Viewer" button
+
+### HTML Viewer (Criminal Variant)
+
+The HTML viewer (`backend/viewer/template.html`) is designed to match DOCX formatting exactly:
+- Font: Courier New 12pt
+- Line spacing: 2.0 (double-spaced)
+- First-line indent: 1 inch for speaker lines
+- 25 lines per page
+- Line-level timestamp highlighting (no word-level - edited transcripts only have line timestamps)
+
 ### Router-first HTTP layer
-The HTTP layer is now organized around routers under `backend/api/`, with `backend/server.py`
+The HTTP layer is organized around routers under `backend/api/`, with `backend/server.py`
 kept intentionally thin to wire middleware, include routers, and mount the static frontend.
 
 ### Module Responsibilities
@@ -82,24 +138,25 @@ kept intentionally thin to wire middleware, include routers, and mount the stati
 | `backend/api/*.py` | HTTP layer | Endpoints and request/response handling |
 | `transcriber.py` | Core transcription logic | AssemblyAI integration, media probing, transcription flow |
 | `transcript_formatting.py` | Transcript rendering | DOCX/XML generation, line timing rules |
-| `transcript_utils.py` | Transcript/session helpers | Line normalization, snapshot payloads, serialization |
+| `transcript_utils.py` | Transcript/session helpers | Line normalization, snapshot payloads, viewer HTML generation |
 | `storage.py` | Persistence layer | GCS ops, snapshots, session storage |
 | `media_processing.py` | Media utilities | ffmpeg conversion, clip extraction, audio prep |
 | `gemini.py` | Gemini flows | ASR and refinement logic |
 | `rev_ai_sync.py` | Forced alignment | Rev AI API calls, timestamp correction |
 | `auth.py` | Authentication | JWT, Secret Manager, user verification |
+| `viewer/` | HTML viewer | Template rendering for criminal variant |
 
 ### Transcription Pipeline
 
 The transcription flow uses ASR timestamps first, with optional Rev AI alignment later:
 
 ```
-Audio/Video → ASR (AssemblyAI or Gemini) → DOCX/XML
+Audio/Video → ASR (AssemblyAI or Gemini) → DOCX + (OnCue XML or HTML Viewer)
                          ↘ Rev AI Alignment (re-sync + DOCX import only)
 ```
 
 1. **ASR Stage**: AssemblyAI or Gemini extracts text + word timestamps
-2. **Artifact Generation**: DOCX and OnCue XML generated from ASR timestamps
+2. **Artifact Generation**: DOCX and OnCue XML (or HTML viewer) generated from ASR timestamps
 3. **Alignment Stage (optional)**: Rev AI forced alignment re-syncs edited transcripts or aligns DOCX imports
 
 If `REV_AI_API_KEY` is not configured, re-sync and DOCX import alignment are skipped.
@@ -131,7 +188,8 @@ except ImportError:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/transcribe` | POST | Main transcription (file → DOCX + XML) |
+| `/api/config` | GET | Returns app variant and feature flags |
+| `/api/transcribe` | POST | Main transcription (file → DOCX + XML/HTML) |
 | `/api/upload-preview` | POST | Upload media for preview |
 | `/api/media/{file_id}` | GET | Stream media files |
 | `/api/auth/login` | POST | User authentication |
@@ -180,6 +238,7 @@ Before any refactor, verify:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
+| `APP_VARIANT` | No | `oncue` (default) or `criminal` |
 | `ASSEMBLYAI_API_KEY` | Yes* | AssemblyAI transcription |
 | `GEMINI_API_KEY` | Yes* | Gemini transcription (alt: `GOOGLE_API_KEY`) |
 | `REV_AI_API_KEY` | Recommended | Forced alignment for accurate timestamps |
@@ -192,20 +251,43 @@ Before any refactor, verify:
 
 ## Deployment
 
-This app is designed for **Google Cloud Run only**.
+This app is designed for **Google Cloud Run** with two separate deployments from the same codebase.
+
+### Two Cloud Build Triggers
+
+Set up two triggers in Google Cloud Console, each pointing to a different cloudbuild file:
+
+| Trigger | Cloudbuild File | Service Name | APP_VARIANT |
+|---------|-----------------|--------------|-------------|
+| OnCue | `cloudbuild-oncue.yaml` | `transcribealpha-assemblyai` | `oncue` |
+| Criminal | `cloudbuild-criminal.yaml` | `transcribealpha-criminal` | `criminal` |
+
+### Manual Deployment
 
 ```bash
-# Deploy via Cloud Build (recommended)
-gcloud builds submit --config cloudbuild.yaml \
+# Deploy oncue variant
+gcloud builds submit --config cloudbuild-oncue.yaml \
   --substitutions=_ASSEMBLYAI_API_KEY=your_key
 
-# Or direct deploy
-gcloud run deploy transcribealpha \
-  --source . \
-  --platform managed \
-  --region us-central1 \
-  --port 8080 \
-  --http2
+# Deploy criminal variant
+gcloud builds submit --config cloudbuild-criminal.yaml \
+  --substitutions=_ASSEMBLYAI_API_KEY=your_key
+```
+
+### Local Testing with Docker
+
+```bash
+# Build oncue variant
+docker build --build-arg APP_VARIANT=oncue -t transcribealpha-oncue .
+
+# Build criminal variant
+docker build --build-arg APP_VARIANT=criminal -t transcribealpha-criminal .
+
+# Run locally
+docker run -p 8080:8080 \
+  -e APP_VARIANT=oncue \
+  -e ASSEMBLYAI_API_KEY=xxx \
+  transcribealpha-oncue
 ```
 
 ## Common Tasks
@@ -220,9 +302,23 @@ gcloud run deploy transcribealpha \
 - Edit `backend/transcript_formatting.py`
 - Functions: `create_docx()`, `generate_oncue_xml()`, `compute_transcript_line_entries()`
 
+### Modify HTML Viewer (Criminal Variant)
+- Edit `backend/viewer/template.html`
+- Viewer payload built in `backend/transcript_utils.py` → `build_viewer_payload()`
+
 ### Update Frontend Component
 - Edit files in `frontend-next/src/components/`
 - Run `npm run build` in `frontend-next/` to regenerate static output
+
+### Add Variant-Specific Logic
+```python
+from config import APP_VARIANT
+
+if APP_VARIANT == "criminal":
+    # Criminal-specific code
+else:
+    # OnCue-specific code (default)
+```
 
 ### Add User Management Script
 - See existing scripts in `scripts/` for pattern
@@ -237,17 +333,19 @@ gcloud run deploy transcribealpha \
 | CORS errors | Check `ENVIRONMENT` variable |
 | Auth failures | Verify `JWT_SECRET_KEY` and Secret Manager access |
 | Large file upload fails | Ensure HTTP/2 is enabled |
+| Wrong export format | Check `APP_VARIANT` env var |
 
 ## Testing Checklist
 
 After any change, verify:
 1. `curl https://your-app.run.app/health` returns 200
-2. File upload completes without error
-3. Transcript download works (DOCX + XML)
-4. Editor loads and saves correctly
-5. Media playback functions
-6. History modal shows snapshots after edits
+2. `curl https://your-app.run.app/api/config` returns correct variant
+3. File upload completes without error
+4. Transcript download works (DOCX + XML for oncue, DOCX + HTML for criminal)
+5. Editor loads and saves correctly
+6. Media playback functions
+7. History modal shows snapshots after edits
 
 ---
 
-*Last updated: 2025-12-30*
+*Last updated: 2025-01-26*
