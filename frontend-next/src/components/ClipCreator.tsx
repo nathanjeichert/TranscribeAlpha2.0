@@ -361,7 +361,7 @@ export default function ClipCreator({
 
     setManualStartId(startLine.id)
     setManualEndId(endLine.id)
-  }, [selectedRange])
+  }, [clipBounds, selectedRange, lines])
 
   useEffect(() => {
     if (!previewing) {
@@ -802,35 +802,37 @@ export default function ClipCreator({
               </div>
 
               {selectionMode === 'time' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-primary-700 mb-1">
-                      Start time <span className="font-normal text-primary-500">(snaps to line)</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="input-field"
-                      value={timeStart}
-                      onChange={(event) => setTimeStart(event.target.value)}
-                      placeholder="0:00.000"
-                    />
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-primary-700 mb-1">
+                        Start time <span className="font-normal text-primary-500">(snaps to line)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="input-field"
+                        value={timeStart}
+                        onChange={(event) => setTimeStart(event.target.value)}
+                        placeholder="0:00.000"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-primary-700 mb-1">
+                        End time <span className="font-normal text-primary-500">(snaps to line)</span>
+                      </label>
+                      <input
+                        type="text"
+                        className="input-field"
+                        value={timeEnd}
+                        onChange={(event) => setTimeEnd(event.target.value)}
+                        placeholder="0:30.000"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-primary-700 mb-1">
-                      End time <span className="font-normal text-primary-500">(snaps to line)</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="input-field"
-                      value={timeEnd}
-                      onChange={(event) => setTimeEnd(event.target.value)}
-                      placeholder="0:30.000"
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-primary-500 md:col-span-2">
-                  Clips include complete transcript lines. Times will adjust to line boundaries.
-                </p>
+                  <p className="text-xs text-primary-500 md:col-span-2">
+                    Clips include complete transcript lines. Times will adjust to line boundaries.
+                  </p>
+                </>
               )}
 
               {selectionMode === 'pageLine' && (
