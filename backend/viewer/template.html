@@ -10,33 +10,40 @@
     }
 
     :root {
+      /* Page dimensions matching DOCX */
       --page-width: 8.5in;
-      --page-padding: 1in;
-      --content-width: calc(var(--page-width) - 2 * var(--page-padding));
+      --page-margin-left: 0.75in;
+      --page-margin-right: 0.5in;
+      --page-margin-top: 0.5in;
+      --page-margin-bottom: 0.5in;
+      --line-number-width: 0.4in;
       --font-size: 12pt;
       --line-height: 2.0;
       --lines-per-page: 25;
-      --char-width: 7.2px;
-      --chars-per-line: 64;
 
-      /* Colors */
-      --bg-app: #0f172a;
-      --bg-document: #f1f5f9;
+      /* Colors - Dark professional theme */
+      --bg-app: #0d1117;
+      --bg-video: #000000;
+      --bg-document: #161b22;
       --bg-page: #ffffff;
-      --text-primary: #1e293b;
-      --text-secondary: #64748b;
-      --text-muted: #94a3b8;
-      --accent: #facc15;
-      --accent-bg: #fef3c7;
-      --border-subtle: rgba(148, 163, 184, 0.2);
-      --shadow-page: 0 4px 24px rgba(15, 23, 42, 0.08);
+      --bg-controls: rgba(13, 17, 23, 0.95);
+      --text-primary: #1f2328;
+      --text-secondary: #656d76;
+      --text-muted: #8b949e;
+      --text-light: #e6edf3;
+      --accent: #2f81f7;
+      --accent-hover: #58a6ff;
+      --accent-highlight: rgba(47, 129, 247, 0.15);
+      --border-subtle: rgba(48, 54, 61, 0.4);
+      --border-muted: #30363d;
+      --shadow-page: 0 8px 32px rgba(0, 0, 0, 0.4);
     }
 
     body {
       margin: 0;
       background: var(--bg-app);
-      color: var(--text-primary);
-      font-family: system-ui, -apple-system, sans-serif;
+      color: var(--text-light);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
       -webkit-font-smoothing: antialiased;
       min-height: 100vh;
       overflow: hidden;
@@ -48,19 +55,20 @@
       flex-direction: column;
     }
 
-    /* Header - Sleek/Modern */
+    /* Header */
     .app-header {
       position: fixed;
       top: 0;
       left: 0;
       right: 0;
-      padding: 16px 24px;
-      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 12px 20px;
+      background: linear-gradient(180deg, rgba(13, 17, 23, 0.98) 0%, rgba(13, 17, 23, 0.9) 100%);
+      border-bottom: 1px solid var(--border-muted);
       z-index: 100;
       transform: translateY(-100%);
       opacity: 0;
-      transition: transform 0.3s ease, opacity 0.3s ease;
+      transition: transform 0.25s ease, opacity 0.25s ease;
+      backdrop-filter: blur(12px);
     }
 
     .app-header.visible {
@@ -74,34 +82,34 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 24px;
+      gap: 20px;
     }
 
     .header-info h1 {
       margin: 0;
-      font-size: 18px;
+      font-size: 15px;
       font-weight: 600;
-      color: #f8fafc;
-      letter-spacing: 0.5px;
+      color: var(--text-light);
+      letter-spacing: -0.2px;
     }
 
     .header-info p {
-      margin: 4px 0 0;
-      font-size: 13px;
+      margin: 3px 0 0;
+      font-size: 12px;
       color: var(--text-muted);
     }
 
     .header-meta {
       display: flex;
-      gap: 20px;
-      font-size: 12px;
+      gap: 16px;
+      font-size: 11px;
       color: var(--text-muted);
     }
 
     .header-meta span {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
     }
 
     /* Main Layout */
@@ -109,15 +117,14 @@
       flex: 1;
       display: flex;
       min-height: 0;
-      padding-top: 0;
     }
 
-    /* Video Pane - Left Side */
+    /* Video Pane */
     .video-pane {
-      flex: 0 0 45%;
+      flex: 0 0 48%;
       display: flex;
       flex-direction: column;
-      background: #000;
+      background: var(--bg-video);
       min-width: 0;
     }
 
@@ -137,125 +144,179 @@
       background: #000;
     }
 
-    /* Controls - Sleek/Modern */
+    /* Controls */
     .controls {
-      padding: 16px 20px;
-      background: linear-gradient(0deg, rgba(0, 0, 0, 0.95) 0%, rgba(0, 0, 0, 0.8) 100%);
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 12px 16px;
+      background: var(--bg-controls);
+      border-top: 1px solid var(--border-muted);
     }
 
     .controls-row {
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 12px;
     }
 
     .control-btn {
       appearance: none;
       border: none;
-      background: rgba(255, 255, 255, 0.1);
-      color: #f8fafc;
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      font-size: 16px;
+      background: transparent;
+      color: var(--text-muted);
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
       cursor: pointer;
-      transition: background 0.2s ease, transform 0.1s ease;
+      transition: all 0.15s ease;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 0;
     }
 
     .control-btn:hover {
-      background: rgba(255, 255, 255, 0.2);
+      color: var(--text-light);
+      background: rgba(255, 255, 255, 0.08);
     }
 
     .control-btn:active {
-      transform: scale(0.95);
+      transform: scale(0.94);
+    }
+
+    .control-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
     }
 
     .control-btn.play-btn {
-      width: 48px;
-      height: 48px;
+      width: 44px;
+      height: 44px;
       background: var(--accent);
-      color: #1e293b;
+      color: #fff;
+      border-radius: 50%;
     }
 
     .control-btn.play-btn:hover {
-      background: #fde047;
+      background: var(--accent-hover);
+    }
+
+    .control-btn.play-btn svg {
+      width: 22px;
+      height: 22px;
     }
 
     .progress-container {
       flex: 1;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
 
     .time-display {
-      font-size: 12px;
-      font-family: 'SF Mono', 'Consolas', monospace;
+      font-size: 11px;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
       color: var(--text-muted);
-      min-width: 45px;
+      min-width: 42px;
       text-align: center;
+      font-variant-numeric: tabular-nums;
     }
 
-    .progress-bar {
+    .progress-track {
       flex: 1;
       height: 4px;
-      background: rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.15);
       border-radius: 2px;
       cursor: pointer;
       position: relative;
+      overflow: hidden;
+    }
+
+    .progress-track:hover {
+      height: 6px;
     }
 
     .progress-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
       height: 100%;
       background: var(--accent);
       border-radius: 2px;
       width: 0%;
-      transition: width 0.1s linear;
+      pointer-events: none;
     }
 
-    .progress-bar:hover .progress-fill {
-      background: #fde047;
-    }
-
-    input[type="range"] {
-      -webkit-appearance: none;
-      appearance: none;
+    .progress-input {
+      position: absolute;
+      top: 0;
+      left: 0;
       width: 100%;
-      height: 4px;
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 2px;
-      outline: none;
-    }
-
-    input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background: var(--accent);
+      height: 100%;
+      opacity: 0;
       cursor: pointer;
+      margin: 0;
     }
 
     .volume-control {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
 
-    .volume-icon {
-      font-size: 16px;
+    .volume-btn {
+      appearance: none;
+      border: none;
+      background: transparent;
       color: var(--text-muted);
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
     }
 
-    #volumeSlider {
-      width: 80px;
+    .volume-btn:hover {
+      color: var(--text-light);
     }
 
-    /* Document Pane - Right Side */
+    .volume-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+
+    .volume-slider {
+      width: 70px;
+      height: 4px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 2px;
+      outline: none;
+    }
+
+    .volume-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--text-light);
+      cursor: pointer;
+    }
+
+    .volume-slider::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--text-light);
+      border: none;
+      cursor: pointer;
+    }
+
+    /* Document Pane */
     .document-pane {
       flex: 1;
       display: flex;
@@ -266,63 +327,75 @@
     }
 
     .document-header {
-      padding: 12px 24px;
-      background: #fff;
-      border-bottom: 1px solid var(--border-subtle);
+      padding: 10px 20px;
+      background: var(--bg-app);
+      border-bottom: 1px solid var(--border-muted);
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
 
     .page-indicator {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 500;
-      color: var(--text-secondary);
+      color: var(--text-muted);
     }
 
     .page-nav {
       display: flex;
-      gap: 8px;
+      gap: 6px;
     }
 
     .page-nav button {
       appearance: none;
-      border: 1px solid var(--border-subtle);
-      background: #fff;
-      color: var(--text-secondary);
-      padding: 6px 12px;
+      border: 1px solid var(--border-muted);
+      background: transparent;
+      color: var(--text-muted);
+      padding: 5px 12px;
       border-radius: 6px;
       font-size: 12px;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
     }
 
     .page-nav button:hover:not(:disabled) {
-      background: var(--bg-document);
+      background: rgba(255, 255, 255, 0.05);
       border-color: var(--text-muted);
+      color: var(--text-light);
     }
 
     .page-nav button:disabled {
-      opacity: 0.4;
+      opacity: 0.3;
       cursor: not-allowed;
+    }
+
+    .page-nav button svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
     }
 
     .document-scroll {
       flex: 1;
       overflow-y: auto;
-      padding: 32px;
+      padding: 24px;
       display: flex;
-      justify-content: center;
+      flex-direction: column;
+      align-items: center;
     }
 
-    /* Document Page - Formal Legal Aesthetic */
+    /* Document Page - Matches DOCX formatting */
     .doc-page {
       width: var(--page-width);
       max-width: 100%;
       background: var(--bg-page);
       box-shadow: var(--shadow-page);
-      border-radius: 2px;
-      padding: var(--page-padding);
+      border-radius: 3px;
+      margin-bottom: 24px;
+      padding: var(--page-margin-top) var(--page-margin-right) var(--page-margin-bottom) var(--page-margin-left);
       display: none;
     }
 
@@ -340,50 +413,40 @@
     .doc-line {
       display: flex;
       cursor: pointer;
-      transition: background 0.15s ease;
+      transition: background 0.12s ease;
       margin: 0;
-      padding: 0 8px;
+      padding: 0;
       border-radius: 2px;
     }
 
     .doc-line:hover {
-      background: rgba(59, 130, 246, 0.06);
+      background: rgba(47, 129, 247, 0.06);
     }
 
     .doc-line.current {
-      background: var(--accent-bg);
+      background: var(--accent-highlight);
     }
 
     .doc-line-number {
-      width: 36px;
-      min-width: 36px;
+      width: var(--line-number-width);
+      min-width: var(--line-number-width);
       text-align: right;
-      padding-right: 16px;
-      color: var(--text-muted);
-      font-weight: 500;
+      padding-right: 12px;
+      color: var(--text-secondary);
+      font-weight: 400;
       user-select: none;
       font-variant-numeric: tabular-nums;
     }
 
     .doc-line.current .doc-line-number {
-      color: #92400e;
+      color: var(--accent);
+      font-weight: 500;
     }
 
     .doc-line-text {
       flex: 1;
       white-space: pre;
-      overflow: hidden;
-    }
-
-    /* Speaker line has first-line indent */
-    .doc-line-text.speaker-line {
-      padding-left: 1in;
-      text-indent: -1in;
-    }
-
-    /* Continuation line - no indent */
-    .doc-line-text.continuation-line {
-      padding-left: 0;
+      overflow: visible;
     }
 
     .doc-empty {
@@ -422,7 +485,8 @@
       }
 
       :root {
-        --page-padding: 0.5in;
+        --page-margin-left: 0.5in;
+        --page-margin-right: 0.25in;
         --font-size: 10pt;
       }
     }
@@ -449,11 +513,30 @@
         display: block !important;
         box-shadow: none;
         page-break-after: always;
+        margin: 0;
       }
 
       .doc-line.current {
         background: none;
       }
+    }
+
+    /* Scrollbar styling */
+    .document-scroll::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .document-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .document-scroll::-webkit-scrollbar-thumb {
+      background: var(--border-muted);
+      border-radius: 4px;
+    }
+
+    .document-scroll::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
     }
   </style>
 </head>
@@ -479,17 +562,28 @@
         </div>
         <div class="controls">
           <div class="controls-row">
-            <button type="button" class="control-btn" id="rewindBtn" aria-label="Rewind 10 seconds">⏪</button>
-            <button type="button" class="control-btn play-btn" id="playBtn" aria-label="Play">▶</button>
-            <button type="button" class="control-btn" id="forwardBtn" aria-label="Forward 10 seconds">⏩</button>
+            <button type="button" class="control-btn" id="rewindBtn" aria-label="Rewind 10 seconds">
+              <svg viewBox="0 0 24 24"><path d="M12.5 3C17.15 3 21.08 6.03 22.47 10.22L20.1 11C19.05 7.81 16.04 5.5 12.5 5.5C10.54 5.5 8.77 6.22 7.38 7.38L10 10H3V3L5.6 5.6C7.45 4 9.85 3 12.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
+            </button>
+            <button type="button" class="control-btn play-btn" id="playBtn" aria-label="Play">
+              <svg viewBox="0 0 24 24" id="playIcon"><polygon points="5,3 19,12 5,21"/></svg>
+            </button>
+            <button type="button" class="control-btn" id="forwardBtn" aria-label="Forward 10 seconds">
+              <svg viewBox="0 0 24 24"><path d="M11.5 3C6.85 3 2.92 6.03 1.53 10.22L3.9 11C4.95 7.81 7.96 5.5 11.5 5.5C13.46 5.5 15.23 6.22 16.62 7.38L14 10H21V3L18.4 5.6C16.55 4 14.15 3 11.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
+            </button>
             <div class="progress-container">
               <span class="time-display" id="currentTime">0:00</span>
-              <input type="range" id="progressBar" min="0" max="100" step="0.1" value="0" />
+              <div class="progress-track">
+                <div class="progress-fill" id="progressFill"></div>
+                <input type="range" class="progress-input" id="progressBar" min="0" max="100" step="0.1" value="0" />
+              </div>
               <span class="time-display" id="totalDuration">0:00</span>
             </div>
             <div class="volume-control">
-              <span class="volume-icon" id="volumeIcon">🔊</span>
-              <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
+              <button type="button" class="volume-btn" id="volumeBtn" aria-label="Toggle mute">
+                <svg viewBox="0 0 24 24" id="volumeIcon"><path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>
+              </button>
+              <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
             </div>
           </div>
         </div>
@@ -499,8 +593,14 @@
         <div class="document-header">
           <span class="page-indicator" id="pageIndicator">Page 1 of 1</span>
           <div class="page-nav">
-            <button type="button" id="prevPageBtn" disabled>← Prev</button>
-            <button type="button" id="nextPageBtn" disabled>Next →</button>
+            <button type="button" id="prevPageBtn" disabled>
+              <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+              Prev
+            </button>
+            <button type="button" id="nextPageBtn" disabled>
+              Next
+              <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+            </button>
           </div>
         </div>
         <div class="document-scroll" id="documentScroll">
@@ -527,12 +627,15 @@
       // Elements
       const video = document.getElementById('mediaPlayer');
       const playBtn = document.getElementById('playBtn');
+      const playIcon = document.getElementById('playIcon');
       const rewindBtn = document.getElementById('rewindBtn');
       const forwardBtn = document.getElementById('forwardBtn');
       const progressBar = document.getElementById('progressBar');
+      const progressFill = document.getElementById('progressFill');
       const currentTimeEl = document.getElementById('currentTime');
       const totalDurationEl = document.getElementById('totalDuration');
       const volumeSlider = document.getElementById('volumeSlider');
+      const volumeBtn = document.getElementById('volumeBtn');
       const volumeIcon = document.getElementById('volumeIcon');
       const pageIndicator = document.getElementById('pageIndicator');
       const prevPageBtn = document.getElementById('prevPageBtn');
@@ -545,11 +648,18 @@
       const headerDate = document.getElementById('headerDate');
       const headerLocation = document.getElementById('headerLocation');
 
+      // SVG icons
+      const playIconSvg = '<polygon points="5,3 19,12 5,21"/>';
+      const pauseIconSvg = '<path d="M6,4H10V20H6M14,4H18V20H14Z"/>';
+      const volumeHighSvg = '<path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>';
+      const volumeMediumSvg = '<path d="M5,9V15H9L14,20V4L9,9M18.5,12C18.5,10.23 17.5,8.71 16,7.97V16C17.5,15.29 18.5,13.76 18.5,12Z"/>';
+      const volumeMutedSvg = '<path d="M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.63,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.52C15.58,18.04 14.83,18.45 14,18.7V20.77C15.38,20.45 16.63,19.81 17.69,18.95L19.73,21L21,19.73L12,10.73M12,4L9.91,6.09L12,8.18Z"/>';
+
       // Data
       const allLines = Array.isArray(payload.lines) ? payload.lines : [];
-      const allPages = Array.isArray(payload.pages) ? payload.pages : [];
       const titleData = (payload.meta && payload.meta.title) || {};
       const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
+      const linesPerPage = Number(payload.meta && payload.meta.lines_per_page) || 25;
       const defaultFileName = (payload.media && (payload.media.relative_path || payload.media.filename)) || 'media.mp4';
       const mediaContentType = payload.media && payload.media.content_type;
 
@@ -568,7 +678,7 @@
       const displayLocation = titleData.LOCATION || '';
 
       caseTitle.textContent = displayCaseName;
-      document.title = displayCaseName + ' — Transcript';
+      document.title = displayCaseName + ' - Transcript';
       caseDetails.textContent = displayFileName;
       if (displayDate) headerDate.textContent = displayDate;
       if (displayLocation) headerLocation.textContent = displayLocation;
@@ -578,6 +688,7 @@
       let activeLineIndex = -1;
       const lineElements = new Map();
       const pageElements = [];
+      let allPages = [];
 
       // Utilities
       function formatTime(seconds) {
@@ -594,16 +705,44 @@
 
       function updateVolumeIcon(volume) {
         if (volume === 0) {
-          volumeIcon.textContent = '🔇';
+          volumeIcon.innerHTML = volumeMutedSvg;
         } else if (volume < 0.5) {
-          volumeIcon.textContent = '🔉';
+          volumeIcon.innerHTML = volumeMediumSvg;
         } else {
-          volumeIcon.textContent = '🔊';
+          volumeIcon.innerHTML = volumeHighSvg;
         }
+      }
+
+      // Build pages from lines (25 lines per page)
+      function buildPages() {
+        allPages = [];
+        if (!allLines.length) return;
+
+        // Group lines by page_number or create pages of 25 lines
+        const pageMap = new Map();
+
+        allLines.forEach((line, idx) => {
+          const pageNum = line.page_number || Math.floor(idx / linesPerPage) + 1;
+          if (!pageMap.has(pageNum)) {
+            pageMap.set(pageNum, []);
+          }
+          pageMap.get(pageNum).push(idx);
+        });
+
+        // Convert map to array of page objects
+        const sortedPageNums = Array.from(pageMap.keys()).sort((a, b) => a - b);
+        sortedPageNums.forEach(pageNum => {
+          allPages.push({
+            page_number: pageNum,
+            line_indexes: pageMap.get(pageNum)
+          });
+        });
       }
 
       // Build document view
       function buildDocumentView() {
+        buildPages();
+
         if (!allLines.length || !allPages.length) {
           pagesContainer.innerHTML = '<div class="doc-empty">No transcript available</div>';
           return;
@@ -631,22 +770,15 @@
 
             const numberEl = document.createElement('span');
             numberEl.className = 'doc-line-number';
-            const displayNumber = line.line_number != null ? line.line_number : (line.pgln || lineIndex + 1);
+            const displayNumber = line.line_number != null ? line.line_number : ((lineIndex % linesPerPage) + 1);
             numberEl.textContent = String(displayNumber);
 
             const textEl = document.createElement('span');
             textEl.className = 'doc-line-text';
 
-            // Use rendered_text which already has proper formatting
-            const text = line.rendered_text || (line.speaker ? `${line.speaker.toUpperCase()}:   ${line.text}` : line.text);
+            // Use rendered_text which already has proper formatting with speaker prefix and spacing
+            const text = line.rendered_text || line.text || '';
             textEl.textContent = text;
-
-            // Mark speaker vs continuation lines for CSS styling
-            if (!line.is_continuation && line.speaker) {
-              textEl.classList.add('speaker-line');
-            } else {
-              textEl.classList.add('continuation-line');
-            }
 
             lineEl.appendChild(numberEl);
             lineEl.appendChild(textEl);
@@ -683,6 +815,7 @@
         currentPageIndex = index;
         updatePageIndicator();
         updatePageButtons();
+        documentScroll.scrollTop = 0;
       }
 
       function updatePageIndicator() {
@@ -727,11 +860,13 @@
           lineEl.classList.add('current');
 
           // Find which page this line is on and show it
-          const line = allLines[lineIndex];
-          if (line && line.page_number != null) {
-            const pageIdx = line.page_number - 1;
-            if (pageIdx !== currentPageIndex && pageIdx >= 0 && pageIdx < pageElements.length) {
-              showPage(pageIdx);
+          for (let pageIdx = 0; pageIdx < allPages.length; pageIdx++) {
+            const page = allPages[pageIdx];
+            if (page.line_indexes && page.line_indexes.includes(lineIndex)) {
+              if (pageIdx !== currentPageIndex) {
+                showPage(pageIdx);
+              }
+              break;
             }
           }
 
@@ -748,7 +883,9 @@
         const duration = video.duration || durationSeconds || 0;
 
         if (Number.isFinite(duration) && duration > 0) {
-          progressBar.value = String((currentTime / duration) * 100);
+          const percent = (currentTime / duration) * 100;
+          progressBar.value = String(percent);
+          progressFill.style.width = percent + '%';
           totalDurationEl.textContent = formatTime(duration);
         }
         currentTimeEl.textContent = formatTime(currentTime);
@@ -780,7 +917,9 @@
       progressBar.addEventListener('input', (e) => {
         const duration = video.duration || durationSeconds || 0;
         if (duration) {
-          video.currentTime = (Number(e.target.value) / 100) * duration;
+          const newTime = (Number(e.target.value) / 100) * duration;
+          video.currentTime = newTime;
+          progressFill.style.width = e.target.value + '%';
         }
       });
 
@@ -789,13 +928,26 @@
         updateVolumeIcon(video.volume);
       });
 
+      volumeBtn.addEventListener('click', () => {
+        if (video.volume > 0) {
+          volumeSlider.dataset.prevVolume = video.volume;
+          video.volume = 0;
+          volumeSlider.value = 0;
+        } else {
+          const prevVolume = Number(volumeSlider.dataset.prevVolume) || 1;
+          video.volume = prevVolume;
+          volumeSlider.value = prevVolume;
+        }
+        updateVolumeIcon(video.volume);
+      });
+
       // Event listeners - Video state
       video.addEventListener('play', () => {
-        playBtn.textContent = '❚❚';
+        playIcon.innerHTML = pauseIconSvg;
       });
 
       video.addEventListener('pause', () => {
-        playBtn.textContent = '▶';
+        playIcon.innerHTML = playIconSvg;
       });
 
       video.addEventListener('timeupdate', handleTimeUpdate);
@@ -828,7 +980,7 @@
           if (headerTimeout) clearTimeout(headerTimeout);
           headerTimeout = setTimeout(() => {
             appHeader.classList.remove('visible');
-          }, 1000);
+          }, 800);
         }
       });
 
@@ -840,7 +992,7 @@
       appHeader.addEventListener('mouseleave', () => {
         headerTimeout = setTimeout(() => {
           appHeader.classList.remove('visible');
-        }, 500);
+        }, 400);
       });
 
       // Keyboard shortcuts
@@ -863,9 +1015,11 @@
             video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
             break;
           case 'ArrowUp':
+            e.preventDefault();
             if (currentPageIndex > 0) showPage(currentPageIndex - 1);
             break;
           case 'ArrowDown':
+            e.preventDefault();
             if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1);
             break;
         }

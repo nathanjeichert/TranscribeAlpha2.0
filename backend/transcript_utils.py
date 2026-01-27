@@ -246,8 +246,8 @@ def build_viewer_payload(
             "rendered_text": entry.get("rendered_text", ""),
             "start": entry.get("start", 0),
             "end": entry.get("end", 0),
-            "page_number": entry.get("page_number", 1),
-            "line_number": entry.get("line_number", idx + 1),
+            "page_number": entry.get("page", 1),  # Fixed: was "page_number", should be "page"
+            "line_number": entry.get("line", idx + 1),  # Fixed: was "line_number", should be "line"
             "pgln": entry.get("pgln", 101 + idx),
             "is_continuation": entry.get("is_continuation", False),
         })
