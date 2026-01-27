@@ -620,16 +620,17 @@ export default function TranscribeForm() {
                     <h2 className="text-xl font-medium">Media Upload</h2>
                   </div>
                   <div className="card-body">
-                    <div
-                      className="border-2 border-dashed border-primary-300 rounded-lg p-8 text-center hover:border-primary-500 hover:bg-primary-100 transition-all duration-200 cursor-pointer bg-primary-50"
-                      onClick={() => fileInputRef.current?.click()}
+                    <label
+                      htmlFor="media-upload-input"
+                      className="border-2 border-dashed border-primary-300 rounded-lg p-8 text-center hover:border-primary-500 hover:bg-primary-100 transition-all duration-200 cursor-pointer bg-primary-50 block"
                     >
                       <input
+                        id="media-upload-input"
                         type="file"
                         ref={fileInputRef}
                         onChange={handleFileChange}
                         accept="audio/*,video/*,.mp4,.avi,.mov,.mkv,.wav,.mp3,.m4a,.flac,.ogg"
-                        className="hidden"
+                        className="sr-only"
                       />
                       {selectedFile ? (
                         <div className="space-y-2">
@@ -649,7 +650,7 @@ export default function TranscribeForm() {
                           </div>
                         </div>
                       )}
-                    </div>
+                    </label>
                   </div>
                 </div>
 
