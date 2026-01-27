@@ -55,62 +55,6 @@
       flex-direction: column;
     }
 
-    /* Header */
-    .app-header {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      padding: 12px 20px;
-      background: linear-gradient(180deg, rgba(13, 17, 23, 0.98) 0%, rgba(13, 17, 23, 0.9) 100%);
-      border-bottom: 1px solid var(--border-muted);
-      z-index: 100;
-      transform: translateY(-100%);
-      opacity: 0;
-      transition: transform 0.25s ease, opacity 0.25s ease;
-      backdrop-filter: blur(12px);
-    }
-
-    .app-header.visible {
-      transform: translateY(0);
-      opacity: 1;
-    }
-
-    .header-content {
-      max-width: 1400px;
-      margin: 0 auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 20px;
-    }
-
-    .header-info h1 {
-      margin: 0;
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text-light);
-      letter-spacing: -0.2px;
-    }
-
-    .header-info p {
-      margin: 3px 0 0;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .header-meta {
-      display: flex;
-      gap: 16px;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
-    .header-meta span {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
 
     /* Main Layout */
     .app-main {
@@ -542,19 +486,6 @@
 </head>
 <body>
   <div class="app">
-    <header class="app-header" id="appHeader">
-      <div class="header-content">
-        <div class="header-info">
-          <h1 id="caseTitle">Transcript Viewer</h1>
-          <p id="caseDetails"></p>
-        </div>
-        <div class="header-meta">
-          <span id="headerDate"></span>
-          <span id="headerLocation"></span>
-        </div>
-      </div>
-    </header>
-
     <main class="app-main">
       <div class="video-pane">
         <div class="video-container">
@@ -642,11 +573,6 @@
       const nextPageBtn = document.getElementById('nextPageBtn');
       const pagesContainer = document.getElementById('pagesContainer');
       const documentScroll = document.getElementById('documentScroll');
-      const appHeader = document.getElementById('appHeader');
-      const caseTitle = document.getElementById('caseTitle');
-      const caseDetails = document.getElementById('caseDetails');
-      const headerDate = document.getElementById('headerDate');
-      const headerLocation = document.getElementById('headerLocation');
 
       // SVG icons
       const playIconSvg = '<polygon points="5,3 19,12 5,21"/>';
@@ -671,17 +597,9 @@
       }
       video.appendChild(source);
 
-      // Setup header
+      // Setup page title
       const displayCaseName = titleData.CASE_NAME || 'Transcript Viewer';
-      const displayFileName = titleData.FILE_NAME || defaultFileName;
-      const displayDate = titleData.DATE || '';
-      const displayLocation = titleData.LOCATION || '';
-
-      caseTitle.textContent = displayCaseName;
       document.title = displayCaseName + ' - Transcript';
-      caseDetails.textContent = displayFileName;
-      if (displayDate) headerDate.textContent = displayDate;
-      if (displayLocation) headerLocation.textContent = displayLocation;
 
       // State
       let currentPageIndex = 0;
@@ -968,31 +886,6 @@
         if (currentPageIndex < pageElements.length - 1) {
           showPage(currentPageIndex + 1);
         }
-      });
-
-      // Header visibility on hover
-      let headerTimeout = null;
-      document.addEventListener('mousemove', (e) => {
-        if (e.clientY <= 60) {
-          appHeader.classList.add('visible');
-          if (headerTimeout) clearTimeout(headerTimeout);
-        } else if (appHeader.classList.contains('visible')) {
-          if (headerTimeout) clearTimeout(headerTimeout);
-          headerTimeout = setTimeout(() => {
-            appHeader.classList.remove('visible');
-          }, 800);
-        }
-      });
-
-      appHeader.addEventListener('mouseenter', () => {
-        if (headerTimeout) clearTimeout(headerTimeout);
-        appHeader.classList.add('visible');
-      });
-
-      appHeader.addEventListener('mouseleave', () => {
-        headerTimeout = setTimeout(() => {
-          appHeader.classList.remove('visible');
-        }, 400);
       });
 
       // Keyboard shortcuts
