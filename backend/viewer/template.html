@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Transcript Viewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
 
@@ -17,32 +20,44 @@
       --font-size: 12pt;
       --line-height: 2.0;
       --lines-per-page: 25;
-      --sidebar-width: 300px;
+      --sidebar-width: 320px;
 
-      --bg-app: #0d1117;
-      --bg-video: #000000;
-      --bg-document: #161b22;
+      /* App color palette - slate tones */
+      --color-50: #f8fafc;
+      --color-100: #f1f5f9;
+      --color-200: #e2e8f0;
+      --color-300: #cbd5e1;
+      --color-400: #94a3b8;
+      --color-500: #64748b;
+      --color-600: #475569;
+      --color-700: #334155;
+      --color-800: #1e293b;
+      --color-900: #0f172a;
+
+      --bg-app: var(--color-100);
+      --bg-sidebar: #ffffff;
+      --bg-card: #ffffff;
       --bg-page: #ffffff;
-      --bg-controls: rgba(13, 17, 23, 0.95);
-      --bg-sidebar: #0d1117;
-      --text-primary: #1f2328;
-      --text-secondary: #656d76;
-      --text-muted: #8b949e;
-      --text-light: #e6edf3;
-      --accent: #2f81f7;
-      --accent-hover: #58a6ff;
-      --accent-highlight: rgba(47, 129, 247, 0.15);
-      --clip-color: #238636;
-      --border-muted: #30363d;
-      --shadow-page: 0 8px 32px rgba(0, 0, 0, 0.4);
-      --danger: #da3633;
+      --text-primary: var(--color-900);
+      --text-secondary: var(--color-600);
+      --text-muted: var(--color-400);
+      --accent: var(--color-700);
+      --accent-light: var(--color-600);
+      --border: var(--color-200);
+      --border-light: var(--color-100);
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+      --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1);
+      --amber-100: #fef3c7;
+      --amber-300: #fcd34d;
+      --amber-500: #f59e0b;
     }
 
     body {
       margin: 0;
       background: var(--bg-app);
-      color: var(--text-light);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       -webkit-font-smoothing: antialiased;
       min-height: 100vh;
       overflow: hidden;
@@ -54,37 +69,39 @@
     .sidebar {
       width: var(--sidebar-width);
       background: var(--bg-sidebar);
-      border-right: 1px solid var(--border-muted);
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
-      transition: margin-left 0.25s ease;
+      flex-shrink: 0;
+      box-shadow: var(--shadow-md);
       z-index: 50;
     }
 
-    .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-width)); }
+    .sidebar.collapsed { display: none; }
 
     .sidebar-header {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border-muted);
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
       display: flex;
       justify-content: space-between;
       align-items: center;
+      background: var(--accent);
     }
 
     .sidebar-title {
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 600;
-      color: var(--text-light);
+      color: #ffffff;
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
-    .sidebar-toggle {
+    .sidebar-close {
       appearance: none;
       border: none;
-      background: transparent;
-      color: var(--text-muted);
+      background: rgba(255,255,255,0.15);
+      color: #ffffff;
       width: 28px;
       height: 28px;
       border-radius: 6px;
@@ -92,182 +109,47 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: background 0.15s;
     }
+    .sidebar-close:hover { background: rgba(255,255,255,0.25); }
+    .sidebar-close svg { width: 16px; height: 16px; fill: currentColor; }
 
-    .sidebar-toggle:hover { color: var(--text-light); background: rgba(255,255,255,0.08); }
-    .sidebar-toggle svg { width: 16px; height: 16px; fill: currentColor; }
-
-    .sidebar-content { flex: 1; overflow-y: auto; padding: 12px; }
-
-    .sidebar-section { margin-bottom: 16px; }
-    .sidebar-section-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      padding: 0 4px;
-    }
-    .sidebar-section-title {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      color: var(--text-muted);
-    }
-
-    /* View Mode Toggle */
-    .view-toggle {
-      display: flex;
-      background: rgba(255,255,255,0.05);
-      border-radius: 6px;
-      padding: 3px;
-      margin-bottom: 16px;
-    }
-
-    .view-toggle-btn {
-      flex: 1;
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 11px;
-      padding: 6px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .view-toggle-btn.active { background: var(--accent); color: #fff; }
-    .view-toggle-btn:not(.active):hover { color: var(--text-light); }
-
-    /* Sidebar Buttons */
-    .sidebar-btn {
-      appearance: none;
-      border: 1px solid var(--border-muted);
-      background: transparent;
-      color: var(--text-muted);
-      font-size: 11px;
-      padding: 6px 10px;
-      border-radius: 5px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .sidebar-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-light); border-color: var(--text-muted); }
-    .sidebar-btn svg { width: 12px; height: 12px; fill: currentColor; }
-    .sidebar-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .sidebar-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-    .sidebar-btn.danger { color: var(--danger); border-color: var(--danger); }
-    .sidebar-btn.danger:hover { background: rgba(218, 54, 51, 0.1); }
-
-    .btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-
-    /* Clips List */
-    .clip-item {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid var(--border-muted);
-      border-radius: 6px;
-      padding: 10px 12px;
-      margin-bottom: 8px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-      position: relative;
-    }
-
-    .clip-item:hover { background: rgba(255,255,255,0.06); border-color: var(--text-muted); }
-    .clip-item.active { border-color: var(--clip-color); background: rgba(35, 134, 54, 0.1); }
-
-    .clip-item-header { display: flex; justify-content: space-between; align-items: flex-start; }
-    .clip-item-name { font-size: 13px; font-weight: 500; color: var(--text-light); margin-bottom: 4px; }
-    .clip-item-time { font-size: 11px; color: var(--text-muted); font-family: 'SF Mono', monospace; }
-    .clip-item-source { font-size: 10px; color: var(--text-muted); margin-top: 4px; opacity: 0.7; }
-    .clip-item-delete {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
-      width: 20px;
-      height: 20px;
-      border-radius: 4px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      opacity: 0;
-      transition: opacity 0.15s ease;
-    }
-    .clip-item:hover .clip-item-delete { opacity: 1; }
-    .clip-item-delete:hover { color: var(--danger); background: rgba(218,54,51,0.1); }
-    .clip-item-delete svg { width: 14px; height: 14px; fill: currentColor; }
-
-    .no-clips { text-align: center; padding: 20px 12px; color: var(--text-muted); font-size: 12px; }
-
-    /* Settings Toggle */
-    .setting-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 4px;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-    .setting-toggle {
-      width: 36px;
-      height: 20px;
-      background: var(--border-muted);
-      border-radius: 10px;
-      position: relative;
-      cursor: pointer;
-      transition: background 0.2s ease;
-    }
-    .setting-toggle.active { background: var(--clip-color); }
-    .setting-toggle::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 16px;
-      height: 16px;
-      background: #fff;
-      border-radius: 50%;
-      transition: transform 0.2s ease;
-    }
-    .setting-toggle.active::after { transform: translateX(16px); }
+    .sidebar-content { flex: 1; overflow-y: auto; padding: 16px; }
 
     /* Search */
-    .search-container {
-      margin-bottom: 12px;
+    .search-box {
       position: relative;
+      margin-bottom: 16px;
     }
     .search-input {
       width: 100%;
-      appearance: none;
-      border: 1px solid var(--border-muted);
-      background: rgba(0,0,0,0.3);
-      color: var(--text-light);
+      padding: 10px 12px;
+      padding-right: 90px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
       font-size: 13px;
-      padding: 8px 12px;
-      border-radius: 6px;
+      background: var(--color-50);
+      color: var(--text-primary);
       outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .search-input:focus { border-color: var(--accent); }
+    .search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(51,65,85,0.1); }
     .search-input::placeholder { color: var(--text-muted); }
-    .search-nav {
-      display: flex;
+    .search-controls {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: none;
       align-items: center;
-      gap: 4px;
-      margin-top: 6px;
+      gap: 2px;
     }
-    .search-count {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-right: 4px;
-    }
-    .search-nav-btn {
+    .search-controls.visible { display: flex; }
+    .search-count { font-size: 11px; color: var(--text-muted); margin-right: 4px; }
+    .search-btn {
       appearance: none;
       border: none;
-      background: rgba(255,255,255,0.05);
+      background: transparent;
       color: var(--text-muted);
       width: 24px;
       height: 24px;
@@ -276,100 +158,231 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 0;
+      transition: color 0.15s, background 0.15s;
     }
-    .search-nav-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-light); }
-    .search-nav-btn svg { width: 14px; height: 14px; fill: currentColor; }
-    .doc-line.search-match .doc-line-text { background: rgba(255, 200, 0, 0.3); }
-    .doc-line.search-current .doc-line-text { background: rgba(255, 200, 0, 0.6); }
+    .search-btn:hover { color: var(--text-primary); background: var(--color-100); }
+    .search-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+    /* Sidebar Sections */
+    .sidebar-section { margin-bottom: 20px; }
+    .sidebar-section:last-child { margin-bottom: 0; }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
 
     /* Clip Creator */
     .clip-creator {
-      background: rgba(255,255,255,0.03);
-      border: 1px solid var(--border-muted);
-      border-radius: 6px;
-      padding: 12px;
-      margin-bottom: 12px;
+      background: var(--color-50);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 16px;
     }
-    .clip-creator-title { font-size: 12px; font-weight: 500; color: var(--text-light); margin-bottom: 10px; }
-    .clip-creator-row { display: flex; gap: 8px; margin-bottom: 8px; }
-    .clip-creator-input {
+    .clip-creator-title { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
+    .clip-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    .clip-input {
       flex: 1;
-      appearance: none;
-      border: 1px solid var(--border-muted);
-      background: rgba(0,0,0,0.3);
-      color: var(--text-light);
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
       font-size: 12px;
-      padding: 6px 10px;
-      border-radius: 4px;
+      background: #ffffff;
+      color: var(--text-primary);
       outline: none;
     }
-    .clip-creator-input:focus { border-color: var(--accent); }
-    .clip-creator-input::placeholder { color: var(--text-muted); }
-    .clip-creator-time {
-      width: 70px;
-      text-align: center;
-      font-family: 'SF Mono', monospace;
+    .clip-input:focus { border-color: var(--accent); }
+    .clip-input::placeholder { color: var(--text-muted); }
+    .clip-time { width: 70px; text-align: center; font-family: 'SF Mono', 'Monaco', monospace; font-size: 11px; }
+    .clip-actions { display: flex; gap: 6px; }
+
+    /* Buttons */
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
     }
-    .clip-creator-actions { display: flex; gap: 6px; }
+    .btn:hover { border-color: var(--color-300); background: var(--color-50); color: var(--text-primary); }
+    .btn svg { width: 14px; height: 14px; fill: currentColor; }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+    .btn-primary:hover { background: var(--accent-light); border-color: var(--accent-light); color: #ffffff; }
+    .btn-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .btn-row .btn { flex: 1; justify-content: center; }
+
+    /* Clips List */
+    .clips-list { max-height: 200px; overflow-y: auto; }
+    .clip-item {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+      background: #ffffff;
+    }
+    .clip-item:hover { border-color: var(--color-300); background: var(--color-50); }
+    .clip-item.active { border-color: var(--accent); background: rgba(51,65,85,0.05); }
+    .clip-item-header { display: flex; justify-content: space-between; align-items: flex-start; }
+    .clip-item-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+    .clip-item-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .clip-item-delete {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .clip-item-delete:hover { color: #dc2626; background: #fef2f2; }
+    .clip-item-delete svg { width: 14px; height: 14px; fill: currentColor; }
+    .no-clips { font-size: 12px; color: var(--text-muted); text-align: center; padding: 16px; }
+
+    /* Settings */
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .setting-toggle {
+      width: 40px;
+      height: 22px;
+      background: var(--color-200);
+      border-radius: 11px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+    }
+    .setting-toggle.active { background: var(--accent); }
+    .setting-toggle::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      background: #ffffff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+      box-shadow: var(--shadow-sm);
+    }
+    .setting-toggle.active::after { transform: translateX(18px); }
+
+    /* View Toggle */
+    .view-toggle {
+      display: flex;
+      background: var(--color-100);
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .view-btn {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      padding: 5px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .view-btn.active { background: #ffffff; color: var(--text-primary); box-shadow: var(--shadow-sm); }
 
     /* Main Content */
     .main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-    .content-area { flex: 1; display: flex; min-height: 0; }
+
+    .main-header {
+      padding: 12px 20px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .menu-btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text-secondary);
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .menu-btn:hover { border-color: var(--color-300); color: var(--text-primary); }
+    .menu-btn svg { width: 18px; height: 18px; fill: currentColor; }
+
+    .header-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Content Area */
+    .content-area {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
 
     /* Video Pane */
     .video-pane {
       flex: 0 0 50%;
       display: flex;
       flex-direction: column;
-      background: var(--bg-video);
-      min-width: 0;
-      position: relative;
+      background: var(--color-900);
     }
-
-    .video-pane.caption-mode { flex: 1; }
 
     .video-container {
       flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 0;
       position: relative;
-    }
-
-    video { width: 100%; height: 100%; max-height: 100%; object-fit: contain; background: #000; }
-
-    /* Title Card Overlay */
-    .title-card {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: #000;
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.5s ease;
-      z-index: 10;
+      background: #000000;
     }
-    .title-card.visible { opacity: 1; pointer-events: auto; }
-    .title-card-name {
-      font-size: 32px;
-      font-weight: 600;
-      color: #fff;
-      margin-bottom: 12px;
-      text-align: center;
-      padding: 0 40px;
-    }
-    .title-card-meta {
-      font-size: 16px;
-      color: rgba(255,255,255,0.6);
-      text-align: center;
+
+    .video-container video {
+      max-width: 100%;
+      max-height: 100%;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
 
     /* Caption Overlay */
@@ -379,107 +392,90 @@
       left: 0;
       right: 0;
       padding: 20px 40px 30px;
-      background: linear-gradient(transparent, rgba(0,0,0,0.85));
       display: none;
       flex-direction: column;
-      gap: 4px;
+      align-items: center;
+      background: linear-gradient(transparent, rgba(0,0,0,0.8));
+      pointer-events: none;
     }
-
-    .caption-mode .caption-overlay { display: flex; }
-
+    .video-pane.caption-mode .caption-overlay { display: flex; }
     .caption-line {
-      font-family: 'Courier New', monospace;
       font-size: 18px;
-      color: #fff;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
-      line-height: 1.5;
+      color: #ffffff;
       text-align: center;
-      transition: opacity 0.2s ease;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      max-width: 80%;
     }
+    .caption-line.current { opacity: 1; font-weight: 500; }
+    .caption-line.next { opacity: 0.6; font-size: 16px; }
+    .caption-line.future { opacity: 0.3; font-size: 14px; }
 
-    .caption-line.current { opacity: 1; }
-    .caption-line.next { opacity: 0.5; }
-    .caption-line.future { opacity: 0.25; }
+    /* Title Card */
+    .title-card {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.85);
+      opacity: 0;
+      transition: opacity 0.5s;
+    }
+    .title-card.visible { display: flex; opacity: 1; }
+    .title-card-name { font-size: 28px; font-weight: 600; color: #ffffff; margin-bottom: 8px; }
+    .title-card-meta { font-size: 16px; color: rgba(255,255,255,0.7); }
 
-    /* Controls */
+    /* Video Controls */
     .controls {
+      background: var(--color-800);
       padding: 12px 16px;
-      background: var(--bg-controls);
-      border-top: 1px solid var(--border-muted);
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
 
-    .controls-row { display: flex; align-items: center; gap: 12px; }
-
-    .control-btn {
+    .ctrl-btn {
       appearance: none;
       border: none;
       background: transparent;
-      color: var(--text-muted);
+      color: rgba(255,255,255,0.8);
       width: 36px;
       height: 36px;
       border-radius: 8px;
       cursor: pointer;
-      transition: all 0.15s ease;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 0;
+      transition: all 0.15s;
     }
+    .ctrl-btn:hover { background: rgba(255,255,255,0.1); color: #ffffff; }
+    .ctrl-btn svg { width: 20px; height: 20px; fill: currentColor; }
+    .ctrl-btn.play-btn { width: 42px; height: 42px; }
+    .ctrl-btn.play-btn svg { width: 24px; height: 24px; }
 
-    .control-btn:hover { color: var(--text-light); background: rgba(255,255,255,0.08); }
-    .control-btn:active { transform: scale(0.94); }
-    .control-btn svg { width: 20px; height: 20px; fill: currentColor; }
-
-    .control-btn.play-btn {
-      width: 44px;
-      height: 44px;
-      background: var(--accent);
-      color: #fff;
-      border-radius: 50%;
-    }
-
-    .control-btn.play-btn:hover { background: var(--accent-hover); }
-    .control-btn.play-btn svg { width: 22px; height: 22px; }
-
-    .progress-container { flex: 1; display: flex; align-items: center; gap: 10px; }
-
-    .time-display {
-      font-size: 11px;
-      font-family: 'SF Mono', monospace;
-      color: var(--text-muted);
-      min-width: 42px;
-      text-align: center;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .progress-wrapper { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+    .progress-area { flex: 1; display: flex; align-items: center; gap: 10px; }
+    .time-label { font-size: 12px; color: rgba(255,255,255,0.7); font-variant-numeric: tabular-nums; min-width: 50px; }
+    .time-label:last-child { text-align: right; }
 
     .progress-track {
-      height: 4px;
-      background: rgba(255,255,255,0.15);
-      border-radius: 2px;
-      cursor: pointer;
+      flex: 1;
+      height: 6px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 3px;
       position: relative;
-      overflow: hidden;
+      cursor: pointer;
     }
-
-    .progress-track:hover { height: 6px; }
-
     .progress-fill {
-      position: absolute;
-      top: 0;
-      left: 0;
       height: 100%;
-      background: var(--accent);
-      border-radius: 2px;
-      width: 0%;
+      background: #ffffff;
+      border-radius: 3px;
+      width: 0;
       pointer-events: none;
     }
-
     .progress-input {
       position: absolute;
-      top: 0;
-      left: 0;
+      inset: 0;
       width: 100%;
       height: 100%;
       opacity: 0;
@@ -487,67 +483,22 @@
       margin: 0;
     }
 
-    /* Clip Timeline */
-    .clip-timeline {
-      height: 20px;
-      background: rgba(255,255,255,0.05);
-      border-radius: 3px;
-      position: relative;
-      display: none;
-    }
-
-    .clip-timeline.has-clips { display: block; }
-
-    .clip-marker {
-      position: absolute;
-      top: 2px;
-      bottom: 2px;
-      background: var(--clip-color);
-      border-radius: 2px;
-      cursor: pointer;
-      opacity: 0.7;
-      transition: opacity 0.15s ease;
-    }
-
-    .clip-marker:hover { opacity: 1; }
-    .clip-marker.active { opacity: 1; box-shadow: 0 0 0 2px var(--clip-color); }
-
-    .volume-control { display: flex; align-items: center; gap: 6px; }
-
-    .volume-btn {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
-      width: 32px;
-      height: 32px;
-      border-radius: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0;
-    }
-
-    .volume-btn:hover { color: var(--text-light); }
-    .volume-btn svg { width: 18px; height: 18px; fill: currentColor; }
-
+    .volume-area { display: flex; align-items: center; gap: 6px; }
     .volume-slider {
       width: 70px;
       height: 4px;
       -webkit-appearance: none;
       appearance: none;
-      background: rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.3);
       border-radius: 2px;
-      outline: none;
+      cursor: pointer;
     }
-
     .volume-slider::-webkit-slider-thumb {
       -webkit-appearance: none;
       width: 12px;
       height: 12px;
+      background: #ffffff;
       border-radius: 50%;
-      background: var(--text-light);
       cursor: pointer;
     }
 
@@ -556,51 +507,41 @@
       flex: 1;
       display: flex;
       flex-direction: column;
-      background: var(--bg-document);
-      min-width: 0;
-      overflow: hidden;
+      background: var(--color-100);
+      border-left: 1px solid var(--border);
     }
 
-    .caption-mode .document-pane { display: none; }
-
-    .document-header {
-      padding: 10px 20px;
-      background: var(--bg-app);
-      border-bottom: 1px solid var(--border-muted);
+    .doc-header {
+      padding: 12px 20px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
     }
 
-    .page-indicator { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+    .page-info { font-size: 13px; color: var(--text-secondary); }
 
     .page-nav { display: flex; gap: 6px; }
-
-    .page-nav button {
+    .page-btn {
       appearance: none;
-      border: 1px solid var(--border-muted);
-      background: transparent;
-      color: var(--text-muted);
-      padding: 5px 12px;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      color: var(--text-secondary);
+      width: 32px;
+      height: 32px;
       border-radius: 6px;
-      font-size: 12px;
       cursor: pointer;
-      transition: all 0.15s ease;
       display: flex;
       align-items: center;
-      gap: 4px;
+      justify-content: center;
+      transition: all 0.15s;
     }
+    .page-btn:hover:not(:disabled) { border-color: var(--color-300); color: var(--text-primary); }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .page-btn svg { width: 16px; height: 16px; fill: currentColor; }
 
-    .page-nav button:hover:not(:disabled) {
-      background: rgba(255,255,255,0.05);
-      border-color: var(--text-muted);
-      color: var(--text-light);
-    }
-
-    .page-nav button:disabled { opacity: 0.3; cursor: not-allowed; }
-    .page-nav button svg { width: 14px; height: 14px; fill: currentColor; }
-
-    .document-scroll {
+    .doc-scroll {
       flex: 1;
       overflow-y: auto;
       padding: 24px;
@@ -613,119 +554,80 @@
       width: var(--page-width);
       max-width: 100%;
       background: var(--bg-page);
-      box-shadow: var(--shadow-page);
-      border-radius: 3px;
-      margin-bottom: 24px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      box-shadow: var(--shadow-lg);
       padding: var(--page-margin-top) var(--page-margin-right) var(--page-margin-bottom) var(--page-margin-left);
       display: none;
     }
-
     .doc-page.active { display: block; }
-
-    .doc-lines {
-      font-family: 'Courier New', monospace;
-      font-size: var(--font-size);
-      line-height: var(--line-height);
-      color: var(--text-primary);
-    }
 
     .doc-line {
       display: flex;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: var(--font-size);
+      line-height: var(--line-height);
       cursor: pointer;
-      transition: background 0.12s ease;
-      margin: 0;
-      padding: 0;
       border-radius: 2px;
+      margin: 0 calc(-1 * var(--line-number-width) - 8px) 0 -8px;
+      padding: 0 8px 0 calc(var(--line-number-width) + 8px);
+      transition: background 0.1s;
     }
+    .doc-line:hover { background: var(--color-100); }
+    .doc-line.active { background: var(--amber-100); }
+    .doc-line.search-match { background: var(--amber-100); }
+    .doc-line.search-current { background: var(--amber-300); }
 
-    .doc-line:hover { background: rgba(47, 129, 247, 0.06); }
-    .doc-line.current { background: var(--accent-highlight); }
-    .doc-line.selected { background: rgba(35, 134, 54, 0.15); }
-
-    .doc-line-number {
+    .line-num {
       width: var(--line-number-width);
-      min-width: var(--line-number-width);
+      margin-left: calc(-1 * var(--line-number-width));
+      flex-shrink: 0;
+      color: var(--text-muted);
+      font-size: 10px;
       text-align: right;
       padding-right: 12px;
-      color: var(--text-secondary);
-      font-weight: 400;
       user-select: none;
-      font-variant-numeric: tabular-nums;
     }
 
-    .doc-line.current .doc-line-number { color: var(--accent); font-weight: 500; }
-    .doc-line-text { flex: 1; white-space: pre; overflow: visible; }
-    .doc-empty { text-align: center; padding: 48px; color: var(--text-muted); font-style: italic; }
+    .line-text {
+      flex: 1;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text-primary);
+    }
 
-    /* Sidebar Toggle (when collapsed) */
-    .sidebar-expand {
-      position: fixed;
-      left: 12px;
-      top: 12px;
-      z-index: 60;
-      appearance: none;
-      border: 1px solid var(--border-muted);
-      background: var(--bg-app);
+    .doc-empty {
+      text-align: center;
+      padding: 48px;
       color: var(--text-muted);
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      cursor: pointer;
-      display: none;
-      align-items: center;
-      justify-content: center;
     }
 
-    .sidebar-expand:hover { color: var(--text-light); background: var(--bg-sidebar); }
-    .sidebar-expand svg { width: 18px; height: 18px; fill: currentColor; }
-    .sidebar.collapsed ~ .main-content .sidebar-expand { display: flex; }
-
-    /* Fullscreen styles */
+    /* Fullscreen */
     .app.fullscreen .sidebar,
-    .app.fullscreen .document-pane,
-    .app.fullscreen .sidebar-expand { display: none !important; }
-
+    .app.fullscreen .main-header,
+    .app.fullscreen .document-pane { display: none !important; }
     .app.fullscreen .video-pane { flex: 1; }
-    .app.fullscreen .controls { display: none; }
-    .app.fullscreen .video-container { cursor: none; }
-
-    /* Hidden file inputs */
-    .hidden-input { display: none; }
+    .app.fullscreen .controls { background: transparent; position: absolute; bottom: 0; left: 0; right: 0; opacity: 0; transition: opacity 0.3s; }
+    .app.fullscreen:hover .controls { opacity: 1; }
 
     /* Responsive */
-    @media (max-width: 1200px) {
+    @media (max-width: 1024px) {
       .content-area { flex-direction: column; }
-      .video-pane { flex: 0 0 40vh; }
-      .document-pane { flex: 1; }
-      .doc-page { width: 100%; }
-      .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 100; }
-      .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-width)); }
+      .video-pane { flex: 0 0 45vh; }
+      .document-pane { flex: 1; border-left: none; border-top: 1px solid var(--border); }
+      .sidebar { position: fixed; left: 0; top: 0; bottom: 0; box-shadow: var(--shadow-lg); }
     }
 
-    @media (max-width: 768px) {
-      .document-scroll { padding: 16px; }
-      :root {
-        --page-margin-left: 0.5in;
-        --page-margin-right: 0.25in;
-        --font-size: 10pt;
-        --sidebar-width: 280px;
-      }
-    }
+    /* Hidden */
+    .hidden { display: none !important; }
 
     /* Print */
     @media print {
-      .video-pane, .controls, .sidebar, .document-header { display: none !important; }
-      .document-pane { overflow: visible; }
-      .document-scroll { padding: 0; overflow: visible; }
-      .doc-page { display: block !important; box-shadow: none; page-break-after: always; margin: 0; }
-      .doc-line.current, .doc-line.selected { background: none; }
+      .video-pane, .controls, .sidebar, .main-header, .doc-header { display: none !important; }
+      .document-pane { border: none; }
+      .doc-scroll { padding: 0; }
+      .doc-page { box-shadow: none; border: none; display: block !important; page-break-after: always; }
     }
-
-    /* Scrollbar */
-    .document-scroll::-webkit-scrollbar, .sidebar-content::-webkit-scrollbar { width: 8px; }
-    .document-scroll::-webkit-scrollbar-track, .sidebar-content::-webkit-scrollbar-track { background: transparent; }
-    .document-scroll::-webkit-scrollbar-thumb, .sidebar-content::-webkit-scrollbar-thumb { background: var(--border-muted); border-radius: 4px; }
-    .document-scroll::-webkit-scrollbar-thumb:hover, .sidebar-content::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
   </style>
 </head>
 <body>
@@ -733,880 +635,660 @@
     <aside class="sidebar collapsed" id="sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
-          Transcript
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
+          Transcript Tools
         </span>
-        <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
-          <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+        <button type="button" class="sidebar-close" id="sidebarClose" aria-label="Close sidebar">
+          <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
       <div class="sidebar-content">
-        <!-- Search -->
-        <div class="search-container">
-          <input type="text" class="search-input" id="searchInput" placeholder="Search transcript..." />
-          <div class="search-nav" id="searchNav" style="display: none;">
+        <div class="search-box">
+          <input type="text" class="search-input" id="searchInput" placeholder="Search transcript...">
+          <div class="search-controls" id="searchControls">
             <span class="search-count" id="searchCount">0/0</span>
-            <button type="button" class="search-nav-btn" id="searchPrev" title="Previous (Shift+Enter)">
-              <svg viewBox="0 0 24 24"><path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
-            </button>
-            <button type="button" class="search-nav-btn" id="searchNext" title="Next (Enter)">
-              <svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
-            </button>
-            <button type="button" class="search-nav-btn" id="searchClear" title="Clear">
-              <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-            </button>
+            <button type="button" class="search-btn" id="searchPrev" title="Previous"><svg viewBox="0 0 24 24"><path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg></button>
+            <button type="button" class="search-btn" id="searchNext" title="Next"><svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg></button>
+            <button type="button" class="search-btn" id="searchClear" title="Clear"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
           </div>
         </div>
 
-        <!-- Clip Creator -->
-        <div class="clip-creator" id="clipCreator">
+        <div class="clip-creator">
           <div class="clip-creator-title">Create Clip</div>
-          <div class="clip-creator-row">
-            <input type="text" class="clip-creator-input" id="newClipName" placeholder="Clip name">
+          <div class="clip-row">
+            <input type="text" class="clip-input" id="clipName" placeholder="Clip name">
           </div>
-          <div class="clip-creator-row">
-            <input type="text" class="clip-creator-input clip-creator-time" id="newClipStart" placeholder="0:00" title="Start time">
-            <span style="color: var(--text-muted);">to</span>
-            <input type="text" class="clip-creator-input clip-creator-time" id="newClipEnd" placeholder="0:00" title="End time">
+          <div class="clip-row">
+            <input type="text" class="clip-input clip-time" id="clipStart" placeholder="0:00">
+            <span style="color: var(--text-muted); font-size: 12px;">to</span>
+            <input type="text" class="clip-input clip-time" id="clipEnd" placeholder="0:00">
           </div>
-          <div class="clip-creator-actions">
-            <button type="button" class="sidebar-btn" id="setClipStart" title="Set start to current time">Set Start</button>
-            <button type="button" class="sidebar-btn" id="setClipEnd" title="Set end to current time">Set End</button>
-            <button type="button" class="sidebar-btn primary" id="addClipBtn">Add Clip</button>
+          <div class="clip-actions">
+            <button type="button" class="btn" id="setStart">Set Start</button>
+            <button type="button" class="btn" id="setEnd">Set End</button>
+            <button type="button" class="btn btn-primary" id="addClip">Add</button>
           </div>
         </div>
 
         <div class="sidebar-section">
-          <div class="sidebar-section-header">
-            <span class="sidebar-section-title">Clips</span>
-          </div>
+          <div class="section-title">Clips</div>
           <div class="btn-row">
-            <button type="button" class="sidebar-btn" id="importClipsBtn" title="Import clips from JSON">
-              <svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm0-10h4v6h6v-6h4l-7-7-7 7z"/></svg>
-              Import
-            </button>
-            <button type="button" class="sidebar-btn" id="exportClipsBtn" title="Export clips to JSON">
-              <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-              Export
-            </button>
+            <button type="button" class="btn" id="importClips"><svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm0-10h4v6h6v-6h4l-7-7-7 7z"/></svg>Import</button>
+            <button type="button" class="btn" id="exportClips"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>Export</button>
           </div>
-          <div id="clipsList" class="clips-list">
-            <div class="no-clips">No clips yet. Create one above!</div>
+          <div class="clips-list" id="clipsList">
+            <div class="no-clips">No clips yet</div>
           </div>
         </div>
 
         <div class="sidebar-section">
-          <div class="sidebar-section-header">
-            <span class="sidebar-section-title">Sources</span>
-          </div>
+          <div class="section-title">Sources</div>
           <div class="btn-row">
-            <button type="button" class="sidebar-btn" id="importSourceBtn" title="Import another viewer HTML">
-              <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              Add Source
-            </button>
+            <button type="button" class="btn" id="importSource"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add Source</button>
           </div>
-          <div id="sourcesList" class="sources-list"></div>
+          <div id="sourcesList"></div>
         </div>
 
         <div class="sidebar-section">
-          <div class="sidebar-section-header">
-            <span class="sidebar-section-title">Settings</span>
-          </div>
+          <div class="section-title">Settings</div>
           <div class="setting-row">
             <span>View mode</span>
             <div class="view-toggle">
-              <button type="button" class="view-toggle-btn active" data-view="document">Doc</button>
-              <button type="button" class="view-toggle-btn" data-view="caption">Caption</button>
+              <button type="button" class="view-btn active" data-view="document">Doc</button>
+              <button type="button" class="view-btn" data-view="caption">Caption</button>
             </div>
           </div>
           <div class="setting-row">
-            <span>Show title cards</span>
-            <div class="setting-toggle" id="titleCardsToggle" title="Show 3-second title card before clips"></div>
+            <span>Title cards</span>
+            <div class="setting-toggle" id="titleCardToggle"></div>
           </div>
         </div>
       </div>
     </aside>
 
     <div class="main-content">
-      <button type="button" class="sidebar-expand" id="sidebarExpand" aria-label="Open sidebar">
-        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
-      </button>
+      <div class="main-header">
+        <button type="button" class="menu-btn" id="menuBtn" aria-label="Open menu">
+          <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        </button>
+        <div class="header-title" id="headerTitle">Transcript Viewer</div>
+        <button type="button" class="menu-btn" id="fullscreenBtn" aria-label="Fullscreen">
+          <svg viewBox="0 0 24 24" id="fsIcon"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+        </button>
+      </div>
 
-      <div class="content-area" id="contentArea">
+      <div class="content-area">
         <div class="video-pane" id="videoPane">
           <div class="video-container">
-            <video id="mediaPlayer" preload="metadata" playsinline></video>
+            <video id="video" preload="metadata" playsinline></video>
+            <div class="caption-overlay">
+              <div class="caption-line current" id="caption1"></div>
+              <div class="caption-line next" id="caption2"></div>
+              <div class="caption-line future" id="caption3"></div>
+            </div>
             <div class="title-card" id="titleCard">
               <div class="title-card-name" id="titleCardName"></div>
               <div class="title-card-meta" id="titleCardMeta"></div>
             </div>
-            <div class="caption-overlay" id="captionOverlay">
-              <div class="caption-line current" id="captionCurrent"></div>
-              <div class="caption-line next" id="captionNext"></div>
-              <div class="caption-line future" id="captionFuture"></div>
-            </div>
           </div>
-          <div class="controls" id="controls">
-            <div class="controls-row">
-              <button type="button" class="control-btn" id="rewindBtn" aria-label="Rewind 10s">
-                <svg viewBox="0 0 24 24"><path d="M12.5 3C17.15 3 21.08 6.03 22.47 10.22L20.1 11C19.05 7.81 16.04 5.5 12.5 5.5C10.54 5.5 8.77 6.22 7.38 7.38L10 10H3V3L5.6 5.6C7.45 4 9.85 3 12.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
-              </button>
-              <button type="button" class="control-btn play-btn" id="playBtn" aria-label="Play">
-                <svg viewBox="0 0 24 24" id="playIcon"><polygon points="5,3 19,12 5,21"/></svg>
-              </button>
-              <button type="button" class="control-btn" id="forwardBtn" aria-label="Forward 10s">
-                <svg viewBox="0 0 24 24"><path d="M11.5 3C6.85 3 2.92 6.03 1.53 10.22L3.9 11C4.95 7.81 7.96 5.5 11.5 5.5C13.46 5.5 15.23 6.22 16.62 7.38L14 10H21V3L18.4 5.6C16.55 4 14.15 3 11.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
-              </button>
-              <div class="progress-container">
-                <span class="time-display" id="currentTime">0:00</span>
-                <div class="progress-wrapper">
-                  <div class="progress-track">
-                    <div class="progress-fill" id="progressFill"></div>
-                    <input type="range" class="progress-input" id="progressBar" min="0" max="100" step="0.1" value="0" />
-                  </div>
-                  <div class="clip-timeline" id="clipTimeline"></div>
-                </div>
-                <span class="time-display" id="totalDuration">0:00</span>
+          <div class="controls">
+            <button type="button" class="ctrl-btn" id="rewindBtn"><svg viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg></button>
+            <button type="button" class="ctrl-btn play-btn" id="playBtn"><svg viewBox="0 0 24 24" id="playIcon"><polygon points="5,3 19,12 5,21"/></svg></button>
+            <button type="button" class="ctrl-btn" id="forwardBtn"><svg viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg></button>
+            <div class="progress-area">
+              <span class="time-label" id="currentTime">0:00</span>
+              <div class="progress-track">
+                <div class="progress-fill" id="progressFill"></div>
+                <input type="range" class="progress-input" id="progressBar" min="0" max="100" step="0.1" value="0">
               </div>
-              <div class="volume-control">
-                <button type="button" class="volume-btn" id="volumeBtn" aria-label="Mute">
-                  <svg viewBox="0 0 24 24" id="volumeIcon"><path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>
-                </button>
-                <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
-              </div>
-              <button type="button" class="control-btn" id="fullscreenBtn" aria-label="Fullscreen">
-                <svg viewBox="0 0 24 24" id="fullscreenIcon"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
-              </button>
+              <span class="time-label" id="duration">0:00</span>
+            </div>
+            <div class="volume-area">
+              <button type="button" class="ctrl-btn" id="muteBtn"><svg viewBox="0 0 24 24" id="volIcon"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg></button>
+              <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1">
             </div>
           </div>
         </div>
 
         <div class="document-pane" id="documentPane">
-          <div class="document-header">
-            <span class="page-indicator" id="pageIndicator">Page 1 of 1</span>
+          <div class="doc-header">
+            <span class="page-info" id="pageInfo">Page 1 of 1</span>
             <div class="page-nav">
-              <button type="button" id="prevPageBtn" disabled>
-                <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
-                Prev
-              </button>
-              <button type="button" id="nextPageBtn" disabled>
-                Next
-                <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
-              </button>
+              <button type="button" class="page-btn" id="prevPage" disabled><svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>
+              <button type="button" class="page-btn" id="nextPage" disabled><svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>
             </div>
           </div>
-          <div class="document-scroll" id="documentScroll">
-            <div id="pagesContainer">
-              <div class="doc-empty">Loading transcript...</div>
-            </div>
+          <div class="doc-scroll" id="docScroll">
+            <div id="pages"></div>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Hidden file inputs -->
-  <input type="file" class="hidden-input" id="importSourceInput" accept=".html,.htm">
-  <input type="file" class="hidden-input" id="importClipsInput" accept=".json">
+  <input type="file" class="hidden" id="importSourceFile" accept=".html,.htm">
+  <input type="file" class="hidden" id="importClipsFile" accept=".json">
 
   <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
   <script>
 (function() {
+  'use strict';
+
+  // Parse payload
   const dataEl = document.getElementById('transcript-data');
   let payload = {};
-  try { payload = JSON.parse(dataEl.textContent || '{}'); } catch(e) { console.error('Parse error', e); }
-  dataEl.remove();
+  try {
+    const raw = dataEl ? dataEl.textContent : '{}';
+    if (raw && raw !== '__TRANSCRIPT_JSON__') payload = JSON.parse(raw);
+  } catch(e) { console.error('JSON parse error:', e); }
+  if (dataEl) dataEl.remove();
+
+  // Data
+  const allLines = Array.isArray(payload.lines) ? payload.lines : [];
+  const meta = payload.meta || {};
+  const titleData = meta.title || {};
+  const mediaMeta = payload.media || {};
+  const durationSec = Number(meta.duration_seconds) || 0;
+  const linesPerPage = Number(meta.lines_per_page) || 25;
+  const mediaPath = mediaMeta.relative_path || mediaMeta.filename || '';
 
   // Elements
-  const app = document.getElementById('app');
-  const sidebar = document.getElementById('sidebar');
-  const sidebarToggle = document.getElementById('sidebarToggle');
-  const sidebarExpand = document.getElementById('sidebarExpand');
-  const video = document.getElementById('mediaPlayer');
-  const playBtn = document.getElementById('playBtn');
-  const playIcon = document.getElementById('playIcon');
-  const rewindBtn = document.getElementById('rewindBtn');
-  const forwardBtn = document.getElementById('forwardBtn');
-  const progressBar = document.getElementById('progressBar');
-  const progressFill = document.getElementById('progressFill');
-  const currentTimeEl = document.getElementById('currentTime');
-  const totalDurationEl = document.getElementById('totalDuration');
-  const volumeSlider = document.getElementById('volumeSlider');
-  const volumeBtn = document.getElementById('volumeBtn');
-  const volumeIcon = document.getElementById('volumeIcon');
-  const fullscreenBtn = document.getElementById('fullscreenBtn');
-  const fullscreenIcon = document.getElementById('fullscreenIcon');
-  const pageIndicator = document.getElementById('pageIndicator');
-  const prevPageBtn = document.getElementById('prevPageBtn');
-  const nextPageBtn = document.getElementById('nextPageBtn');
-  const pagesContainer = document.getElementById('pagesContainer');
-  const documentScroll = document.getElementById('documentScroll');
-  const videoPane = document.getElementById('videoPane');
-  const clipsList = document.getElementById('clipsList');
-  const clipTimeline = document.getElementById('clipTimeline');
-  const captionCurrent = document.getElementById('captionCurrent');
-  const captionNext = document.getElementById('captionNext');
-  const captionFuture = document.getElementById('captionFuture');
-  const titleCard = document.getElementById('titleCard');
-  const titleCardName = document.getElementById('titleCardName');
-  const titleCardMeta = document.getElementById('titleCardMeta');
-  const sourcesList = document.getElementById('sourcesList');
+  const $ = id => document.getElementById(id);
+  const app = $('app');
+  const sidebar = $('sidebar');
+  const menuBtn = $('menuBtn');
+  const sidebarClose = $('sidebarClose');
+  const video = $('video');
+  const playBtn = $('playBtn');
+  const playIcon = $('playIcon');
+  const rewindBtn = $('rewindBtn');
+  const forwardBtn = $('forwardBtn');
+  const progressBar = $('progressBar');
+  const progressFill = $('progressFill');
+  const currentTimeEl = $('currentTime');
+  const durationEl = $('duration');
+  const muteBtn = $('muteBtn');
+  const volIcon = $('volIcon');
+  const volumeSlider = $('volumeSlider');
+  const fullscreenBtn = $('fullscreenBtn');
+  const fsIcon = $('fsIcon');
+  const videoPane = $('videoPane');
+  const pageInfo = $('pageInfo');
+  const prevPage = $('prevPage');
+  const nextPage = $('nextPage');
+  const pages = $('pages');
+  const docScroll = $('docScroll');
+  const headerTitle = $('headerTitle');
+  const caption1 = $('caption1');
+  const caption2 = $('caption2');
+  const caption3 = $('caption3');
+  const titleCard = $('titleCard');
+  const titleCardName = $('titleCardName');
+  const titleCardMeta = $('titleCardMeta');
+  const searchInput = $('searchInput');
+  const searchControls = $('searchControls');
+  const searchCount = $('searchCount');
+  const searchPrev = $('searchPrev');
+  const searchNext = $('searchNext');
+  const searchClear = $('searchClear');
+  const clipName = $('clipName');
+  const clipStart = $('clipStart');
+  const clipEnd = $('clipEnd');
+  const setStartBtn = $('setStart');
+  const setEndBtn = $('setEnd');
+  const addClipBtn = $('addClip');
+  const clipsList = $('clipsList');
+  const importClipsBtn = $('importClips');
+  const exportClipsBtn = $('exportClips');
+  const importSourceBtn = $('importSource');
+  const sourcesList = $('sourcesList');
+  const titleCardToggle = $('titleCardToggle');
+  const importSourceFile = $('importSourceFile');
+  const importClipsFile = $('importClipsFile');
 
-  // Clip creator elements
-  const newClipName = document.getElementById('newClipName');
-  const newClipStart = document.getElementById('newClipStart');
-  const newClipEnd = document.getElementById('newClipEnd');
-  const setClipStartBtn = document.getElementById('setClipStart');
-  const setClipEndBtn = document.getElementById('setClipEnd');
-  const addClipBtn = document.getElementById('addClipBtn');
-
-  // Import/export elements
-  const importSourceBtn = document.getElementById('importSourceBtn');
-  const importSourceInput = document.getElementById('importSourceInput');
-  const importClipsBtn = document.getElementById('importClipsBtn');
-  const importClipsInput = document.getElementById('importClipsInput');
-  const exportClipsBtn = document.getElementById('exportClipsBtn');
-  const titleCardsToggle = document.getElementById('titleCardsToggle');
-
-  // Search elements
-  const searchInput = document.getElementById('searchInput');
-  const searchNav = document.getElementById('searchNav');
-  const searchCount = document.getElementById('searchCount');
-  const searchPrev = document.getElementById('searchPrev');
-  const searchNext = document.getElementById('searchNext');
-  const searchClear = document.getElementById('searchClear');
+  // State
+  let clips = [];
+  let sources = [{ id: 'primary', name: titleData.FILE_NAME || 'Primary', lines: allLines }];
+  let currentPage = 0;
+  let pageEls = [];
+  let lineEls = new Map();
+  let activeLineIdx = -1;
+  let activeClip = null;
+  let viewMode = 'document';
+  let showTitleCards = false;
+  let searchMatches = [];
+  let searchIdx = -1;
+  let isFullscreen = false;
 
   // Icons
   const icons = {
     play: '<polygon points="5,3 19,12 5,21"/>',
-    pause: '<path d="M6,4H10V20H6M14,4H18V20H14Z"/>',
-    volHigh: '<path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>',
-    volMed: '<path d="M5,9V15H9L14,20V4L9,9M18.5,12C18.5,10.23 17.5,8.71 16,7.97V16C17.5,15.29 18.5,13.76 18.5,12Z"/>',
-    volMute: '<path d="M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.63,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.52C15.58,18.04 14.83,18.45 14,18.7V20.77C15.38,20.45 16.63,19.81 17.69,18.95L19.73,21L21,19.73L12,10.73M12,4L9.91,6.09L12,8.18Z"/>',
+    pause: '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>',
+    volHigh: '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>',
+    volMute: '<path d="M16.5 12A4.5 4.5 0 0014 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>',
     fsEnter: '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>',
     fsExit: '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>',
-    delete: '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>'
+    del: '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>'
   };
 
-  // Data
-  const allLines = Array.isArray(payload.lines) ? payload.lines : [];
-  const titleData = (payload.meta && payload.meta.title) || {};
-  const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
-  const linesPerPage = Number(payload.meta && payload.meta.lines_per_page) || 25;
-  const mediaData = payload.media || {};
-  const mediaFilename = mediaData.relative_path || mediaData.filename || 'media.mp4';
-  const primarySourceName = titleData.FILE_NAME || mediaFilename.split('/').pop().split('\\').pop();
-
-  // State
-  let clips = Array.isArray(payload.clips) ? [...payload.clips] : [];
-  let sources = [{ id: 'primary', name: primarySourceName, mediaPath: mediaFilename, lines: allLines, titleData }];
-  let currentSourceId = 'primary';
-  let currentPageIndex = 0;
-  let activeLineIndex = -1;
-  let viewMode = 'document';
-  let isFullscreen = false;
-  let activeClip = null;
-  let showTitleCards = false;
-  const lineElements = new Map();
-  const pageElements = [];
-  let allPages = [];
-
-  // Setup video with fallback sources
-  function setupVideoSources() {
-    video.innerHTML = '';
-    const paths = [mediaFilename];
-    const justFilename = mediaFilename.split('/').pop().split('\\').pop();
-    if (justFilename !== mediaFilename) paths.push(justFilename);
-    paths.forEach(src => {
-      const sourceEl = document.createElement('source');
-      sourceEl.src = src;
-      if (mediaData.content_type) sourceEl.type = mediaData.content_type;
-      video.appendChild(sourceEl);
-    });
-    video.load();
-  }
-  setupVideoSources();
-
-  document.title = (titleData.CASE_NAME || titleData.FILE_NAME || 'Transcript') + ' - Viewer';
-
-  // Utilities
-  function formatTime(sec) {
-    if (!Number.isFinite(sec)) return '0:00';
-    const t = Math.max(0, Math.floor(sec));
-    const h = Math.floor(t / 3600);
-    const m = Math.floor((t % 3600) / 60);
-    const s = t % 60;
-    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+  // Utils
+  function fmt(sec) {
+    if (!Number.isFinite(sec) || sec < 0) return '0:00';
+    const s = Math.floor(sec);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}` : `${m}:${String(ss).padStart(2,'0')}`;
   }
 
   function parseTime(str) {
     if (!str) return 0;
-    const parts = str.trim().split(':').map(Number);
-    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return parts[0] || 0;
+    const p = str.trim().split(':').map(Number);
+    if (p.length === 3) return p[0]*3600 + p[1]*60 + p[2];
+    if (p.length === 2) return p[0]*60 + p[1];
+    return p[0] || 0;
   }
 
-  function updateVolumeIcon(vol) {
-    volumeIcon.innerHTML = vol === 0 ? icons.volMute : vol < 0.5 ? icons.volMed : icons.volHigh;
-  }
-
-  // View mode
-  function setViewMode(mode) {
-    viewMode = mode;
-    videoPane.classList.toggle('caption-mode', mode === 'caption');
-    document.querySelectorAll('.view-toggle-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.view === mode));
-    if (mode === 'caption') updateCaptions();
-  }
-
-  document.querySelectorAll('.view-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', () => setViewMode(btn.dataset.view));
-  });
-
-  // Sidebar
-  sidebarToggle.addEventListener('click', () => sidebar.classList.add('collapsed'));
-  sidebarExpand.addEventListener('click', () => sidebar.classList.remove('collapsed'));
-
-  // Fullscreen
-  function toggleFullscreen() {
-    if (!document.fullscreenElement) app.requestFullscreen().catch(() => {});
-    else document.exitFullscreen();
-  }
-
-  document.addEventListener('fullscreenchange', () => {
-    isFullscreen = !!document.fullscreenElement;
-    app.classList.toggle('fullscreen', isFullscreen);
-    fullscreenIcon.innerHTML = isFullscreen ? icons.fsExit : icons.fsEnter;
-  });
-
-  fullscreenBtn.addEventListener('click', toggleFullscreen);
-
-  // Settings
-  titleCardsToggle.addEventListener('click', () => {
-    showTitleCards = !showTitleCards;
-    titleCardsToggle.classList.toggle('active', showTitleCards);
-  });
-
-  // Search
-  let searchMatches = [];
-  let searchCurrentIndex = -1;
-
-  function performSearch(query) {
-    // Clear previous matches
-    document.querySelectorAll('.doc-line.search-match, .doc-line.search-current').forEach(el => {
-      el.classList.remove('search-match', 'search-current');
+  // Setup video
+  function setupVideo() {
+    if (!mediaPath) return;
+    const paths = [mediaPath];
+    const fname = mediaPath.split('/').pop().split('\\').pop();
+    if (fname !== mediaPath) paths.push(fname);
+    paths.forEach(src => {
+      const s = document.createElement('source');
+      s.src = src;
+      if (mediaMeta.content_type) s.type = mediaMeta.content_type;
+      video.appendChild(s);
     });
-    searchMatches = [];
-    searchCurrentIndex = -1;
-
-    if (!query.trim()) {
-      searchNav.style.display = 'none';
-      return;
-    }
-
-    const lowerQuery = query.toLowerCase();
-    allLines.forEach((line, idx) => {
-      const text = (line.rendered_text || line.text || '').toLowerCase();
-      if (text.includes(lowerQuery)) {
-        searchMatches.push(idx);
-        const el = lineElements.get(idx);
-        if (el) el.classList.add('search-match');
-      }
-    });
-
-    if (searchMatches.length) {
-      searchNav.style.display = 'flex';
-      goToSearchResult(0);
-    } else {
-      searchNav.style.display = 'flex';
-      searchCount.textContent = '0/0';
-    }
+    video.load();
   }
 
-  function goToSearchResult(index) {
-    if (!searchMatches.length) return;
-    // Remove current highlight
-    if (searchCurrentIndex >= 0) {
-      const prevEl = lineElements.get(searchMatches[searchCurrentIndex]);
-      if (prevEl) prevEl.classList.remove('search-current');
-    }
-    // Wrap around
-    searchCurrentIndex = ((index % searchMatches.length) + searchMatches.length) % searchMatches.length;
-    const lineIndex = searchMatches[searchCurrentIndex];
-    const el = lineElements.get(lineIndex);
-    if (el) {
-      el.classList.add('search-current');
-      // Find page and navigate
-      for (let pi = 0; pi < allPages.length; pi++) {
-        if (allPages[pi].line_indexes.includes(lineIndex)) {
-          if (pi !== currentPageIndex) showPage(pi);
-          break;
-        }
-      }
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-    searchCount.textContent = `${searchCurrentIndex + 1}/${searchMatches.length}`;
-  }
-
-  function clearSearch() {
-    searchInput.value = '';
-    performSearch('');
-  }
-
-  searchInput.addEventListener('input', () => performSearch(searchInput.value));
-  searchInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (e.shiftKey) goToSearchResult(searchCurrentIndex - 1);
-      else goToSearchResult(searchCurrentIndex + 1);
-    } else if (e.key === 'Escape') {
-      clearSearch();
-      searchInput.blur();
-    }
-  });
-  searchPrev.addEventListener('click', () => goToSearchResult(searchCurrentIndex - 1));
-  searchNext.addEventListener('click', () => goToSearchResult(searchCurrentIndex + 1));
-  searchClear.addEventListener('click', clearSearch);
-
-  // Pages
+  // Build pages
   function buildPages() {
-    allPages = [];
-    if (!allLines.length) return;
-    const pageMap = new Map();
-    allLines.forEach((line, idx) => {
-      const pn = line.page_number || Math.floor(idx / linesPerPage) + 1;
-      if (!pageMap.has(pn)) pageMap.set(pn, []);
-      pageMap.get(pn).push(idx);
-    });
-    Array.from(pageMap.keys()).sort((a,b) => a-b).forEach(pn => {
-      allPages.push({ page_number: pn, line_indexes: pageMap.get(pn) });
-    });
-  }
-
-  function buildDocumentView() {
-    buildPages();
-    if (!allLines.length || !allPages.length) {
-      pagesContainer.innerHTML = '<div class="doc-empty">No transcript available</div>';
+    pages.innerHTML = '';
+    lineEls.clear();
+    pageEls = [];
+    if (!allLines.length) {
+      pages.innerHTML = '<div class="doc-empty">No transcript available</div>';
       return;
     }
-    pagesContainer.innerHTML = '';
-    lineElements.clear();
-    pageElements.length = 0;
 
-    allPages.forEach((page, pageIdx) => {
+    const pageMap = new Map();
+    allLines.forEach((ln, i) => {
+      const pn = ln.page_number || Math.floor(i / linesPerPage) + 1;
+      if (!pageMap.has(pn)) pageMap.set(pn, []);
+      pageMap.get(pn).push(i);
+    });
+
+    const pageNums = Array.from(pageMap.keys()).sort((a,b) => a-b);
+    pageNums.forEach((pn, pi) => {
       const pageEl = document.createElement('div');
-      pageEl.className = 'doc-page' + (pageIdx === 0 ? ' active' : '');
-      const linesEl = document.createElement('div');
-      linesEl.className = 'doc-lines';
+      pageEl.className = 'doc-page' + (pi === 0 ? ' active' : '');
 
-      page.line_indexes.forEach(lineIndex => {
-        const line = allLines[lineIndex];
-        if (!line) return;
-        const lineEl = document.createElement('div');
-        lineEl.className = 'doc-line';
-        lineEl.dataset.index = lineIndex;
+      pageMap.get(pn).forEach(idx => {
+        const ln = allLines[idx];
+        const row = document.createElement('div');
+        row.className = 'doc-line';
+        row.dataset.idx = idx;
 
-        const numEl = document.createElement('span');
-        numEl.className = 'doc-line-number';
-        numEl.textContent = line.line_number != null ? line.line_number : ((lineIndex % linesPerPage) + 1);
+        const num = document.createElement('span');
+        num.className = 'line-num';
+        num.textContent = ln.line_number || ((idx % linesPerPage) + 1);
 
-        const textEl = document.createElement('span');
-        textEl.className = 'doc-line-text';
-        textEl.textContent = line.rendered_text || line.text || '';
+        const txt = document.createElement('span');
+        txt.className = 'line-text';
+        txt.textContent = ln.rendered_text || ln.text || '';
 
-        lineEl.appendChild(numEl);
-        lineEl.appendChild(textEl);
-        linesEl.appendChild(lineEl);
-        lineElements.set(lineIndex, lineEl);
-
-        lineEl.addEventListener('click', () => {
-          if (typeof line.start === 'number') {
-            video.currentTime = Math.max(0, line.start - 0.05);
+        row.appendChild(num);
+        row.appendChild(txt);
+        row.addEventListener('click', () => {
+          if (typeof ln.start === 'number') {
+            video.currentTime = Math.max(0, ln.start - 0.05);
             if (video.paused) video.play().catch(() => {});
           }
         });
+
+        pageEl.appendChild(row);
+        lineEls.set(idx, row);
       });
 
-      pageEl.appendChild(linesEl);
-      pagesContainer.appendChild(pageEl);
-      pageElements.push(pageEl);
+      pages.appendChild(pageEl);
+      pageEls.push({ el: pageEl, lineIdxs: pageMap.get(pn) });
     });
 
-    updatePageIndicator();
-    updatePageButtons();
+    updatePageInfo();
   }
 
-  function showPage(index) {
-    if (index < 0 || index >= pageElements.length) return;
-    pageElements.forEach((el, i) => el.classList.toggle('active', i === index));
-    currentPageIndex = index;
-    updatePageIndicator();
-    updatePageButtons();
-    documentScroll.scrollTop = 0;
+  function showPage(idx) {
+    if (idx < 0 || idx >= pageEls.length) return;
+    pageEls.forEach((p, i) => p.el.classList.toggle('active', i === idx));
+    currentPage = idx;
+    updatePageInfo();
   }
 
-  function updatePageIndicator() {
-    pageIndicator.textContent = `Page ${currentPageIndex + 1} of ${pageElements.length || 1}`;
+  function updatePageInfo() {
+    pageInfo.textContent = `Page ${currentPage + 1} of ${pageEls.length || 1}`;
+    prevPage.disabled = currentPage <= 0;
+    nextPage.disabled = currentPage >= pageEls.length - 1;
   }
 
-  function updatePageButtons() {
-    prevPageBtn.disabled = currentPageIndex <= 0;
-    nextPageBtn.disabled = currentPageIndex >= pageElements.length - 1;
-  }
-
-  prevPageBtn.addEventListener('click', () => { if (currentPageIndex > 0) showPage(currentPageIndex - 1); });
-  nextPageBtn.addEventListener('click', () => { if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1); });
-
-  // Active line
-  function findActiveLine(time) {
-    if (!allLines.length) return -1;
+  // Find active line
+  function findLine(t) {
     for (let i = 0; i < allLines.length; i++) {
-      const line = allLines[i];
-      const start = Number(line.start) || 0;
-      const end = Number(line.end);
-      if (!Number.isFinite(end)) { if (time >= start && i === allLines.length - 1) return i; continue; }
-      if (time < start) return Math.max(0, i - 1);
-      if (time >= start && time < end) return i;
+      const ln = allLines[i];
+      if (t >= ln.start && t < ln.end) return i;
     }
-    return allLines.length - 1;
+    return -1;
   }
 
-  function setActiveLine(lineIndex) {
-    lineElements.forEach(el => el.classList.remove('current'));
-    if (lineIndex < 0 || lineIndex >= allLines.length) return;
-    const lineEl = lineElements.get(lineIndex);
-    if (lineEl) {
-      lineEl.classList.add('current');
-      for (let pi = 0; pi < allPages.length; pi++) {
-        if (allPages[pi].line_indexes.includes(lineIndex)) {
-          if (pi !== currentPageIndex) showPage(pi);
-          break;
-        }
-      }
-      lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  function setActiveLine(idx) {
+    if (activeLineIdx === idx) return;
+    if (activeLineIdx >= 0) {
+      const prev = lineEls.get(activeLineIdx);
+      if (prev) prev.classList.remove('active');
     }
-    activeLineIndex = lineIndex;
+    activeLineIdx = idx;
+    if (idx >= 0) {
+      const el = lineEls.get(idx);
+      if (el) {
+        el.classList.add('active');
+        // Find page
+        for (let p = 0; p < pageEls.length; p++) {
+          if (pageEls[p].lineIdxs.includes(idx)) {
+            if (p !== currentPage) showPage(p);
+            break;
+          }
+        }
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
   }
 
   // Captions
   function updateCaptions() {
     if (viewMode !== 'caption') return;
-    const idx = activeLineIndex >= 0 ? activeLineIndex : 0;
-    const curr = allLines[idx];
-    const next = allLines[idx + 1];
-    const future = allLines[idx + 2];
-
-    function getText(line) {
-      if (!line) return '';
-      const text = line.text || line.rendered_text || '';
-      const speaker = line.speaker || '';
-      return line.is_continuation ? text : (speaker ? `${speaker}: ${text}` : text);
-    }
-
-    captionCurrent.textContent = getText(curr);
-    captionNext.textContent = getText(next);
-    captionFuture.textContent = getText(future);
-  }
-
-  // Title card
-  function showTitleCardFor(clip, callback) {
-    if (!showTitleCards) { callback(); return; }
-    titleCardName.textContent = clip.name || 'Clip';
-    const source = sources.find(s => s.id === (clip.sourceId || 'primary'));
-    const meta = source ? source.name : '';
-    titleCardMeta.textContent = meta ? `${meta} - ${formatTime(clip.start)}` : formatTime(clip.start);
-    titleCard.classList.add('visible');
-    setTimeout(() => {
-      titleCard.classList.remove('visible');
-      setTimeout(callback, 500);
-    }, 3000);
-  }
-
-  // Clips
-  function buildClipsList() {
-    if (!clips.length) {
-      clipsList.innerHTML = '<div class="no-clips">No clips yet. Create one above!</div>';
-      clipTimeline.classList.remove('has-clips');
-      return;
-    }
-
-    clipsList.innerHTML = '';
-    clipTimeline.innerHTML = '';
-    clipTimeline.classList.add('has-clips');
-    const duration = video.duration || durationSeconds || 1;
-
-    clips.forEach((clip, idx) => {
-      const item = document.createElement('div');
-      item.className = 'clip-item';
-      item.dataset.index = idx;
-
-      const source = sources.find(s => s.id === (clip.sourceId || 'primary'));
-      const sourceName = source && source.id !== 'primary' ? source.name : '';
-
-      item.innerHTML = `
-        <div class="clip-item-header">
-          <div>
-            <div class="clip-item-name">${clip.name || 'Clip ' + (idx + 1)}</div>
-            <div class="clip-item-time">${formatTime(clip.start)} - ${formatTime(clip.end)}</div>
-            ${sourceName ? `<div class="clip-item-source">${sourceName}</div>` : ''}
-          </div>
-          <button type="button" class="clip-item-delete" data-index="${idx}" title="Delete clip">
-            <svg viewBox="0 0 24 24">${icons.delete}</svg>
-          </button>
-        </div>
-      `;
-      item.addEventListener('click', e => { if (!e.target.closest('.clip-item-delete')) playClip(idx); });
-      item.querySelector('.clip-item-delete').addEventListener('click', e => {
-        e.stopPropagation();
-        deleteClip(idx);
-      });
-      clipsList.appendChild(item);
-
-      // Timeline marker (only for current source)
-      if (!clip.sourceId || clip.sourceId === currentSourceId) {
-        const marker = document.createElement('div');
-        marker.className = 'clip-marker';
-        marker.dataset.index = idx;
-        const left = (clip.start / duration) * 100;
-        const width = Math.max(0.5, ((clip.end - clip.start) / duration) * 100);
-        marker.style.left = left + '%';
-        marker.style.width = width + '%';
-        marker.addEventListener('click', e => { e.stopPropagation(); playClip(idx); });
-        clipTimeline.appendChild(marker);
-      }
-    });
-  }
-
-  function playClip(index) {
-    const clip = clips[index];
-    if (!clip) return;
-
-    // Check if clip is from a different source
-    if (clip.sourceId && clip.sourceId !== currentSourceId) {
-      // For now, just show an alert - full source switching would require more work
-      alert('This clip is from a different source. Source switching is not yet supported.');
-      return;
-    }
-
-    const startPlayback = () => {
-      activeClip = { index, end: clip.end };
-      video.currentTime = clip.start;
-      video.play().catch(() => {});
-      document.querySelectorAll('.clip-item').forEach((el, i) => el.classList.toggle('active', i === index));
-      document.querySelectorAll('.clip-marker').forEach((el, i) => el.classList.toggle('active', Number(el.dataset.index) === index));
-    };
-
-    showTitleCardFor(clip, startPlayback);
-  }
-
-  function deleteClip(index) {
-    clips.splice(index, 1);
-    buildClipsList();
-  }
-
-  function checkClipEnd() {
-    if (activeClip && video.currentTime >= activeClip.end) {
-      video.pause();
-      activeClip = null;
-      document.querySelectorAll('.clip-item, .clip-marker').forEach(el => el.classList.remove('active'));
-    }
-  }
-
-  // Clip creator
-  setClipStartBtn.addEventListener('click', () => {
-    newClipStart.value = formatTime(video.currentTime);
-  });
-
-  setClipEndBtn.addEventListener('click', () => {
-    newClipEnd.value = formatTime(video.currentTime);
-  });
-
-  addClipBtn.addEventListener('click', () => {
-    const name = newClipName.value.trim() || `Clip ${clips.length + 1}`;
-    const start = parseTime(newClipStart.value);
-    const end = parseTime(newClipEnd.value);
-
-    if (end <= start) {
-      alert('End time must be after start time');
-      return;
-    }
-
-    clips.push({ name, start, end, sourceId: currentSourceId });
-    newClipName.value = '';
-    newClipStart.value = '';
-    newClipEnd.value = '';
-    buildClipsList();
-  });
-
-  // Import/Export clips
-  exportClipsBtn.addEventListener('click', () => {
-    if (!clips.length) {
-      alert('No clips to export');
-      return;
-    }
-    const data = JSON.stringify({ clips, exportedFrom: primarySourceName, exportedAt: new Date().toISOString() }, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = (primarySourceName.replace(/\.[^.]+$/, '') || 'clips') + '-clips.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  importClipsBtn.addEventListener('click', () => importClipsInput.click());
-
-  importClipsInput.addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        if (Array.isArray(data.clips)) {
-          clips = clips.concat(data.clips);
-          buildClipsList();
-        } else if (Array.isArray(data)) {
-          clips = clips.concat(data);
-          buildClipsList();
-        } else {
-          alert('Invalid clips file format');
-        }
-      } catch (err) {
-        alert('Failed to parse clips file: ' + err.message);
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  });
-
-  // Import source
-  importSourceBtn.addEventListener('click', () => importSourceInput.click());
-
-  importSourceInput.addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        // Parse the HTML to extract the JSON payload
-        const html = reader.result;
-        const match = html.match(/<script[^>]*id="transcript-data"[^>]*>([\s\S]*?)<\/script>/);
-        if (!match) throw new Error('Could not find transcript data in HTML file');
-        const jsonText = match[1].trim();
-        if (jsonText === '__TRANSCRIPT_JSON__') throw new Error('This appears to be a template file, not an exported viewer');
-        const imported = JSON.parse(jsonText);
-
-        const importedMedia = imported.media || {};
-        const importedTitle = (imported.meta && imported.meta.title) || {};
-        const importedLines = Array.isArray(imported.lines) ? imported.lines : [];
-        const importedMediaPath = importedMedia.relative_path || importedMedia.filename || 'media.mp4';
-        const importedName = importedTitle.FILE_NAME || importedMediaPath.split('/').pop().split('\\').pop();
-
-        const newSourceId = 'source-' + Date.now();
-        sources.push({
-          id: newSourceId,
-          name: importedName,
-          mediaPath: importedMediaPath,
-          lines: importedLines,
-          titleData: importedTitle
-        });
-
-        buildSourcesList();
-        alert(`Imported source: ${importedName}`);
-      } catch (err) {
-        alert('Failed to import source: ' + err.message);
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  });
-
-  function buildSourcesList() {
-    sourcesList.innerHTML = '';
-    sources.forEach(source => {
-      const item = document.createElement('div');
-      item.className = 'clip-item' + (source.id === currentSourceId ? ' active' : '');
-      item.innerHTML = `<div class="clip-item-name">${source.name}</div>`;
-      if (source.id !== 'primary') {
-        item.innerHTML += `<div class="clip-item-time">${source.lines.length} lines</div>`;
-      }
-      item.addEventListener('click', () => {
-        // Source switching - for now just highlight, full switching is complex
-        document.querySelectorAll('.sources-list .clip-item').forEach(el => el.classList.remove('active'));
-        item.classList.add('active');
-        // Full source switching would require updating video.src, allLines, rebuilding pages, etc.
-      });
-      sourcesList.appendChild(item);
-    });
+    const get = i => (allLines[i] && allLines[i].text) || '';
+    caption1.textContent = get(activeLineIdx);
+    caption2.textContent = get(activeLineIdx + 1);
+    caption3.textContent = get(activeLineIdx + 2);
   }
 
   // Time update
-  function handleTimeUpdate() {
-    const ct = video.currentTime;
-    const dur = video.duration || durationSeconds || 0;
-
-    if (Number.isFinite(dur) && dur > 0) {
-      const pct = (ct / dur) * 100;
+  function onTimeUpdate() {
+    const t = video.currentTime;
+    const d = video.duration || durationSec || 0;
+    if (d > 0) {
+      const pct = (t / d) * 100;
       progressBar.value = pct;
       progressFill.style.width = pct + '%';
-      totalDurationEl.textContent = formatTime(dur);
+      durationEl.textContent = fmt(d);
     }
-    currentTimeEl.textContent = formatTime(ct);
+    currentTimeEl.textContent = fmt(t);
 
-    const li = findActiveLine(ct);
-    if (li !== activeLineIndex) {
+    const li = findLine(t);
+    if (li !== activeLineIdx) {
       setActiveLine(li);
       updateCaptions();
     }
 
-    checkClipEnd();
+    // Clip end check
+    if (activeClip && t >= activeClip.end) {
+      video.pause();
+      activeClip = null;
+    }
   }
 
-  // Video controls
-  playBtn.addEventListener('click', () => { video.paused ? video.play().catch(() => {}) : video.pause(); });
-  rewindBtn.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
-  forwardBtn.addEventListener('click', () => { video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); });
+  // Controls
+  playBtn.addEventListener('click', () => video.paused ? video.play().catch(()=>{}) : video.pause());
+  rewindBtn.addEventListener('click', () => video.currentTime = Math.max(0, video.currentTime - 10));
+  forwardBtn.addEventListener('click', () => video.currentTime = Math.min(video.duration || 0, video.currentTime + 10));
 
   progressBar.addEventListener('input', e => {
-    const dur = video.duration || durationSeconds || 0;
-    if (dur) {
-      video.currentTime = (Number(e.target.value) / 100) * dur;
+    const d = video.duration || durationSec || 0;
+    if (d) {
+      video.currentTime = (Number(e.target.value) / 100) * d;
       progressFill.style.width = e.target.value + '%';
     }
   });
 
   volumeSlider.addEventListener('input', () => {
     video.volume = Number(volumeSlider.value);
-    updateVolumeIcon(video.volume);
+    updateVolIcon();
   });
 
-  volumeBtn.addEventListener('click', () => {
+  muteBtn.addEventListener('click', () => {
     if (video.volume > 0) {
-      volumeSlider.dataset.prevVol = video.volume;
+      volumeSlider.dataset.prev = video.volume;
       video.volume = 0;
       volumeSlider.value = 0;
     } else {
-      const pv = Number(volumeSlider.dataset.prevVol) || 1;
-      video.volume = pv;
-      volumeSlider.value = pv;
+      const v = Number(volumeSlider.dataset.prev) || 1;
+      video.volume = v;
+      volumeSlider.value = v;
     }
-    updateVolumeIcon(video.volume);
+    updateVolIcon();
   });
 
-  video.addEventListener('play', () => { playIcon.innerHTML = icons.pause; });
-  video.addEventListener('pause', () => { playIcon.innerHTML = icons.play; });
-  video.addEventListener('timeupdate', handleTimeUpdate);
-  video.addEventListener('seeked', handleTimeUpdate);
+  function updateVolIcon() {
+    volIcon.innerHTML = video.volume === 0 ? icons.volMute : icons.volHigh;
+  }
+
+  video.addEventListener('play', () => playIcon.innerHTML = icons.pause);
+  video.addEventListener('pause', () => playIcon.innerHTML = icons.play);
+  video.addEventListener('timeupdate', onTimeUpdate);
   video.addEventListener('loadedmetadata', () => {
-    totalDurationEl.textContent = formatTime(video.duration || durationSeconds);
-    handleTimeUpdate();
-    buildClipsList();
+    durationEl.textContent = fmt(video.duration);
   });
+
+  // Fullscreen
+  fullscreenBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) app.requestFullscreen().catch(()=>{});
+    else document.exitFullscreen();
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    isFullscreen = !!document.fullscreenElement;
+    app.classList.toggle('fullscreen', isFullscreen);
+    fsIcon.innerHTML = isFullscreen ? icons.fsExit : icons.fsEnter;
+  });
+
+  // Sidebar
+  menuBtn.addEventListener('click', () => sidebar.classList.remove('collapsed'));
+  sidebarClose.addEventListener('click', () => sidebar.classList.add('collapsed'));
+
+  // Pages
+  prevPage.addEventListener('click', () => showPage(currentPage - 1));
+  nextPage.addEventListener('click', () => showPage(currentPage + 1));
+
+  // View mode
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      viewMode = btn.dataset.view;
+      videoPane.classList.toggle('caption-mode', viewMode === 'caption');
+      document.querySelectorAll('.view-btn').forEach(b => b.classList.toggle('active', b === btn));
+      if (viewMode === 'caption') updateCaptions();
+    });
+  });
+
+  // Title cards toggle
+  titleCardToggle.addEventListener('click', () => {
+    showTitleCards = !showTitleCards;
+    titleCardToggle.classList.toggle('active', showTitleCards);
+  });
+
+  // Search
+  function doSearch(q) {
+    lineEls.forEach(el => el.classList.remove('search-match', 'search-current'));
+    searchMatches = [];
+    searchIdx = -1;
+    if (!q.trim()) {
+      searchControls.classList.remove('visible');
+      return;
+    }
+    const lq = q.toLowerCase();
+    allLines.forEach((ln, i) => {
+      const txt = (ln.rendered_text || ln.text || '').toLowerCase();
+      if (txt.includes(lq)) {
+        searchMatches.push(i);
+        const el = lineEls.get(i);
+        if (el) el.classList.add('search-match');
+      }
+    });
+    searchControls.classList.add('visible');
+    if (searchMatches.length) goSearch(0);
+    else searchCount.textContent = '0/0';
+  }
+
+  function goSearch(idx) {
+    if (!searchMatches.length) return;
+    if (searchIdx >= 0) {
+      const prev = lineEls.get(searchMatches[searchIdx]);
+      if (prev) prev.classList.remove('search-current');
+    }
+    searchIdx = ((idx % searchMatches.length) + searchMatches.length) % searchMatches.length;
+    const li = searchMatches[searchIdx];
+    const el = lineEls.get(li);
+    if (el) {
+      el.classList.add('search-current');
+      for (let p = 0; p < pageEls.length; p++) {
+        if (pageEls[p].lineIdxs.includes(li)) {
+          if (p !== currentPage) showPage(p);
+          break;
+        }
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    searchCount.textContent = `${searchIdx + 1}/${searchMatches.length}`;
+  }
+
+  searchInput.addEventListener('input', () => doSearch(searchInput.value));
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); goSearch(searchIdx + (e.shiftKey ? -1 : 1)); }
+    if (e.key === 'Escape') { searchInput.value = ''; doSearch(''); searchInput.blur(); }
+  });
+  searchPrev.addEventListener('click', () => goSearch(searchIdx - 1));
+  searchNext.addEventListener('click', () => goSearch(searchIdx + 1));
+  searchClear.addEventListener('click', () => { searchInput.value = ''; doSearch(''); });
+
+  // Clips
+  function buildClips() {
+    if (!clips.length) {
+      clipsList.innerHTML = '<div class="no-clips">No clips yet</div>';
+      return;
+    }
+    clipsList.innerHTML = '';
+    clips.forEach((c, i) => {
+      const item = document.createElement('div');
+      item.className = 'clip-item';
+      item.innerHTML = `
+        <div class="clip-item-header">
+          <div>
+            <div class="clip-item-name">${c.name || 'Clip ' + (i+1)}</div>
+            <div class="clip-item-time">${fmt(c.start)} - ${fmt(c.end)}</div>
+          </div>
+          <button type="button" class="clip-item-delete" data-idx="${i}"><svg viewBox="0 0 24 24">${icons.del}</svg></button>
+        </div>
+      `;
+      item.addEventListener('click', e => { if (!e.target.closest('.clip-item-delete')) playClip(i); });
+      item.querySelector('.clip-item-delete').addEventListener('click', e => { e.stopPropagation(); deleteClip(i); });
+      clipsList.appendChild(item);
+    });
+  }
+
+  function playClip(idx) {
+    const c = clips[idx];
+    if (!c) return;
+    const doPlay = () => {
+      activeClip = { end: c.end };
+      video.currentTime = c.start;
+      video.play().catch(()=>{});
+    };
+    if (showTitleCards) {
+      titleCardName.textContent = c.name || 'Clip';
+      titleCardMeta.textContent = fmt(c.start);
+      titleCard.classList.add('visible');
+      setTimeout(() => { titleCard.classList.remove('visible'); setTimeout(doPlay, 500); }, 3000);
+    } else {
+      doPlay();
+    }
+  }
+
+  function deleteClip(idx) { clips.splice(idx, 1); buildClips(); }
+
+  setStartBtn.addEventListener('click', () => clipStart.value = fmt(video.currentTime));
+  setEndBtn.addEventListener('click', () => clipEnd.value = fmt(video.currentTime));
+  addClipBtn.addEventListener('click', () => {
+    const s = parseTime(clipStart.value);
+    const e = parseTime(clipEnd.value);
+    if (e > s) {
+      clips.push({ name: clipName.value || '', start: s, end: e });
+      clipName.value = ''; clipStart.value = ''; clipEnd.value = '';
+      buildClips();
+    }
+  });
+
+  // Import/Export clips
+  exportClipsBtn.addEventListener('click', () => {
+    if (!clips.length) return;
+    const data = JSON.stringify({ clips, exportedAt: new Date().toISOString() }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'clips.json';
+    a.click();
+  });
+
+  importClipsBtn.addEventListener('click', () => importClipsFile.click());
+  importClipsFile.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const d = JSON.parse(r.result);
+        if (Array.isArray(d.clips)) { clips = d.clips; buildClips(); }
+      } catch(err) { alert('Invalid clips file'); }
+    };
+    r.readAsText(f);
+    e.target.value = '';
+  });
+
+  // Import source
+  importSourceBtn.addEventListener('click', () => importSourceFile.click());
+  importSourceFile.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const html = r.result;
+        const m = html.match(/<script[^>]*id="transcript-data"[^>]*>([\s\S]*?)<\/script>/);
+        if (!m) throw new Error('No transcript data found');
+        const json = m[1].trim();
+        if (json === '__TRANSCRIPT_JSON__') throw new Error('Template file');
+        const d = JSON.parse(json);
+        const name = (d.meta?.title?.FILE_NAME) || f.name;
+        sources.push({ id: 'src-' + Date.now(), name, lines: d.lines || [] });
+        buildSources();
+      } catch(err) { alert('Could not import: ' + err.message); }
+    };
+    r.readAsText(f);
+    e.target.value = '';
+  });
+
+  function buildSources() {
+    sourcesList.innerHTML = '';
+    sources.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'clip-item';
+      item.innerHTML = `<div class="clip-item-name">${s.name}</div><div class="clip-item-time">${s.lines.length} lines</div>`;
+      sourcesList.appendChild(item);
+    });
+  }
 
   // Keyboard
   document.addEventListener('keydown', e => {
-    // Ctrl+F or Cmd+F for search
     if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
       e.preventDefault();
       sidebar.classList.remove('collapsed');
@@ -1614,33 +1296,29 @@
       searchInput.select();
       return;
     }
-    // If in input field, only handle Escape
-    if (e.target.tagName === 'INPUT') {
-      if (e.key === 'Escape') {
-        e.target.blur();
-        if (e.target === searchInput) clearSearch();
-      }
-      return;
-    }
-    switch (e.key) {
-      case ' ': e.preventDefault(); video.paused ? video.play().catch(() => {}) : video.pause(); break;
+    if (e.target.tagName === 'INPUT') return;
+    switch(e.key) {
+      case ' ': e.preventDefault(); video.paused ? video.play().catch(()=>{}) : video.pause(); break;
       case 'ArrowLeft': video.currentTime = Math.max(0, video.currentTime - 10); break;
       case 'ArrowRight': video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); break;
-      case 'ArrowUp': e.preventDefault(); if (currentPageIndex > 0) showPage(currentPageIndex - 1); break;
-      case 'ArrowDown': e.preventDefault(); if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1); break;
-      case 'f': case 'F': toggleFullscreen(); break;
-      case 'c': case 'C': setViewMode(viewMode === 'caption' ? 'document' : 'caption'); break;
+      case 'ArrowUp': e.preventDefault(); showPage(currentPage - 1); break;
+      case 'ArrowDown': e.preventDefault(); showPage(currentPage + 1); break;
+      case 'f': case 'F': fullscreenBtn.click(); break;
+      case 'c': case 'C': document.querySelector(`.view-btn[data-view="${viewMode === 'caption' ? 'document' : 'caption'}"]`).click(); break;
       case 'Escape': if (isFullscreen) document.exitFullscreen(); break;
     }
   });
 
-  video.addEventListener('dblclick', toggleFullscreen);
+  video.addEventListener('dblclick', () => fullscreenBtn.click());
 
   // Init
-  buildDocumentView();
-  buildSourcesList();
-  updateVolumeIcon(1);
-  if (clips.length) buildClipsList();
+  headerTitle.textContent = titleData.CASE_NAME || titleData.FILE_NAME || 'Transcript Viewer';
+  document.title = headerTitle.textContent;
+  setupVideo();
+  buildPages();
+  buildClips();
+  buildSources();
+  updateVolIcon();
 })();
   </script>
 </body>
