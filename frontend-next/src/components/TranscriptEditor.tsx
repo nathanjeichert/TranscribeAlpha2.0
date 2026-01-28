@@ -165,6 +165,9 @@ export default function TranscriptEditor({
   const [autoScroll, setAutoScroll] = useState(true)
   const [editingField, setEditingField] = useState<{ lineId: string; field: 'speaker' | 'text'; value: string } | null>(null)
   const [autoShiftNextLine, setAutoShiftNextLine] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchMatches, setSearchMatches] = useState<string[]>([])
+  const [searchCurrentIndex, setSearchCurrentIndex] = useState(-1)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -579,6 +582,52 @@ export default function TranscriptEditor({
 
   const cancelEdit = useCallback(() => {
     setEditingField(null)
+  }, [])
+
+  // Search functionality
+  const performSearch = useCallback((query: string) => {
+    setSearchQuery(query)
+    if (!query.trim()) {
+      setSearchMatches([])
+      setSearchCurrentIndex(-1)
+      return
+    }
+    const lowerQuery = query.toLowerCase()
+    const matches = lines
+      .filter((line) => {
+        const text = (line.text || '').toLowerCase()
+        const speaker = (line.speaker || '').toLowerCase()
+        return text.includes(lowerQuery) || speaker.includes(lowerQuery)
+      })
+      .map((line) => line.id)
+    setSearchMatches(matches)
+    if (matches.length > 0) {
+      setSearchCurrentIndex(0)
+      const firstMatch = lineRefs.current[matches[0]]
+      if (firstMatch) firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    } else {
+      setSearchCurrentIndex(-1)
+    }
+  }, [lines])
+
+  const goToSearchResult = useCallback((direction: 'next' | 'prev') => {
+    if (searchMatches.length === 0) return
+    let newIndex = searchCurrentIndex
+    if (direction === 'next') {
+      newIndex = (searchCurrentIndex + 1) % searchMatches.length
+    } else {
+      newIndex = (searchCurrentIndex - 1 + searchMatches.length) % searchMatches.length
+    }
+    setSearchCurrentIndex(newIndex)
+    const lineId = searchMatches[newIndex]
+    const el = lineRefs.current[lineId]
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [searchMatches, searchCurrentIndex])
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery('')
+    setSearchMatches([])
+    setSearchCurrentIndex(-1)
   }, [])
 
   useEffect(() => {
@@ -1368,6 +1417,64 @@ export default function TranscriptEditor({
             </div>
 
             <div>
+              {/* Search Bar */}
+              <div className="mb-3 flex items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    placeholder="Search transcript... (Ctrl+F)"
+                    className="input w-full pr-20"
+                    value={searchQuery}
+                    onChange={(e) => performSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        goToSearchResult(e.shiftKey ? 'prev' : 'next')
+                      } else if (e.key === 'Escape') {
+                        clearSearch()
+                      }
+                    }}
+                  />
+                  {searchQuery && (
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                      <span className="text-xs text-primary-500">
+                        {searchMatches.length > 0 ? `${searchCurrentIndex + 1}/${searchMatches.length}` : '0/0'}
+                      </span>
+                      <button
+                        type="button"
+                        className="p-1 text-primary-400 hover:text-primary-600"
+                        onClick={() => goToSearchResult('prev')}
+                        title="Previous (Shift+Enter)"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className="p-1 text-primary-400 hover:text-primary-600"
+                        onClick={() => goToSearchResult('next')}
+                        title="Next (Enter)"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className="p-1 text-primary-400 hover:text-primary-600"
+                        onClick={clearSearch}
+                        title="Clear"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
                 <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
                   <div>Pg:Ln</div>
@@ -1384,9 +1491,11 @@ export default function TranscriptEditor({
                     lines.map((line) => {
                       const isActive = activeLineId === line.id
                       const isSelected = selectedLineId === line.id
+                      const isSearchMatch = searchMatches.includes(line.id)
+                      const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === line.id
                       const rowClasses = [
                         'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm',
-                        isActive ? 'bg-yellow-200' : 'bg-white hover:bg-primary-200',
+                        isCurrentSearchMatch ? 'bg-amber-300' : isSearchMatch ? 'bg-amber-100' : isActive ? 'bg-yellow-200' : 'bg-white hover:bg-primary-200',
                         isSelected ? 'ring-2 ring-primary-300' : '',
                       ]
                       const timingInputClass = line.timestamp_error

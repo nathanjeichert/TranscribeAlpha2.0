@@ -235,6 +235,54 @@
     }
     .setting-toggle.active::after { transform: translateX(16px); }
 
+    /* Search */
+    .search-container {
+      margin-bottom: 12px;
+      position: relative;
+    }
+    .search-input {
+      width: 100%;
+      appearance: none;
+      border: 1px solid var(--border-muted);
+      background: rgba(0,0,0,0.3);
+      color: var(--text-light);
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      outline: none;
+    }
+    .search-input:focus { border-color: var(--accent); }
+    .search-input::placeholder { color: var(--text-muted); }
+    .search-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 6px;
+    }
+    .search-count {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-right: 4px;
+    }
+    .search-nav-btn {
+      appearance: none;
+      border: none;
+      background: rgba(255,255,255,0.05);
+      color: var(--text-muted);
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .search-nav-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-light); }
+    .search-nav-btn svg { width: 14px; height: 14px; fill: currentColor; }
+    .doc-line.search-match .doc-line-text { background: rgba(255, 200, 0, 0.3); }
+    .doc-line.search-current .doc-line-text { background: rgba(255, 200, 0, 0.6); }
+
     /* Clip Creator */
     .clip-creator {
       background: rgba(255,255,255,0.03);
@@ -682,7 +730,7 @@
 </head>
 <body>
   <div class="app" id="app">
-    <aside class="sidebar" id="sidebar">
+    <aside class="sidebar collapsed" id="sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
@@ -693,9 +741,21 @@
         </button>
       </div>
       <div class="sidebar-content">
-        <div class="view-toggle">
-          <button type="button" class="view-toggle-btn active" data-view="document">Document</button>
-          <button type="button" class="view-toggle-btn" data-view="caption">Caption</button>
+        <!-- Search -->
+        <div class="search-container">
+          <input type="text" class="search-input" id="searchInput" placeholder="Search transcript..." />
+          <div class="search-nav" id="searchNav" style="display: none;">
+            <span class="search-count" id="searchCount">0/0</span>
+            <button type="button" class="search-nav-btn" id="searchPrev" title="Previous (Shift+Enter)">
+              <svg viewBox="0 0 24 24"><path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+            </button>
+            <button type="button" class="search-nav-btn" id="searchNext" title="Next (Enter)">
+              <svg viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+            </button>
+            <button type="button" class="search-nav-btn" id="searchClear" title="Clear">
+              <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
         </div>
 
         <!-- Clip Creator -->
@@ -751,6 +811,13 @@
         <div class="sidebar-section">
           <div class="sidebar-section-header">
             <span class="sidebar-section-title">Settings</span>
+          </div>
+          <div class="setting-row">
+            <span>View mode</span>
+            <div class="view-toggle">
+              <button type="button" class="view-toggle-btn active" data-view="document">Doc</button>
+              <button type="button" class="view-toggle-btn" data-view="caption">Caption</button>
+            </div>
           </div>
           <div class="setting-row">
             <span>Show title cards</span>
@@ -901,6 +968,14 @@
   const exportClipsBtn = document.getElementById('exportClipsBtn');
   const titleCardsToggle = document.getElementById('titleCardsToggle');
 
+  // Search elements
+  const searchInput = document.getElementById('searchInput');
+  const searchNav = document.getElementById('searchNav');
+  const searchCount = document.getElementById('searchCount');
+  const searchPrev = document.getElementById('searchPrev');
+  const searchNext = document.getElementById('searchNext');
+  const searchClear = document.getElementById('searchClear');
+
   // Icons
   const icons = {
     play: '<polygon points="5,3 19,12 5,21"/>',
@@ -1011,6 +1086,87 @@
     showTitleCards = !showTitleCards;
     titleCardsToggle.classList.toggle('active', showTitleCards);
   });
+
+  // Search
+  let searchMatches = [];
+  let searchCurrentIndex = -1;
+
+  function performSearch(query) {
+    // Clear previous matches
+    document.querySelectorAll('.doc-line.search-match, .doc-line.search-current').forEach(el => {
+      el.classList.remove('search-match', 'search-current');
+    });
+    searchMatches = [];
+    searchCurrentIndex = -1;
+
+    if (!query.trim()) {
+      searchNav.style.display = 'none';
+      return;
+    }
+
+    const lowerQuery = query.toLowerCase();
+    allLines.forEach((line, idx) => {
+      const text = (line.rendered_text || line.text || '').toLowerCase();
+      if (text.includes(lowerQuery)) {
+        searchMatches.push(idx);
+        const el = lineElements.get(idx);
+        if (el) el.classList.add('search-match');
+      }
+    });
+
+    if (searchMatches.length) {
+      searchNav.style.display = 'flex';
+      goToSearchResult(0);
+    } else {
+      searchNav.style.display = 'flex';
+      searchCount.textContent = '0/0';
+    }
+  }
+
+  function goToSearchResult(index) {
+    if (!searchMatches.length) return;
+    // Remove current highlight
+    if (searchCurrentIndex >= 0) {
+      const prevEl = lineElements.get(searchMatches[searchCurrentIndex]);
+      if (prevEl) prevEl.classList.remove('search-current');
+    }
+    // Wrap around
+    searchCurrentIndex = ((index % searchMatches.length) + searchMatches.length) % searchMatches.length;
+    const lineIndex = searchMatches[searchCurrentIndex];
+    const el = lineElements.get(lineIndex);
+    if (el) {
+      el.classList.add('search-current');
+      // Find page and navigate
+      for (let pi = 0; pi < allPages.length; pi++) {
+        if (allPages[pi].line_indexes.includes(lineIndex)) {
+          if (pi !== currentPageIndex) showPage(pi);
+          break;
+        }
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    searchCount.textContent = `${searchCurrentIndex + 1}/${searchMatches.length}`;
+  }
+
+  function clearSearch() {
+    searchInput.value = '';
+    performSearch('');
+  }
+
+  searchInput.addEventListener('input', () => performSearch(searchInput.value));
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) goToSearchResult(searchCurrentIndex - 1);
+      else goToSearchResult(searchCurrentIndex + 1);
+    } else if (e.key === 'Escape') {
+      clearSearch();
+      searchInput.blur();
+    }
+  });
+  searchPrev.addEventListener('click', () => goToSearchResult(searchCurrentIndex - 1));
+  searchNext.addEventListener('click', () => goToSearchResult(searchCurrentIndex + 1));
+  searchClear.addEventListener('click', clearSearch);
 
   // Pages
   function buildPages() {
@@ -1450,7 +1606,22 @@
 
   // Keyboard
   document.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT') return;
+    // Ctrl+F or Cmd+F for search
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      sidebar.classList.remove('collapsed');
+      searchInput.focus();
+      searchInput.select();
+      return;
+    }
+    // If in input field, only handle Escape
+    if (e.target.tagName === 'INPUT') {
+      if (e.key === 'Escape') {
+        e.target.blur();
+        if (e.target === searchInput) clearSearch();
+      }
+      return;
+    }
     switch (e.key) {
       case ' ': e.preventDefault(); video.paused ? video.play().catch(() => {}) : video.pause(); break;
       case 'ArrowLeft': video.currentTime = Math.max(0, video.currentTime - 10); break;

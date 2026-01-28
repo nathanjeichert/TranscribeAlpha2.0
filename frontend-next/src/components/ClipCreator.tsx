@@ -156,6 +156,43 @@ export default function ClipCreator({
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [importResetKey, setImportResetKey] = useState(0)
   const [importExpanded, setImportExpanded] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchCurrentIndex, setSearchCurrentIndex] = useState(-1)
+
+  // Search functionality
+  const searchMatches = useMemo(() => {
+    if (!searchQuery.trim()) return []
+    const lowerQuery = searchQuery.toLowerCase()
+    return lines
+      .map((line, idx) => ({ line, idx }))
+      .filter(({ line }) => {
+        const text = (line.text || '').toLowerCase()
+        const speaker = (line.speaker || '').toLowerCase()
+        return text.includes(lowerQuery) || speaker.includes(lowerQuery)
+      })
+      .map(({ idx }) => idx)
+  }, [lines, searchQuery])
+
+  const lineRefs = useRef<Record<number, HTMLDivElement | null>>({})
+
+  const goToSearchResult = useCallback((direction: 'next' | 'prev') => {
+    if (searchMatches.length === 0) return
+    let newIndex = searchCurrentIndex
+    if (direction === 'next') {
+      newIndex = (searchCurrentIndex + 1) % searchMatches.length
+    } else {
+      newIndex = (searchCurrentIndex - 1 + searchMatches.length) % searchMatches.length
+    }
+    setSearchCurrentIndex(newIndex)
+    const lineIndex = searchMatches[newIndex]
+    const el = lineRefs.current[lineIndex]
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [searchMatches, searchCurrentIndex])
+
+  const clearSearch = useCallback(() => {
+    setSearchQuery('')
+    setSearchCurrentIndex(-1)
+  }, [])
 
   const effectiveMediaUrl = useMemo(() => {
     if (activeClip?.media_blob_name) {
@@ -595,13 +632,22 @@ export default function ClipCreator({
   const renderLineRow = (line: EditorLine, index: number) => {
     const isSelected =
       selectedRange && index >= selectedRange.startIndex && index <= selectedRange.endIndex
+    const isSearchMatch = searchMatches.includes(index)
+    const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === index
     const pageLabel = line.page != null && line.line != null ? `Pg ${line.page} Ln ${line.line}` : ''
+    let bgClass = 'bg-white border-primary-200'
+    if (isCurrentSearchMatch) {
+      bgClass = 'bg-amber-300 border-amber-500'
+    } else if (isSearchMatch) {
+      bgClass = 'bg-amber-100 border-amber-300'
+    } else if (isSelected) {
+      bgClass = 'bg-primary-100 border-primary-400'
+    }
     return (
       <div
         key={line.id}
-        className={`border rounded-lg p-3 mb-2 transition ${
-          isSelected ? 'bg-primary-100 border-primary-400' : 'bg-white border-primary-200'
-        }`}
+        ref={(el) => { lineRefs.current[index] = el }}
+        className={`border rounded-lg p-3 mb-2 transition ${bgClass}`}
       >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
@@ -897,6 +943,70 @@ export default function ClipCreator({
 
               <div>
                 {cardSectionTitle('Transcript lines')}
+                {/* Search Bar */}
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      placeholder="Search transcript..."
+                      className="input-field w-full pr-20"
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value)
+                        if (e.target.value.trim()) {
+                          setSearchCurrentIndex(0)
+                        } else {
+                          setSearchCurrentIndex(-1)
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          goToSearchResult(e.shiftKey ? 'prev' : 'next')
+                        } else if (e.key === 'Escape') {
+                          clearSearch()
+                        }
+                      }}
+                    />
+                    {searchQuery && (
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                        <span className="text-xs text-primary-500">
+                          {searchMatches.length > 0 ? `${searchCurrentIndex + 1}/${searchMatches.length}` : '0/0'}
+                        </span>
+                        <button
+                          type="button"
+                          className="p-1 text-primary-400 hover:text-primary-600"
+                          onClick={() => goToSearchResult('prev')}
+                          title="Previous"
+                        >
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="p-1 text-primary-400 hover:text-primary-600"
+                          onClick={() => goToSearchResult('next')}
+                          title="Next"
+                        >
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="p-1 text-primary-400 hover:text-primary-600"
+                          onClick={clearSearch}
+                          title="Clear"
+                        >
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <div className="max-h-96 overflow-y-auto pr-1">
                   {lines.map((line, index) => renderLineRow(line, index))}
                 </div>
