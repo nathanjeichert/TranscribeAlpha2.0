@@ -17,7 +17,7 @@
       --font-size: 12pt;
       --line-height: 2.0;
       --lines-per-page: 25;
-      --sidebar-width: 280px;
+      --sidebar-width: 300px;
 
       --bg-app: #0d1117;
       --bg-video: #000000;
@@ -35,6 +35,7 @@
       --clip-color: #238636;
       --border-muted: #30363d;
       --shadow-page: 0 8px 32px rgba(0, 0, 0, 0.4);
+      --danger: #da3633;
     }
 
     body {
@@ -63,7 +64,7 @@
     .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-width)); }
 
     .sidebar-header {
-      padding: 16px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--border-muted);
       display: flex;
       justify-content: space-between;
@@ -98,14 +99,19 @@
 
     .sidebar-content { flex: 1; overflow-y: auto; padding: 12px; }
 
-    .sidebar-section { margin-bottom: 20px; }
+    .sidebar-section { margin-bottom: 16px; }
+    .sidebar-section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      padding: 0 4px;
+    }
     .sidebar-section-title {
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
       color: var(--text-muted);
-      margin-bottom: 8px;
-      padding: 0 4px;
     }
 
     /* View Mode Toggle */
@@ -130,14 +136,32 @@
       transition: all 0.15s ease;
     }
 
-    .view-toggle-btn.active {
-      background: var(--accent);
-      color: #fff;
-    }
+    .view-toggle-btn.active { background: var(--accent); color: #fff; }
+    .view-toggle-btn:not(.active):hover { color: var(--text-light); }
 
-    .view-toggle-btn:not(.active):hover {
-      color: var(--text-light);
+    /* Sidebar Buttons */
+    .sidebar-btn {
+      appearance: none;
+      border: 1px solid var(--border-muted);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
     }
+    .sidebar-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-light); border-color: var(--text-muted); }
+    .sidebar-btn svg { width: 12px; height: 12px; fill: currentColor; }
+    .sidebar-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .sidebar-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .sidebar-btn.danger { color: var(--danger); border-color: var(--danger); }
+    .sidebar-btn.danger:hover { background: rgba(218, 54, 51, 0.1); }
+
+    .btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 
     /* Clips List */
     .clip-item {
@@ -148,51 +172,102 @@
       margin-bottom: 8px;
       cursor: pointer;
       transition: all 0.15s ease;
+      position: relative;
     }
 
-    .clip-item:hover {
-      background: rgba(255,255,255,0.06);
-      border-color: var(--text-muted);
-    }
+    .clip-item:hover { background: rgba(255,255,255,0.06); border-color: var(--text-muted); }
+    .clip-item.active { border-color: var(--clip-color); background: rgba(35, 134, 54, 0.1); }
 
-    .clip-item.active {
-      border-color: var(--clip-color);
-      background: rgba(35, 134, 54, 0.1);
-    }
-
-    .clip-item-name {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-light);
-      margin-bottom: 4px;
-    }
-
-    .clip-item-time {
-      font-size: 11px;
+    .clip-item-header { display: flex; justify-content: space-between; align-items: flex-start; }
+    .clip-item-name { font-size: 13px; font-weight: 500; color: var(--text-light); margin-bottom: 4px; }
+    .clip-item-time { font-size: 11px; color: var(--text-muted); font-family: 'SF Mono', monospace; }
+    .clip-item-source { font-size: 10px; color: var(--text-muted); margin-top: 4px; opacity: 0.7; }
+    .clip-item-delete {
+      appearance: none;
+      border: none;
+      background: transparent;
       color: var(--text-muted);
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    .clip-item:hover .clip-item-delete { opacity: 1; }
+    .clip-item-delete:hover { color: var(--danger); background: rgba(218,54,51,0.1); }
+    .clip-item-delete svg { width: 14px; height: 14px; fill: currentColor; }
+
+    .no-clips { text-align: center; padding: 20px 12px; color: var(--text-muted); font-size: 12px; }
+
+    /* Settings Toggle */
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .setting-toggle {
+      width: 36px;
+      height: 20px;
+      background: var(--border-muted);
+      border-radius: 10px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+    .setting-toggle.active { background: var(--clip-color); }
+    .setting-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s ease;
+    }
+    .setting-toggle.active::after { transform: translateX(16px); }
+
+    /* Clip Creator */
+    .clip-creator {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-muted);
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .clip-creator-title { font-size: 12px; font-weight: 500; color: var(--text-light); margin-bottom: 10px; }
+    .clip-creator-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .clip-creator-input {
+      flex: 1;
+      appearance: none;
+      border: 1px solid var(--border-muted);
+      background: rgba(0,0,0,0.3);
+      color: var(--text-light);
+      font-size: 12px;
+      padding: 6px 10px;
+      border-radius: 4px;
+      outline: none;
+    }
+    .clip-creator-input:focus { border-color: var(--accent); }
+    .clip-creator-input::placeholder { color: var(--text-muted); }
+    .clip-creator-time {
+      width: 70px;
+      text-align: center;
       font-family: 'SF Mono', monospace;
     }
-
-    .no-clips {
-      text-align: center;
-      padding: 24px 12px;
-      color: var(--text-muted);
-      font-size: 12px;
-    }
+    .clip-creator-actions { display: flex; gap: 6px; }
 
     /* Main Content */
-    .main-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      min-width: 0;
-    }
-
-    .content-area {
-      flex: 1;
-      display: flex;
-      min-height: 0;
-    }
+    .main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .content-area { flex: 1; display: flex; min-height: 0; }
 
     /* Video Pane */
     .video-pane {
@@ -215,12 +290,38 @@
       position: relative;
     }
 
-    video {
-      width: 100%;
-      height: 100%;
-      max-height: 100%;
-      object-fit: contain;
+    video { width: 100%; height: 100%; max-height: 100%; object-fit: contain; background: #000; }
+
+    /* Title Card Overlay */
+    .title-card {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
       background: #000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+      z-index: 10;
+    }
+    .title-card.visible { opacity: 1; pointer-events: auto; }
+    .title-card-name {
+      font-size: 32px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 12px;
+      text-align: center;
+      padding: 0 40px;
+    }
+    .title-card-meta {
+      font-size: 16px;
+      color: rgba(255,255,255,0.6);
+      text-align: center;
     }
 
     /* Caption Overlay */
@@ -259,11 +360,7 @@
       border-top: 1px solid var(--border-muted);
     }
 
-    .controls-row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
+    .controls-row { display: flex; align-items: center; gap: 12px; }
 
     .control-btn {
       appearance: none;
@@ -296,12 +393,7 @@
     .control-btn.play-btn:hover { background: var(--accent-hover); }
     .control-btn.play-btn svg { width: 22px; height: 22px; }
 
-    .progress-container {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
+    .progress-container { flex: 1; display: flex; align-items: center; gap: 10px; }
 
     .time-display {
       font-size: 11px;
@@ -312,12 +404,7 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .progress-wrapper {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
+    .progress-wrapper { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 
     .progress-track {
       height: 4px;
@@ -377,11 +464,7 @@
     .clip-marker:hover { opacity: 1; }
     .clip-marker.active { opacity: 1; box-shadow: 0 0 0 2px var(--clip-color); }
 
-    .volume-control {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
+    .volume-control { display: flex; align-items: center; gap: 6px; }
 
     .volume-btn {
       appearance: none;
@@ -441,16 +524,9 @@
       align-items: center;
     }
 
-    .page-indicator {
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--text-muted);
-    }
+    .page-indicator { font-size: 12px; font-weight: 500; color: var(--text-muted); }
 
-    .page-nav {
-      display: flex;
-      gap: 6px;
-    }
+    .page-nav { display: flex; gap: 6px; }
 
     .page-nav button {
       appearance: none;
@@ -516,6 +592,7 @@
 
     .doc-line:hover { background: rgba(47, 129, 247, 0.06); }
     .doc-line.current { background: var(--accent-highlight); }
+    .doc-line.selected { background: rgba(35, 134, 54, 0.15); }
 
     .doc-line-number {
       width: var(--line-number-width);
@@ -564,6 +641,9 @@
     .app.fullscreen .controls { display: none; }
     .app.fullscreen .video-container { cursor: none; }
 
+    /* Hidden file inputs */
+    .hidden-input { display: none; }
+
     /* Responsive */
     @media (max-width: 1200px) {
       .content-area { flex-direction: column; }
@@ -580,7 +660,7 @@
         --page-margin-left: 0.5in;
         --page-margin-right: 0.25in;
         --font-size: 10pt;
-        --sidebar-width: 260px;
+        --sidebar-width: 280px;
       }
     }
 
@@ -590,7 +670,7 @@
       .document-pane { overflow: visible; }
       .document-scroll { padding: 0; overflow: visible; }
       .doc-page { display: block !important; box-shadow: none; page-break-after: always; margin: 0; }
-      .doc-line.current { background: none; }
+      .doc-line.current, .doc-line.selected { background: none; }
     }
 
     /* Scrollbar */
@@ -602,7 +682,6 @@
 </head>
 <body>
   <div class="app" id="app">
-    <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <span class="sidebar-title">
@@ -619,16 +698,68 @@
           <button type="button" class="view-toggle-btn" data-view="caption">Caption</button>
         </div>
 
+        <!-- Clip Creator -->
+        <div class="clip-creator" id="clipCreator">
+          <div class="clip-creator-title">Create Clip</div>
+          <div class="clip-creator-row">
+            <input type="text" class="clip-creator-input" id="newClipName" placeholder="Clip name">
+          </div>
+          <div class="clip-creator-row">
+            <input type="text" class="clip-creator-input clip-creator-time" id="newClipStart" placeholder="0:00" title="Start time">
+            <span style="color: var(--text-muted);">to</span>
+            <input type="text" class="clip-creator-input clip-creator-time" id="newClipEnd" placeholder="0:00" title="End time">
+          </div>
+          <div class="clip-creator-actions">
+            <button type="button" class="sidebar-btn" id="setClipStart" title="Set start to current time">Set Start</button>
+            <button type="button" class="sidebar-btn" id="setClipEnd" title="Set end to current time">Set End</button>
+            <button type="button" class="sidebar-btn primary" id="addClipBtn">Add Clip</button>
+          </div>
+        </div>
+
         <div class="sidebar-section">
-          <div class="sidebar-section-title">Clips</div>
+          <div class="sidebar-section-header">
+            <span class="sidebar-section-title">Clips</span>
+          </div>
+          <div class="btn-row">
+            <button type="button" class="sidebar-btn" id="importClipsBtn" title="Import clips from JSON">
+              <svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zm0-10h4v6h6v-6h4l-7-7-7 7z"/></svg>
+              Import
+            </button>
+            <button type="button" class="sidebar-btn" id="exportClipsBtn" title="Export clips to JSON">
+              <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              Export
+            </button>
+          </div>
           <div id="clipsList" class="clips-list">
-            <div class="no-clips">No clips defined</div>
+            <div class="no-clips">No clips yet. Create one above!</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-header">
+            <span class="sidebar-section-title">Sources</span>
+          </div>
+          <div class="btn-row">
+            <button type="button" class="sidebar-btn" id="importSourceBtn" title="Import another viewer HTML">
+              <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              Add Source
+            </button>
+          </div>
+          <div id="sourcesList" class="sources-list"></div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-header">
+            <span class="sidebar-section-title">Settings</span>
+          </div>
+          <div class="setting-row">
+            <span>Show title cards</span>
+            <div class="setting-toggle" id="titleCardsToggle" title="Show 3-second title card before clips"></div>
           </div>
         </div>
       </div>
     </aside>
 
-    <!-- Main Content -->
     <div class="main-content">
       <button type="button" class="sidebar-expand" id="sidebarExpand" aria-label="Open sidebar">
         <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
@@ -638,6 +769,10 @@
         <div class="video-pane" id="videoPane">
           <div class="video-container">
             <video id="mediaPlayer" preload="metadata" playsinline></video>
+            <div class="title-card" id="titleCard">
+              <div class="title-card-name" id="titleCardName"></div>
+              <div class="title-card-meta" id="titleCardMeta"></div>
+            </div>
             <div class="caption-overlay" id="captionOverlay">
               <div class="caption-line current" id="captionCurrent"></div>
               <div class="caption-line next" id="captionNext"></div>
@@ -703,6 +838,10 @@
     </div>
   </div>
 
+  <!-- Hidden file inputs -->
+  <input type="file" class="hidden-input" id="importSourceInput" accept=".html,.htm">
+  <input type="file" class="hidden-input" id="importClipsInput" accept=".json">
+
   <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
   <script>
 (function() {
@@ -736,12 +875,31 @@
   const pagesContainer = document.getElementById('pagesContainer');
   const documentScroll = document.getElementById('documentScroll');
   const videoPane = document.getElementById('videoPane');
-  const contentArea = document.getElementById('contentArea');
   const clipsList = document.getElementById('clipsList');
   const clipTimeline = document.getElementById('clipTimeline');
   const captionCurrent = document.getElementById('captionCurrent');
   const captionNext = document.getElementById('captionNext');
   const captionFuture = document.getElementById('captionFuture');
+  const titleCard = document.getElementById('titleCard');
+  const titleCardName = document.getElementById('titleCardName');
+  const titleCardMeta = document.getElementById('titleCardMeta');
+  const sourcesList = document.getElementById('sourcesList');
+
+  // Clip creator elements
+  const newClipName = document.getElementById('newClipName');
+  const newClipStart = document.getElementById('newClipStart');
+  const newClipEnd = document.getElementById('newClipEnd');
+  const setClipStartBtn = document.getElementById('setClipStart');
+  const setClipEndBtn = document.getElementById('setClipEnd');
+  const addClipBtn = document.getElementById('addClipBtn');
+
+  // Import/export elements
+  const importSourceBtn = document.getElementById('importSourceBtn');
+  const importSourceInput = document.getElementById('importSourceInput');
+  const importClipsBtn = document.getElementById('importClipsBtn');
+  const importClipsInput = document.getElementById('importClipsInput');
+  const exportClipsBtn = document.getElementById('exportClipsBtn');
+  const titleCardsToggle = document.getElementById('titleCardsToggle');
 
   // Icons
   const icons = {
@@ -751,7 +909,8 @@
     volMed: '<path d="M5,9V15H9L14,20V4L9,9M18.5,12C18.5,10.23 17.5,8.71 16,7.97V16C17.5,15.29 18.5,13.76 18.5,12Z"/>',
     volMute: '<path d="M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.63,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.52C15.58,18.04 14.83,18.45 14,18.7V20.77C15.38,20.45 16.63,19.81 17.69,18.95L19.73,21L21,19.73L12,10.73M12,4L9.91,6.09L12,8.18Z"/>',
     fsEnter: '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>',
-    fsExit: '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
+    fsExit: '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>',
+    delete: '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>'
   };
 
   // Data
@@ -759,39 +918,41 @@
   const titleData = (payload.meta && payload.meta.title) || {};
   const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
   const linesPerPage = Number(payload.meta && payload.meta.lines_per_page) || 25;
-  const clips = Array.isArray(payload.clips) ? payload.clips : [];
   const mediaData = payload.media || {};
   const mediaFilename = mediaData.relative_path || mediaData.filename || 'media.mp4';
+  const primarySourceName = titleData.FILE_NAME || mediaFilename.split('/').pop().split('\\').pop();
+
+  // State
+  let clips = Array.isArray(payload.clips) ? [...payload.clips] : [];
+  let sources = [{ id: 'primary', name: primarySourceName, mediaPath: mediaFilename, lines: allLines, titleData }];
+  let currentSourceId = 'primary';
+  let currentPageIndex = 0;
+  let activeLineIndex = -1;
+  let viewMode = 'document';
+  let isFullscreen = false;
+  let activeClip = null;
+  let showTitleCards = false;
+  const lineElements = new Map();
+  const pageElements = [];
+  let allPages = [];
 
   // Setup video with fallback sources
   function setupVideoSources() {
-    // Try original path first, then just filename (same directory fallback)
-    const sources = [mediaFilename];
+    video.innerHTML = '';
+    const paths = [mediaFilename];
     const justFilename = mediaFilename.split('/').pop().split('\\').pop();
-    if (justFilename !== mediaFilename) {
-      sources.push(justFilename);
-    }
-    sources.forEach(src => {
+    if (justFilename !== mediaFilename) paths.push(justFilename);
+    paths.forEach(src => {
       const sourceEl = document.createElement('source');
       sourceEl.src = src;
       if (mediaData.content_type) sourceEl.type = mediaData.content_type;
       video.appendChild(sourceEl);
     });
+    video.load();
   }
   setupVideoSources();
 
-  // Page title
   document.title = (titleData.CASE_NAME || titleData.FILE_NAME || 'Transcript') + ' - Viewer';
-
-  // State
-  let currentPageIndex = 0;
-  let activeLineIndex = -1;
-  let viewMode = 'document'; // 'document' or 'caption'
-  let isFullscreen = false;
-  let activeClip = null;
-  const lineElements = new Map();
-  const pageElements = [];
-  let allPages = [];
 
   // Utilities
   function formatTime(sec) {
@@ -803,6 +964,14 @@
     return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
   }
 
+  function parseTime(str) {
+    if (!str) return 0;
+    const parts = str.trim().split(':').map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0] || 0;
+  }
+
   function updateVolumeIcon(vol) {
     volumeIcon.innerHTML = vol === 0 ? icons.volMute : vol < 0.5 ? icons.volMed : icons.volHigh;
   }
@@ -811,9 +980,7 @@
   function setViewMode(mode) {
     viewMode = mode;
     videoPane.classList.toggle('caption-mode', mode === 'caption');
-    document.querySelectorAll('.view-toggle-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.view === mode);
-    });
+    document.querySelectorAll('.view-toggle-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.view === mode));
     if (mode === 'caption') updateCaptions();
   }
 
@@ -827,11 +994,8 @@
 
   // Fullscreen
   function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-      app.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen();
-    }
+    if (!document.fullscreenElement) app.requestFullscreen().catch(() => {});
+    else document.exitFullscreen();
   }
 
   document.addEventListener('fullscreenchange', () => {
@@ -841,6 +1005,12 @@
   });
 
   fullscreenBtn.addEventListener('click', toggleFullscreen);
+
+  // Settings
+  titleCardsToggle.addEventListener('click', () => {
+    showTitleCards = !showTitleCards;
+    titleCardsToggle.classList.toggle('active', showTitleCards);
+  });
 
   // Pages
   function buildPages() {
@@ -982,10 +1152,24 @@
     captionFuture.textContent = getText(future);
   }
 
+  // Title card
+  function showTitleCardFor(clip, callback) {
+    if (!showTitleCards) { callback(); return; }
+    titleCardName.textContent = clip.name || 'Clip';
+    const source = sources.find(s => s.id === (clip.sourceId || 'primary'));
+    const meta = source ? source.name : '';
+    titleCardMeta.textContent = meta ? `${meta} - ${formatTime(clip.start)}` : formatTime(clip.start);
+    titleCard.classList.add('visible');
+    setTimeout(() => {
+      titleCard.classList.remove('visible');
+      setTimeout(callback, 500);
+    }, 3000);
+  }
+
   // Clips
   function buildClipsList() {
     if (!clips.length) {
-      clipsList.innerHTML = '<div class="no-clips">No clips defined</div>';
+      clipsList.innerHTML = '<div class="no-clips">No clips yet. Create one above!</div>';
       clipTimeline.classList.remove('has-clips');
       return;
     }
@@ -996,40 +1180,72 @@
     const duration = video.duration || durationSeconds || 1;
 
     clips.forEach((clip, idx) => {
-      // List item
       const item = document.createElement('div');
       item.className = 'clip-item';
       item.dataset.index = idx;
+
+      const source = sources.find(s => s.id === (clip.sourceId || 'primary'));
+      const sourceName = source && source.id !== 'primary' ? source.name : '';
+
       item.innerHTML = `
-        <div class="clip-item-name">${clip.name || 'Clip ' + (idx + 1)}</div>
-        <div class="clip-item-time">${formatTime(clip.start)} - ${formatTime(clip.end)}</div>
+        <div class="clip-item-header">
+          <div>
+            <div class="clip-item-name">${clip.name || 'Clip ' + (idx + 1)}</div>
+            <div class="clip-item-time">${formatTime(clip.start)} - ${formatTime(clip.end)}</div>
+            ${sourceName ? `<div class="clip-item-source">${sourceName}</div>` : ''}
+          </div>
+          <button type="button" class="clip-item-delete" data-index="${idx}" title="Delete clip">
+            <svg viewBox="0 0 24 24">${icons.delete}</svg>
+          </button>
+        </div>
       `;
-      item.addEventListener('click', () => playClip(idx));
+      item.addEventListener('click', e => { if (!e.target.closest('.clip-item-delete')) playClip(idx); });
+      item.querySelector('.clip-item-delete').addEventListener('click', e => {
+        e.stopPropagation();
+        deleteClip(idx);
+      });
       clipsList.appendChild(item);
 
-      // Timeline marker
-      const marker = document.createElement('div');
-      marker.className = 'clip-marker';
-      marker.dataset.index = idx;
-      const left = (clip.start / duration) * 100;
-      const width = Math.max(0.5, ((clip.end - clip.start) / duration) * 100);
-      marker.style.left = left + '%';
-      marker.style.width = width + '%';
-      marker.addEventListener('click', (e) => { e.stopPropagation(); playClip(idx); });
-      clipTimeline.appendChild(marker);
+      // Timeline marker (only for current source)
+      if (!clip.sourceId || clip.sourceId === currentSourceId) {
+        const marker = document.createElement('div');
+        marker.className = 'clip-marker';
+        marker.dataset.index = idx;
+        const left = (clip.start / duration) * 100;
+        const width = Math.max(0.5, ((clip.end - clip.start) / duration) * 100);
+        marker.style.left = left + '%';
+        marker.style.width = width + '%';
+        marker.addEventListener('click', e => { e.stopPropagation(); playClip(idx); });
+        clipTimeline.appendChild(marker);
+      }
     });
   }
 
   function playClip(index) {
     const clip = clips[index];
     if (!clip) return;
-    activeClip = { index, end: clip.end };
-    video.currentTime = clip.start;
-    video.play().catch(() => {});
 
-    // Update UI
-    document.querySelectorAll('.clip-item').forEach((el, i) => el.classList.toggle('active', i === index));
-    document.querySelectorAll('.clip-marker').forEach((el, i) => el.classList.toggle('active', i === index));
+    // Check if clip is from a different source
+    if (clip.sourceId && clip.sourceId !== currentSourceId) {
+      // For now, just show an alert - full source switching would require more work
+      alert('This clip is from a different source. Source switching is not yet supported.');
+      return;
+    }
+
+    const startPlayback = () => {
+      activeClip = { index, end: clip.end };
+      video.currentTime = clip.start;
+      video.play().catch(() => {});
+      document.querySelectorAll('.clip-item').forEach((el, i) => el.classList.toggle('active', i === index));
+      document.querySelectorAll('.clip-marker').forEach((el, i) => el.classList.toggle('active', Number(el.dataset.index) === index));
+    };
+
+    showTitleCardFor(clip, startPlayback);
+  }
+
+  function deleteClip(index) {
+    clips.splice(index, 1);
+    buildClipsList();
   }
 
   function checkClipEnd() {
@@ -1038,6 +1254,135 @@
       activeClip = null;
       document.querySelectorAll('.clip-item, .clip-marker').forEach(el => el.classList.remove('active'));
     }
+  }
+
+  // Clip creator
+  setClipStartBtn.addEventListener('click', () => {
+    newClipStart.value = formatTime(video.currentTime);
+  });
+
+  setClipEndBtn.addEventListener('click', () => {
+    newClipEnd.value = formatTime(video.currentTime);
+  });
+
+  addClipBtn.addEventListener('click', () => {
+    const name = newClipName.value.trim() || `Clip ${clips.length + 1}`;
+    const start = parseTime(newClipStart.value);
+    const end = parseTime(newClipEnd.value);
+
+    if (end <= start) {
+      alert('End time must be after start time');
+      return;
+    }
+
+    clips.push({ name, start, end, sourceId: currentSourceId });
+    newClipName.value = '';
+    newClipStart.value = '';
+    newClipEnd.value = '';
+    buildClipsList();
+  });
+
+  // Import/Export clips
+  exportClipsBtn.addEventListener('click', () => {
+    if (!clips.length) {
+      alert('No clips to export');
+      return;
+    }
+    const data = JSON.stringify({ clips, exportedFrom: primarySourceName, exportedAt: new Date().toISOString() }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (primarySourceName.replace(/\.[^.]+$/, '') || 'clips') + '-clips.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  importClipsBtn.addEventListener('click', () => importClipsInput.click());
+
+  importClipsInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (Array.isArray(data.clips)) {
+          clips = clips.concat(data.clips);
+          buildClipsList();
+        } else if (Array.isArray(data)) {
+          clips = clips.concat(data);
+          buildClipsList();
+        } else {
+          alert('Invalid clips file format');
+        }
+      } catch (err) {
+        alert('Failed to parse clips file: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  // Import source
+  importSourceBtn.addEventListener('click', () => importSourceInput.click());
+
+  importSourceInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        // Parse the HTML to extract the JSON payload
+        const html = reader.result;
+        const match = html.match(/<script[^>]*id="transcript-data"[^>]*>([\s\S]*?)<\/script>/);
+        if (!match) throw new Error('Could not find transcript data in HTML file');
+        const jsonText = match[1].trim();
+        if (jsonText === '__TRANSCRIPT_JSON__') throw new Error('This appears to be a template file, not an exported viewer');
+        const imported = JSON.parse(jsonText);
+
+        const importedMedia = imported.media || {};
+        const importedTitle = (imported.meta && imported.meta.title) || {};
+        const importedLines = Array.isArray(imported.lines) ? imported.lines : [];
+        const importedMediaPath = importedMedia.relative_path || importedMedia.filename || 'media.mp4';
+        const importedName = importedTitle.FILE_NAME || importedMediaPath.split('/').pop().split('\\').pop();
+
+        const newSourceId = 'source-' + Date.now();
+        sources.push({
+          id: newSourceId,
+          name: importedName,
+          mediaPath: importedMediaPath,
+          lines: importedLines,
+          titleData: importedTitle
+        });
+
+        buildSourcesList();
+        alert(`Imported source: ${importedName}`);
+      } catch (err) {
+        alert('Failed to import source: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
+  function buildSourcesList() {
+    sourcesList.innerHTML = '';
+    sources.forEach(source => {
+      const item = document.createElement('div');
+      item.className = 'clip-item' + (source.id === currentSourceId ? ' active' : '');
+      item.innerHTML = `<div class="clip-item-name">${source.name}</div>`;
+      if (source.id !== 'primary') {
+        item.innerHTML += `<div class="clip-item-time">${source.lines.length} lines</div>`;
+      }
+      item.addEventListener('click', () => {
+        // Source switching - for now just highlight, full switching is complex
+        document.querySelectorAll('.sources-list .clip-item').forEach(el => el.classList.remove('active'));
+        item.classList.add('active');
+        // Full source switching would require updating video.src, allLines, rebuilding pages, etc.
+      });
+      sourcesList.appendChild(item);
+    });
   }
 
   // Time update
@@ -1118,11 +1463,11 @@
     }
   });
 
-  // Double-click video to toggle fullscreen
   video.addEventListener('dblclick', toggleFullscreen);
 
   // Init
   buildDocumentView();
+  buildSourcesList();
   updateVolumeIcon(1);
   if (clips.length) buildClipsList();
 })();
