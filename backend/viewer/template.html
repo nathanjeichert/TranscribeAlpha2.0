@@ -5,12 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Transcript Viewer</title>
   <style>
-    *, *::before, *::after {
-      box-sizing: border-box;
-    }
+    *, *::before, *::after { box-sizing: border-box; }
 
     :root {
-      /* Page dimensions matching DOCX */
       --page-width: 8.5in;
       --page-margin-left: 0.75in;
       --page-margin-right: 0.5in;
@@ -20,13 +17,14 @@
       --font-size: 12pt;
       --line-height: 2.0;
       --lines-per-page: 25;
+      --sidebar-width: 280px;
 
-      /* Colors - Dark professional theme */
       --bg-app: #0d1117;
       --bg-video: #000000;
       --bg-document: #161b22;
       --bg-page: #ffffff;
       --bg-controls: rgba(13, 17, 23, 0.95);
+      --bg-sidebar: #0d1117;
       --text-primary: #1f2328;
       --text-secondary: #656d76;
       --text-muted: #8b949e;
@@ -34,7 +32,7 @@
       --accent: #2f81f7;
       --accent-hover: #58a6ff;
       --accent-highlight: rgba(47, 129, 247, 0.15);
-      --border-subtle: rgba(48, 54, 61, 0.4);
+      --clip-color: #238636;
       --border-muted: #30363d;
       --shadow-page: 0 8px 32px rgba(0, 0, 0, 0.4);
     }
@@ -49,15 +47,148 @@
       overflow: hidden;
     }
 
-    .app {
-      height: 100vh;
+    .app { height: 100vh; display: flex; }
+
+    /* Sidebar */
+    .sidebar {
+      width: var(--sidebar-width);
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border-muted);
       display: flex;
       flex-direction: column;
+      transition: margin-left 0.25s ease;
+      z-index: 50;
     }
 
+    .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-width)); }
 
-    /* Main Layout */
-    .app-main {
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sidebar-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-light);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sidebar-toggle {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .sidebar-toggle:hover { color: var(--text-light); background: rgba(255,255,255,0.08); }
+    .sidebar-toggle svg { width: 16px; height: 16px; fill: currentColor; }
+
+    .sidebar-content { flex: 1; overflow-y: auto; padding: 12px; }
+
+    .sidebar-section { margin-bottom: 20px; }
+    .sidebar-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      padding: 0 4px;
+    }
+
+    /* View Mode Toggle */
+    .view-toggle {
+      display: flex;
+      background: rgba(255,255,255,0.05);
+      border-radius: 6px;
+      padding: 3px;
+      margin-bottom: 16px;
+    }
+
+    .view-toggle-btn {
+      flex: 1;
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .view-toggle-btn.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .view-toggle-btn:not(.active):hover {
+      color: var(--text-light);
+    }
+
+    /* Clips List */
+    .clip-item {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-muted);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .clip-item:hover {
+      background: rgba(255,255,255,0.06);
+      border-color: var(--text-muted);
+    }
+
+    .clip-item.active {
+      border-color: var(--clip-color);
+      background: rgba(35, 134, 54, 0.1);
+    }
+
+    .clip-item-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-light);
+      margin-bottom: 4px;
+    }
+
+    .clip-item-time {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'SF Mono', monospace;
+    }
+
+    .no-clips {
+      text-align: center;
+      padding: 24px 12px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    /* Main Content */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .content-area {
       flex: 1;
       display: flex;
       min-height: 0;
@@ -65,12 +196,15 @@
 
     /* Video Pane */
     .video-pane {
-      flex: 0 0 48%;
+      flex: 0 0 50%;
       display: flex;
       flex-direction: column;
       background: var(--bg-video);
       min-width: 0;
+      position: relative;
     }
+
+    .video-pane.caption-mode { flex: 1; }
 
     .video-container {
       flex: 1;
@@ -78,6 +212,7 @@
       align-items: center;
       justify-content: center;
       min-height: 0;
+      position: relative;
     }
 
     video {
@@ -87,6 +222,35 @@
       object-fit: contain;
       background: #000;
     }
+
+    /* Caption Overlay */
+    .caption-overlay {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 20px 40px 30px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.85));
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .caption-mode .caption-overlay { display: flex; }
+
+    .caption-line {
+      font-family: 'Courier New', monospace;
+      font-size: 18px;
+      color: #fff;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+      line-height: 1.5;
+      text-align: center;
+      transition: opacity 0.2s ease;
+    }
+
+    .caption-line.current { opacity: 1; }
+    .caption-line.next { opacity: 0.5; }
+    .caption-line.future { opacity: 0.25; }
 
     /* Controls */
     .controls {
@@ -117,20 +281,9 @@
       padding: 0;
     }
 
-    .control-btn:hover {
-      color: var(--text-light);
-      background: rgba(255, 255, 255, 0.08);
-    }
-
-    .control-btn:active {
-      transform: scale(0.94);
-    }
-
-    .control-btn svg {
-      width: 20px;
-      height: 20px;
-      fill: currentColor;
-    }
+    .control-btn:hover { color: var(--text-light); background: rgba(255,255,255,0.08); }
+    .control-btn:active { transform: scale(0.94); }
+    .control-btn svg { width: 20px; height: 20px; fill: currentColor; }
 
     .control-btn.play-btn {
       width: 44px;
@@ -140,14 +293,8 @@
       border-radius: 50%;
     }
 
-    .control-btn.play-btn:hover {
-      background: var(--accent-hover);
-    }
-
-    .control-btn.play-btn svg {
-      width: 22px;
-      height: 22px;
-    }
+    .control-btn.play-btn:hover { background: var(--accent-hover); }
+    .control-btn.play-btn svg { width: 22px; height: 22px; }
 
     .progress-container {
       flex: 1;
@@ -158,26 +305,30 @@
 
     .time-display {
       font-size: 11px;
-      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-family: 'SF Mono', monospace;
       color: var(--text-muted);
       min-width: 42px;
       text-align: center;
       font-variant-numeric: tabular-nums;
     }
 
-    .progress-track {
+    .progress-wrapper {
       flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .progress-track {
       height: 4px;
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255,255,255,0.15);
       border-radius: 2px;
       cursor: pointer;
       position: relative;
       overflow: hidden;
     }
 
-    .progress-track:hover {
-      height: 6px;
-    }
+    .progress-track:hover { height: 6px; }
 
     .progress-fill {
       position: absolute;
@@ -201,6 +352,31 @@
       margin: 0;
     }
 
+    /* Clip Timeline */
+    .clip-timeline {
+      height: 20px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 3px;
+      position: relative;
+      display: none;
+    }
+
+    .clip-timeline.has-clips { display: block; }
+
+    .clip-marker {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      background: var(--clip-color);
+      border-radius: 2px;
+      cursor: pointer;
+      opacity: 0.7;
+      transition: opacity 0.15s ease;
+    }
+
+    .clip-marker:hover { opacity: 1; }
+    .clip-marker.active { opacity: 1; box-shadow: 0 0 0 2px var(--clip-color); }
+
     .volume-control {
       display: flex;
       align-items: center;
@@ -222,22 +398,15 @@
       padding: 0;
     }
 
-    .volume-btn:hover {
-      color: var(--text-light);
-    }
-
-    .volume-btn svg {
-      width: 18px;
-      height: 18px;
-      fill: currentColor;
-    }
+    .volume-btn:hover { color: var(--text-light); }
+    .volume-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
     .volume-slider {
       width: 70px;
       height: 4px;
       -webkit-appearance: none;
       appearance: none;
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255,255,255,0.15);
       border-radius: 2px;
       outline: none;
     }
@@ -251,15 +420,6 @@
       cursor: pointer;
     }
 
-    .volume-slider::-moz-range-thumb {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      background: var(--text-light);
-      border: none;
-      cursor: pointer;
-    }
-
     /* Document Pane */
     .document-pane {
       flex: 1;
@@ -269,6 +429,8 @@
       min-width: 0;
       overflow: hidden;
     }
+
+    .caption-mode .document-pane { display: none; }
 
     .document-header {
       padding: 10px 20px;
@@ -306,21 +468,13 @@
     }
 
     .page-nav button:hover:not(:disabled) {
-      background: rgba(255, 255, 255, 0.05);
+      background: rgba(255,255,255,0.05);
       border-color: var(--text-muted);
       color: var(--text-light);
     }
 
-    .page-nav button:disabled {
-      opacity: 0.3;
-      cursor: not-allowed;
-    }
-
-    .page-nav button svg {
-      width: 14px;
-      height: 14px;
-      fill: currentColor;
-    }
+    .page-nav button:disabled { opacity: 0.3; cursor: not-allowed; }
+    .page-nav button svg { width: 14px; height: 14px; fill: currentColor; }
 
     .document-scroll {
       flex: 1;
@@ -331,7 +485,6 @@
       align-items: center;
     }
 
-    /* Document Page - Matches DOCX formatting */
     .doc-page {
       width: var(--page-width);
       max-width: 100%;
@@ -343,12 +496,10 @@
       display: none;
     }
 
-    .doc-page.active {
-      display: block;
-    }
+    .doc-page.active { display: block; }
 
     .doc-lines {
-      font-family: 'Courier New', Courier, monospace;
+      font-family: 'Courier New', monospace;
       font-size: var(--font-size);
       line-height: var(--line-height);
       color: var(--text-primary);
@@ -363,13 +514,8 @@
       border-radius: 2px;
     }
 
-    .doc-line:hover {
-      background: rgba(47, 129, 247, 0.06);
-    }
-
-    .doc-line.current {
-      background: var(--accent-highlight);
-    }
+    .doc-line:hover { background: rgba(47, 129, 247, 0.06); }
+    .doc-line.current { background: var(--accent-highlight); }
 
     .doc-line-number {
       width: var(--line-number-width);
@@ -382,546 +528,604 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .doc-line.current .doc-line-number {
-      color: var(--accent);
-      font-weight: 500;
-    }
+    .doc-line.current .doc-line-number { color: var(--accent); font-weight: 500; }
+    .doc-line-text { flex: 1; white-space: pre; overflow: visible; }
+    .doc-empty { text-align: center; padding: 48px; color: var(--text-muted); font-style: italic; }
 
-    .doc-line-text {
-      flex: 1;
-      white-space: pre;
-      overflow: visible;
-    }
-
-    .doc-empty {
-      text-align: center;
-      padding: 48px;
+    /* Sidebar Toggle (when collapsed) */
+    .sidebar-expand {
+      position: fixed;
+      left: 12px;
+      top: 12px;
+      z-index: 60;
+      appearance: none;
+      border: 1px solid var(--border-muted);
+      background: var(--bg-app);
       color: var(--text-muted);
-      font-style: italic;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: none;
+      align-items: center;
+      justify-content: center;
     }
+
+    .sidebar-expand:hover { color: var(--text-light); background: var(--bg-sidebar); }
+    .sidebar-expand svg { width: 18px; height: 18px; fill: currentColor; }
+    .sidebar.collapsed ~ .main-content .sidebar-expand { display: flex; }
+
+    /* Fullscreen styles */
+    .app.fullscreen .sidebar,
+    .app.fullscreen .document-pane,
+    .app.fullscreen .sidebar-expand { display: none !important; }
+
+    .app.fullscreen .video-pane { flex: 1; }
+    .app.fullscreen .controls { display: none; }
+    .app.fullscreen .video-container { cursor: none; }
 
     /* Responsive */
     @media (max-width: 1200px) {
-      .app-main {
-        flex-direction: column;
-      }
-
-      .video-pane {
-        flex: 0 0 40vh;
-      }
-
-      .document-pane {
-        flex: 1;
-      }
-
-      .doc-page {
-        width: 100%;
-      }
+      .content-area { flex-direction: column; }
+      .video-pane { flex: 0 0 40vh; }
+      .document-pane { flex: 1; }
+      .doc-page { width: 100%; }
+      .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 100; }
+      .sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-width)); }
     }
 
     @media (max-width: 768px) {
-      .header-meta {
-        display: none;
-      }
-
-      .document-scroll {
-        padding: 16px;
-      }
-
+      .document-scroll { padding: 16px; }
       :root {
         --page-margin-left: 0.5in;
         --page-margin-right: 0.25in;
         --font-size: 10pt;
+        --sidebar-width: 260px;
       }
     }
 
-    /* Print styles */
+    /* Print */
     @media print {
-      .video-pane,
-      .controls,
-      .app-header,
-      .document-header {
-        display: none !important;
-      }
-
-      .document-pane {
-        overflow: visible;
-      }
-
-      .document-scroll {
-        padding: 0;
-        overflow: visible;
-      }
-
-      .doc-page {
-        display: block !important;
-        box-shadow: none;
-        page-break-after: always;
-        margin: 0;
-      }
-
-      .doc-line.current {
-        background: none;
-      }
+      .video-pane, .controls, .sidebar, .document-header { display: none !important; }
+      .document-pane { overflow: visible; }
+      .document-scroll { padding: 0; overflow: visible; }
+      .doc-page { display: block !important; box-shadow: none; page-break-after: always; margin: 0; }
+      .doc-line.current { background: none; }
     }
 
-    /* Scrollbar styling */
-    .document-scroll::-webkit-scrollbar {
-      width: 8px;
-    }
-
-    .document-scroll::-webkit-scrollbar-track {
-      background: transparent;
-    }
-
-    .document-scroll::-webkit-scrollbar-thumb {
-      background: var(--border-muted);
-      border-radius: 4px;
-    }
-
-    .document-scroll::-webkit-scrollbar-thumb:hover {
-      background: var(--text-muted);
-    }
+    /* Scrollbar */
+    .document-scroll::-webkit-scrollbar, .sidebar-content::-webkit-scrollbar { width: 8px; }
+    .document-scroll::-webkit-scrollbar-track, .sidebar-content::-webkit-scrollbar-track { background: transparent; }
+    .document-scroll::-webkit-scrollbar-thumb, .sidebar-content::-webkit-scrollbar-thumb { background: var(--border-muted); border-radius: 4px; }
+    .document-scroll::-webkit-scrollbar-thumb:hover, .sidebar-content::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
   </style>
 </head>
 <body>
-  <div class="app">
-    <main class="app-main">
-      <div class="video-pane">
-        <div class="video-container">
-          <video id="mediaPlayer" preload="metadata" playsinline></video>
-        </div>
-        <div class="controls">
-          <div class="controls-row">
-            <button type="button" class="control-btn" id="rewindBtn" aria-label="Rewind 10 seconds">
-              <svg viewBox="0 0 24 24"><path d="M12.5 3C17.15 3 21.08 6.03 22.47 10.22L20.1 11C19.05 7.81 16.04 5.5 12.5 5.5C10.54 5.5 8.77 6.22 7.38 7.38L10 10H3V3L5.6 5.6C7.45 4 9.85 3 12.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
-            </button>
-            <button type="button" class="control-btn play-btn" id="playBtn" aria-label="Play">
-              <svg viewBox="0 0 24 24" id="playIcon"><polygon points="5,3 19,12 5,21"/></svg>
-            </button>
-            <button type="button" class="control-btn" id="forwardBtn" aria-label="Forward 10 seconds">
-              <svg viewBox="0 0 24 24"><path d="M11.5 3C6.85 3 2.92 6.03 1.53 10.22L3.9 11C4.95 7.81 7.96 5.5 11.5 5.5C13.46 5.5 15.23 6.22 16.62 7.38L14 10H21V3L18.4 5.6C16.55 4 14.15 3 11.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
-            </button>
-            <div class="progress-container">
-              <span class="time-display" id="currentTime">0:00</span>
-              <div class="progress-track">
-                <div class="progress-fill" id="progressFill"></div>
-                <input type="range" class="progress-input" id="progressBar" min="0" max="100" step="0.1" value="0" />
-              </div>
-              <span class="time-display" id="totalDuration">0:00</span>
-            </div>
-            <div class="volume-control">
-              <button type="button" class="volume-btn" id="volumeBtn" aria-label="Toggle mute">
-                <svg viewBox="0 0 24 24" id="volumeIcon"><path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>
-              </button>
-              <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
-            </div>
-          </div>
-        </div>
+  <div class="app" id="app">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+          Transcript
+        </span>
+        <button type="button" class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+          <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+        </button>
       </div>
+      <div class="sidebar-content">
+        <div class="view-toggle">
+          <button type="button" class="view-toggle-btn active" data-view="document">Document</button>
+          <button type="button" class="view-toggle-btn" data-view="caption">Caption</button>
+        </div>
 
-      <div class="document-pane">
-        <div class="document-header">
-          <span class="page-indicator" id="pageIndicator">Page 1 of 1</span>
-          <div class="page-nav">
-            <button type="button" id="prevPageBtn" disabled>
-              <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
-              Prev
-            </button>
-            <button type="button" id="nextPageBtn" disabled>
-              Next
-              <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
-            </button>
-          </div>
-        </div>
-        <div class="document-scroll" id="documentScroll">
-          <div id="pagesContainer">
-            <div class="doc-empty">Loading transcript...</div>
+        <div class="sidebar-section">
+          <div class="sidebar-section-title">Clips</div>
+          <div id="clipsList" class="clips-list">
+            <div class="no-clips">No clips defined</div>
           </div>
         </div>
       </div>
-    </main>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <button type="button" class="sidebar-expand" id="sidebarExpand" aria-label="Open sidebar">
+        <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+      </button>
+
+      <div class="content-area" id="contentArea">
+        <div class="video-pane" id="videoPane">
+          <div class="video-container">
+            <video id="mediaPlayer" preload="metadata" playsinline></video>
+            <div class="caption-overlay" id="captionOverlay">
+              <div class="caption-line current" id="captionCurrent"></div>
+              <div class="caption-line next" id="captionNext"></div>
+              <div class="caption-line future" id="captionFuture"></div>
+            </div>
+          </div>
+          <div class="controls" id="controls">
+            <div class="controls-row">
+              <button type="button" class="control-btn" id="rewindBtn" aria-label="Rewind 10s">
+                <svg viewBox="0 0 24 24"><path d="M12.5 3C17.15 3 21.08 6.03 22.47 10.22L20.1 11C19.05 7.81 16.04 5.5 12.5 5.5C10.54 5.5 8.77 6.22 7.38 7.38L10 10H3V3L5.6 5.6C7.45 4 9.85 3 12.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
+              </button>
+              <button type="button" class="control-btn play-btn" id="playBtn" aria-label="Play">
+                <svg viewBox="0 0 24 24" id="playIcon"><polygon points="5,3 19,12 5,21"/></svg>
+              </button>
+              <button type="button" class="control-btn" id="forwardBtn" aria-label="Forward 10s">
+                <svg viewBox="0 0 24 24"><path d="M11.5 3C6.85 3 2.92 6.03 1.53 10.22L3.9 11C4.95 7.81 7.96 5.5 11.5 5.5C13.46 5.5 15.23 6.22 16.62 7.38L14 10H21V3L18.4 5.6C16.55 4 14.15 3 11.5 3M10 12V22H8V14H6V12H10M18 14V20C18 21.11 17.11 22 16 22H14C12.9 22 12 21.1 12 20V14C12 12.9 12.9 12 14 12H16C17.11 12 18 12.9 18 14M14 14V20H16V14H14Z"/></svg>
+              </button>
+              <div class="progress-container">
+                <span class="time-display" id="currentTime">0:00</span>
+                <div class="progress-wrapper">
+                  <div class="progress-track">
+                    <div class="progress-fill" id="progressFill"></div>
+                    <input type="range" class="progress-input" id="progressBar" min="0" max="100" step="0.1" value="0" />
+                  </div>
+                  <div class="clip-timeline" id="clipTimeline"></div>
+                </div>
+                <span class="time-display" id="totalDuration">0:00</span>
+              </div>
+              <div class="volume-control">
+                <button type="button" class="volume-btn" id="volumeBtn" aria-label="Mute">
+                  <svg viewBox="0 0 24 24" id="volumeIcon"><path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>
+                </button>
+                <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1" />
+              </div>
+              <button type="button" class="control-btn" id="fullscreenBtn" aria-label="Fullscreen">
+                <svg viewBox="0 0 24 24" id="fullscreenIcon"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="document-pane" id="documentPane">
+          <div class="document-header">
+            <span class="page-indicator" id="pageIndicator">Page 1 of 1</span>
+            <div class="page-nav">
+              <button type="button" id="prevPageBtn" disabled>
+                <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+                Prev
+              </button>
+              <button type="button" id="nextPageBtn" disabled>
+                Next
+                <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="document-scroll" id="documentScroll">
+            <div id="pagesContainer">
+              <div class="doc-empty">Loading transcript...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
   <script>
-    (function () {
-      const dataElement = document.getElementById('transcript-data');
-      let payload = {};
-      try {
-        payload = JSON.parse(dataElement.textContent || '{}');
-      } catch (err) {
-        console.error('Failed to parse transcript payload', err);
-      }
-      dataElement.remove();
+(function() {
+  const dataEl = document.getElementById('transcript-data');
+  let payload = {};
+  try { payload = JSON.parse(dataEl.textContent || '{}'); } catch(e) { console.error('Parse error', e); }
+  dataEl.remove();
 
-      // Elements
-      const video = document.getElementById('mediaPlayer');
-      const playBtn = document.getElementById('playBtn');
-      const playIcon = document.getElementById('playIcon');
-      const rewindBtn = document.getElementById('rewindBtn');
-      const forwardBtn = document.getElementById('forwardBtn');
-      const progressBar = document.getElementById('progressBar');
-      const progressFill = document.getElementById('progressFill');
-      const currentTimeEl = document.getElementById('currentTime');
-      const totalDurationEl = document.getElementById('totalDuration');
-      const volumeSlider = document.getElementById('volumeSlider');
-      const volumeBtn = document.getElementById('volumeBtn');
-      const volumeIcon = document.getElementById('volumeIcon');
-      const pageIndicator = document.getElementById('pageIndicator');
-      const prevPageBtn = document.getElementById('prevPageBtn');
-      const nextPageBtn = document.getElementById('nextPageBtn');
-      const pagesContainer = document.getElementById('pagesContainer');
-      const documentScroll = document.getElementById('documentScroll');
+  // Elements
+  const app = document.getElementById('app');
+  const sidebar = document.getElementById('sidebar');
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const sidebarExpand = document.getElementById('sidebarExpand');
+  const video = document.getElementById('mediaPlayer');
+  const playBtn = document.getElementById('playBtn');
+  const playIcon = document.getElementById('playIcon');
+  const rewindBtn = document.getElementById('rewindBtn');
+  const forwardBtn = document.getElementById('forwardBtn');
+  const progressBar = document.getElementById('progressBar');
+  const progressFill = document.getElementById('progressFill');
+  const currentTimeEl = document.getElementById('currentTime');
+  const totalDurationEl = document.getElementById('totalDuration');
+  const volumeSlider = document.getElementById('volumeSlider');
+  const volumeBtn = document.getElementById('volumeBtn');
+  const volumeIcon = document.getElementById('volumeIcon');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const fullscreenIcon = document.getElementById('fullscreenIcon');
+  const pageIndicator = document.getElementById('pageIndicator');
+  const prevPageBtn = document.getElementById('prevPageBtn');
+  const nextPageBtn = document.getElementById('nextPageBtn');
+  const pagesContainer = document.getElementById('pagesContainer');
+  const documentScroll = document.getElementById('documentScroll');
+  const videoPane = document.getElementById('videoPane');
+  const contentArea = document.getElementById('contentArea');
+  const clipsList = document.getElementById('clipsList');
+  const clipTimeline = document.getElementById('clipTimeline');
+  const captionCurrent = document.getElementById('captionCurrent');
+  const captionNext = document.getElementById('captionNext');
+  const captionFuture = document.getElementById('captionFuture');
 
-      // SVG icons
-      const playIconSvg = '<polygon points="5,3 19,12 5,21"/>';
-      const pauseIconSvg = '<path d="M6,4H10V20H6M14,4H18V20H14Z"/>';
-      const volumeHighSvg = '<path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>';
-      const volumeMediumSvg = '<path d="M5,9V15H9L14,20V4L9,9M18.5,12C18.5,10.23 17.5,8.71 16,7.97V16C17.5,15.29 18.5,13.76 18.5,12Z"/>';
-      const volumeMutedSvg = '<path d="M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.63,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.52C15.58,18.04 14.83,18.45 14,18.7V20.77C15.38,20.45 16.63,19.81 17.69,18.95L19.73,21L21,19.73L12,10.73M12,4L9.91,6.09L12,8.18Z"/>';
+  // Icons
+  const icons = {
+    play: '<polygon points="5,3 19,12 5,21"/>',
+    pause: '<path d="M6,4H10V20H6M14,4H18V20H14Z"/>',
+    volHigh: '<path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/>',
+    volMed: '<path d="M5,9V15H9L14,20V4L9,9M18.5,12C18.5,10.23 17.5,8.71 16,7.97V16C17.5,15.29 18.5,13.76 18.5,12Z"/>',
+    volMute: '<path d="M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.63,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.52C15.58,18.04 14.83,18.45 14,18.7V20.77C15.38,20.45 16.63,19.81 17.69,18.95L19.73,21L21,19.73L12,10.73M12,4L9.91,6.09L12,8.18Z"/>',
+    fsEnter: '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>',
+    fsExit: '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
+  };
 
-      // Data
-      const allLines = Array.isArray(payload.lines) ? payload.lines : [];
-      const titleData = (payload.meta && payload.meta.title) || {};
-      const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
-      const linesPerPage = Number(payload.meta && payload.meta.lines_per_page) || 25;
-      const defaultFileName = (payload.media && (payload.media.relative_path || payload.media.filename)) || 'media.mp4';
-      const mediaContentType = payload.media && payload.media.content_type;
+  // Data
+  const allLines = Array.isArray(payload.lines) ? payload.lines : [];
+  const titleData = (payload.meta && payload.meta.title) || {};
+  const durationSeconds = Number(payload.meta && payload.meta.duration_seconds) || 0;
+  const linesPerPage = Number(payload.meta && payload.meta.lines_per_page) || 25;
+  const clips = Array.isArray(payload.clips) ? payload.clips : [];
+  const mediaData = payload.media || {};
+  const mediaFilename = mediaData.relative_path || mediaData.filename || 'media.mp4';
 
-      // Setup video source
-      const source = document.createElement('source');
-      source.src = defaultFileName;
-      if (mediaContentType) {
-        source.type = mediaContentType;
-      }
-      video.appendChild(source);
+  // Setup video with fallback sources
+  function setupVideoSources() {
+    // Try original path first, then just filename (same directory fallback)
+    const sources = [mediaFilename];
+    const justFilename = mediaFilename.split('/').pop().split('\\').pop();
+    if (justFilename !== mediaFilename) {
+      sources.push(justFilename);
+    }
+    sources.forEach(src => {
+      const sourceEl = document.createElement('source');
+      sourceEl.src = src;
+      if (mediaData.content_type) sourceEl.type = mediaData.content_type;
+      video.appendChild(sourceEl);
+    });
+  }
+  setupVideoSources();
 
-      // Setup page title
-      const displayCaseName = titleData.CASE_NAME || 'Transcript Viewer';
-      document.title = displayCaseName + ' - Transcript';
+  // Page title
+  document.title = (titleData.CASE_NAME || titleData.FILE_NAME || 'Transcript') + ' - Viewer';
 
-      // State
-      let currentPageIndex = 0;
-      let activeLineIndex = -1;
-      const lineElements = new Map();
-      const pageElements = [];
-      let allPages = [];
+  // State
+  let currentPageIndex = 0;
+  let activeLineIndex = -1;
+  let viewMode = 'document'; // 'document' or 'caption'
+  let isFullscreen = false;
+  let activeClip = null;
+  const lineElements = new Map();
+  const pageElements = [];
+  let allPages = [];
 
-      // Utilities
-      function formatTime(seconds) {
-        if (!Number.isFinite(seconds)) return '0:00';
-        const totalSeconds = Math.max(0, Math.floor(seconds));
-        const h = Math.floor(totalSeconds / 3600);
-        const m = Math.floor((totalSeconds % 3600) / 60);
-        const s = totalSeconds % 60;
-        if (h > 0) {
-          return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-        }
-        return `${m}:${String(s).padStart(2, '0')}`;
-      }
+  // Utilities
+  function formatTime(sec) {
+    if (!Number.isFinite(sec)) return '0:00';
+    const t = Math.max(0, Math.floor(sec));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const s = t % 60;
+    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+  }
 
-      function updateVolumeIcon(volume) {
-        if (volume === 0) {
-          volumeIcon.innerHTML = volumeMutedSvg;
-        } else if (volume < 0.5) {
-          volumeIcon.innerHTML = volumeMediumSvg;
-        } else {
-          volumeIcon.innerHTML = volumeHighSvg;
-        }
-      }
+  function updateVolumeIcon(vol) {
+    volumeIcon.innerHTML = vol === 0 ? icons.volMute : vol < 0.5 ? icons.volMed : icons.volHigh;
+  }
 
-      // Build pages from lines (25 lines per page)
-      function buildPages() {
-        allPages = [];
-        if (!allLines.length) return;
+  // View mode
+  function setViewMode(mode) {
+    viewMode = mode;
+    videoPane.classList.toggle('caption-mode', mode === 'caption');
+    document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.view === mode);
+    });
+    if (mode === 'caption') updateCaptions();
+  }
 
-        // Group lines by page_number or create pages of 25 lines
-        const pageMap = new Map();
+  document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => setViewMode(btn.dataset.view));
+  });
 
-        allLines.forEach((line, idx) => {
-          const pageNum = line.page_number || Math.floor(idx / linesPerPage) + 1;
-          if (!pageMap.has(pageNum)) {
-            pageMap.set(pageNum, []);
+  // Sidebar
+  sidebarToggle.addEventListener('click', () => sidebar.classList.add('collapsed'));
+  sidebarExpand.addEventListener('click', () => sidebar.classList.remove('collapsed'));
+
+  // Fullscreen
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      app.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  document.addEventListener('fullscreenchange', () => {
+    isFullscreen = !!document.fullscreenElement;
+    app.classList.toggle('fullscreen', isFullscreen);
+    fullscreenIcon.innerHTML = isFullscreen ? icons.fsExit : icons.fsEnter;
+  });
+
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+
+  // Pages
+  function buildPages() {
+    allPages = [];
+    if (!allLines.length) return;
+    const pageMap = new Map();
+    allLines.forEach((line, idx) => {
+      const pn = line.page_number || Math.floor(idx / linesPerPage) + 1;
+      if (!pageMap.has(pn)) pageMap.set(pn, []);
+      pageMap.get(pn).push(idx);
+    });
+    Array.from(pageMap.keys()).sort((a,b) => a-b).forEach(pn => {
+      allPages.push({ page_number: pn, line_indexes: pageMap.get(pn) });
+    });
+  }
+
+  function buildDocumentView() {
+    buildPages();
+    if (!allLines.length || !allPages.length) {
+      pagesContainer.innerHTML = '<div class="doc-empty">No transcript available</div>';
+      return;
+    }
+    pagesContainer.innerHTML = '';
+    lineElements.clear();
+    pageElements.length = 0;
+
+    allPages.forEach((page, pageIdx) => {
+      const pageEl = document.createElement('div');
+      pageEl.className = 'doc-page' + (pageIdx === 0 ? ' active' : '');
+      const linesEl = document.createElement('div');
+      linesEl.className = 'doc-lines';
+
+      page.line_indexes.forEach(lineIndex => {
+        const line = allLines[lineIndex];
+        if (!line) return;
+        const lineEl = document.createElement('div');
+        lineEl.className = 'doc-line';
+        lineEl.dataset.index = lineIndex;
+
+        const numEl = document.createElement('span');
+        numEl.className = 'doc-line-number';
+        numEl.textContent = line.line_number != null ? line.line_number : ((lineIndex % linesPerPage) + 1);
+
+        const textEl = document.createElement('span');
+        textEl.className = 'doc-line-text';
+        textEl.textContent = line.rendered_text || line.text || '';
+
+        lineEl.appendChild(numEl);
+        lineEl.appendChild(textEl);
+        linesEl.appendChild(lineEl);
+        lineElements.set(lineIndex, lineEl);
+
+        lineEl.addEventListener('click', () => {
+          if (typeof line.start === 'number') {
+            video.currentTime = Math.max(0, line.start - 0.05);
+            if (video.paused) video.play().catch(() => {});
           }
-          pageMap.get(pageNum).push(idx);
         });
+      });
 
-        // Convert map to array of page objects
-        const sortedPageNums = Array.from(pageMap.keys()).sort((a, b) => a - b);
-        sortedPageNums.forEach(pageNum => {
-          allPages.push({
-            page_number: pageNum,
-            line_indexes: pageMap.get(pageNum)
-          });
-        });
-      }
+      pageEl.appendChild(linesEl);
+      pagesContainer.appendChild(pageEl);
+      pageElements.push(pageEl);
+    });
 
-      // Build document view
-      function buildDocumentView() {
-        buildPages();
+    updatePageIndicator();
+    updatePageButtons();
+  }
 
-        if (!allLines.length || !allPages.length) {
-          pagesContainer.innerHTML = '<div class="doc-empty">No transcript available</div>';
-          return;
-        }
+  function showPage(index) {
+    if (index < 0 || index >= pageElements.length) return;
+    pageElements.forEach((el, i) => el.classList.toggle('active', i === index));
+    currentPageIndex = index;
+    updatePageIndicator();
+    updatePageButtons();
+    documentScroll.scrollTop = 0;
+  }
 
-        pagesContainer.innerHTML = '';
-        lineElements.clear();
-        pageElements.length = 0;
+  function updatePageIndicator() {
+    pageIndicator.textContent = `Page ${currentPageIndex + 1} of ${pageElements.length || 1}`;
+  }
 
-        allPages.forEach((page, pageIdx) => {
-          const pageEl = document.createElement('div');
-          pageEl.className = 'doc-page';
-          if (pageIdx === 0) pageEl.classList.add('active');
+  function updatePageButtons() {
+    prevPageBtn.disabled = currentPageIndex <= 0;
+    nextPageBtn.disabled = currentPageIndex >= pageElements.length - 1;
+  }
 
-          const linesEl = document.createElement('div');
-          linesEl.className = 'doc-lines';
+  prevPageBtn.addEventListener('click', () => { if (currentPageIndex > 0) showPage(currentPageIndex - 1); });
+  nextPageBtn.addEventListener('click', () => { if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1); });
 
-          (page.line_indexes || []).forEach((lineIndex) => {
-            const line = allLines[lineIndex];
-            if (!line) return;
+  // Active line
+  function findActiveLine(time) {
+    if (!allLines.length) return -1;
+    for (let i = 0; i < allLines.length; i++) {
+      const line = allLines[i];
+      const start = Number(line.start) || 0;
+      const end = Number(line.end);
+      if (!Number.isFinite(end)) { if (time >= start && i === allLines.length - 1) return i; continue; }
+      if (time < start) return Math.max(0, i - 1);
+      if (time >= start && time < end) return i;
+    }
+    return allLines.length - 1;
+  }
 
-            const lineEl = document.createElement('div');
-            lineEl.className = 'doc-line';
-            lineEl.dataset.index = String(lineIndex);
-
-            const numberEl = document.createElement('span');
-            numberEl.className = 'doc-line-number';
-            const displayNumber = line.line_number != null ? line.line_number : ((lineIndex % linesPerPage) + 1);
-            numberEl.textContent = String(displayNumber);
-
-            const textEl = document.createElement('span');
-            textEl.className = 'doc-line-text';
-
-            // Use rendered_text which already has proper formatting with speaker prefix and spacing
-            const text = line.rendered_text || line.text || '';
-            textEl.textContent = text;
-
-            lineEl.appendChild(numberEl);
-            lineEl.appendChild(textEl);
-            linesEl.appendChild(lineEl);
-
-            lineElements.set(lineIndex, lineEl);
-
-            // Click to seek
-            lineEl.addEventListener('click', () => {
-              if (typeof line.start === 'number') {
-                video.currentTime = Math.max(0, line.start - 0.05);
-                if (video.paused) {
-                  video.play().catch(() => {});
-                }
-              }
-            });
-          });
-
-          pageEl.appendChild(linesEl);
-          pagesContainer.appendChild(pageEl);
-          pageElements.push(pageEl);
-        });
-
-        updatePageIndicator();
-        updatePageButtons();
-      }
-
-      function showPage(index) {
-        if (index < 0 || index >= pageElements.length) return;
-
-        pageElements.forEach((el, i) => {
-          el.classList.toggle('active', i === index);
-        });
-        currentPageIndex = index;
-        updatePageIndicator();
-        updatePageButtons();
-        documentScroll.scrollTop = 0;
-      }
-
-      function updatePageIndicator() {
-        const total = pageElements.length || 1;
-        pageIndicator.textContent = `Page ${currentPageIndex + 1} of ${total}`;
-      }
-
-      function updatePageButtons() {
-        prevPageBtn.disabled = currentPageIndex <= 0;
-        nextPageBtn.disabled = currentPageIndex >= pageElements.length - 1;
-      }
-
-      // Find active line by current time
-      function findActiveLine(time) {
-        if (!allLines.length) return -1;
-
-        for (let i = 0; i < allLines.length; i++) {
-          const line = allLines[i];
-          const start = Number(line.start) || 0;
-          const end = Number(line.end);
-
-          if (!Number.isFinite(end)) {
-            if (time >= start && i === allLines.length - 1) return i;
-            continue;
-          }
-
-          if (time < start) return Math.max(0, i - 1);
-          if (time >= start && time < end) return i;
-        }
-
-        return allLines.length - 1;
-      }
-
-      function setActiveLine(lineIndex) {
-        // Remove previous highlight
-        lineElements.forEach(el => el.classList.remove('current'));
-
-        if (lineIndex < 0 || lineIndex >= allLines.length) return;
-
-        const lineEl = lineElements.get(lineIndex);
-        if (lineEl) {
-          lineEl.classList.add('current');
-
-          // Find which page this line is on and show it
-          for (let pageIdx = 0; pageIdx < allPages.length; pageIdx++) {
-            const page = allPages[pageIdx];
-            if (page.line_indexes && page.line_indexes.includes(lineIndex)) {
-              if (pageIdx !== currentPageIndex) {
-                showPage(pageIdx);
-              }
-              break;
-            }
-          }
-
-          // Scroll line into view
-          lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-
-        activeLineIndex = lineIndex;
-      }
-
-      // Time update handler
-      function handleTimeUpdate() {
-        const currentTime = video.currentTime;
-        const duration = video.duration || durationSeconds || 0;
-
-        if (Number.isFinite(duration) && duration > 0) {
-          const percent = (currentTime / duration) * 100;
-          progressBar.value = String(percent);
-          progressFill.style.width = percent + '%';
-          totalDurationEl.textContent = formatTime(duration);
-        }
-        currentTimeEl.textContent = formatTime(currentTime);
-
-        const lineIndex = findActiveLine(currentTime);
-        if (lineIndex !== activeLineIndex) {
-          setActiveLine(lineIndex);
+  function setActiveLine(lineIndex) {
+    lineElements.forEach(el => el.classList.remove('current'));
+    if (lineIndex < 0 || lineIndex >= allLines.length) return;
+    const lineEl = lineElements.get(lineIndex);
+    if (lineEl) {
+      lineEl.classList.add('current');
+      for (let pi = 0; pi < allPages.length; pi++) {
+        if (allPages[pi].line_indexes.includes(lineIndex)) {
+          if (pi !== currentPageIndex) showPage(pi);
+          break;
         }
       }
+      lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    activeLineIndex = lineIndex;
+  }
 
-      // Event listeners - Video controls
-      playBtn.addEventListener('click', () => {
-        if (video.paused) {
-          video.play().catch(() => {});
-        } else {
-          video.pause();
-        }
-      });
+  // Captions
+  function updateCaptions() {
+    if (viewMode !== 'caption') return;
+    const idx = activeLineIndex >= 0 ? activeLineIndex : 0;
+    const curr = allLines[idx];
+    const next = allLines[idx + 1];
+    const future = allLines[idx + 2];
 
-      rewindBtn.addEventListener('click', () => {
-        video.currentTime = Math.max(0, video.currentTime - 10);
-      });
+    function getText(line) {
+      if (!line) return '';
+      const text = line.text || line.rendered_text || '';
+      const speaker = line.speaker || '';
+      return line.is_continuation ? text : (speaker ? `${speaker}: ${text}` : text);
+    }
 
-      forwardBtn.addEventListener('click', () => {
-        const duration = video.duration || durationSeconds || 0;
-        video.currentTime = Math.min(duration, video.currentTime + 10);
-      });
+    captionCurrent.textContent = getText(curr);
+    captionNext.textContent = getText(next);
+    captionFuture.textContent = getText(future);
+  }
 
-      progressBar.addEventListener('input', (e) => {
-        const duration = video.duration || durationSeconds || 0;
-        if (duration) {
-          const newTime = (Number(e.target.value) / 100) * duration;
-          video.currentTime = newTime;
-          progressFill.style.width = e.target.value + '%';
-        }
-      });
+  // Clips
+  function buildClipsList() {
+    if (!clips.length) {
+      clipsList.innerHTML = '<div class="no-clips">No clips defined</div>';
+      clipTimeline.classList.remove('has-clips');
+      return;
+    }
 
-      volumeSlider.addEventListener('input', () => {
-        video.volume = Number(volumeSlider.value);
-        updateVolumeIcon(video.volume);
-      });
+    clipsList.innerHTML = '';
+    clipTimeline.innerHTML = '';
+    clipTimeline.classList.add('has-clips');
+    const duration = video.duration || durationSeconds || 1;
 
-      volumeBtn.addEventListener('click', () => {
-        if (video.volume > 0) {
-          volumeSlider.dataset.prevVolume = video.volume;
-          video.volume = 0;
-          volumeSlider.value = 0;
-        } else {
-          const prevVolume = Number(volumeSlider.dataset.prevVolume) || 1;
-          video.volume = prevVolume;
-          volumeSlider.value = prevVolume;
-        }
-        updateVolumeIcon(video.volume);
-      });
+    clips.forEach((clip, idx) => {
+      // List item
+      const item = document.createElement('div');
+      item.className = 'clip-item';
+      item.dataset.index = idx;
+      item.innerHTML = `
+        <div class="clip-item-name">${clip.name || 'Clip ' + (idx + 1)}</div>
+        <div class="clip-item-time">${formatTime(clip.start)} - ${formatTime(clip.end)}</div>
+      `;
+      item.addEventListener('click', () => playClip(idx));
+      clipsList.appendChild(item);
 
-      // Event listeners - Video state
-      video.addEventListener('play', () => {
-        playIcon.innerHTML = pauseIconSvg;
-      });
+      // Timeline marker
+      const marker = document.createElement('div');
+      marker.className = 'clip-marker';
+      marker.dataset.index = idx;
+      const left = (clip.start / duration) * 100;
+      const width = Math.max(0.5, ((clip.end - clip.start) / duration) * 100);
+      marker.style.left = left + '%';
+      marker.style.width = width + '%';
+      marker.addEventListener('click', (e) => { e.stopPropagation(); playClip(idx); });
+      clipTimeline.appendChild(marker);
+    });
+  }
 
-      video.addEventListener('pause', () => {
-        playIcon.innerHTML = playIconSvg;
-      });
+  function playClip(index) {
+    const clip = clips[index];
+    if (!clip) return;
+    activeClip = { index, end: clip.end };
+    video.currentTime = clip.start;
+    video.play().catch(() => {});
 
-      video.addEventListener('timeupdate', handleTimeUpdate);
-      video.addEventListener('seeked', handleTimeUpdate);
-      video.addEventListener('loadedmetadata', () => {
-        totalDurationEl.textContent = formatTime(video.duration || durationSeconds);
-        handleTimeUpdate();
-      });
+    // Update UI
+    document.querySelectorAll('.clip-item').forEach((el, i) => el.classList.toggle('active', i === index));
+    document.querySelectorAll('.clip-marker').forEach((el, i) => el.classList.toggle('active', i === index));
+  }
 
-      // Event listeners - Page navigation
-      prevPageBtn.addEventListener('click', () => {
-        if (currentPageIndex > 0) {
-          showPage(currentPageIndex - 1);
-        }
-      });
+  function checkClipEnd() {
+    if (activeClip && video.currentTime >= activeClip.end) {
+      video.pause();
+      activeClip = null;
+      document.querySelectorAll('.clip-item, .clip-marker').forEach(el => el.classList.remove('active'));
+    }
+  }
 
-      nextPageBtn.addEventListener('click', () => {
-        if (currentPageIndex < pageElements.length - 1) {
-          showPage(currentPageIndex + 1);
-        }
-      });
+  // Time update
+  function handleTimeUpdate() {
+    const ct = video.currentTime;
+    const dur = video.duration || durationSeconds || 0;
 
-      // Keyboard shortcuts
-      document.addEventListener('keydown', (e) => {
-        if (e.target.tagName === 'INPUT') return;
+    if (Number.isFinite(dur) && dur > 0) {
+      const pct = (ct / dur) * 100;
+      progressBar.value = pct;
+      progressFill.style.width = pct + '%';
+      totalDurationEl.textContent = formatTime(dur);
+    }
+    currentTimeEl.textContent = formatTime(ct);
 
-        switch (e.key) {
-          case ' ':
-            e.preventDefault();
-            if (video.paused) {
-              video.play().catch(() => {});
-            } else {
-              video.pause();
-            }
-            break;
-          case 'ArrowLeft':
-            video.currentTime = Math.max(0, video.currentTime - 10);
-            break;
-          case 'ArrowRight':
-            video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
-            break;
-          case 'ArrowUp':
-            e.preventDefault();
-            if (currentPageIndex > 0) showPage(currentPageIndex - 1);
-            break;
-          case 'ArrowDown':
-            e.preventDefault();
-            if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1);
-            break;
-        }
-      });
+    const li = findActiveLine(ct);
+    if (li !== activeLineIndex) {
+      setActiveLine(li);
+      updateCaptions();
+    }
 
-      // Initialize
-      buildDocumentView();
-      updateVolumeIcon(1);
-    })();
+    checkClipEnd();
+  }
+
+  // Video controls
+  playBtn.addEventListener('click', () => { video.paused ? video.play().catch(() => {}) : video.pause(); });
+  rewindBtn.addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
+  forwardBtn.addEventListener('click', () => { video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); });
+
+  progressBar.addEventListener('input', e => {
+    const dur = video.duration || durationSeconds || 0;
+    if (dur) {
+      video.currentTime = (Number(e.target.value) / 100) * dur;
+      progressFill.style.width = e.target.value + '%';
+    }
+  });
+
+  volumeSlider.addEventListener('input', () => {
+    video.volume = Number(volumeSlider.value);
+    updateVolumeIcon(video.volume);
+  });
+
+  volumeBtn.addEventListener('click', () => {
+    if (video.volume > 0) {
+      volumeSlider.dataset.prevVol = video.volume;
+      video.volume = 0;
+      volumeSlider.value = 0;
+    } else {
+      const pv = Number(volumeSlider.dataset.prevVol) || 1;
+      video.volume = pv;
+      volumeSlider.value = pv;
+    }
+    updateVolumeIcon(video.volume);
+  });
+
+  video.addEventListener('play', () => { playIcon.innerHTML = icons.pause; });
+  video.addEventListener('pause', () => { playIcon.innerHTML = icons.play; });
+  video.addEventListener('timeupdate', handleTimeUpdate);
+  video.addEventListener('seeked', handleTimeUpdate);
+  video.addEventListener('loadedmetadata', () => {
+    totalDurationEl.textContent = formatTime(video.duration || durationSeconds);
+    handleTimeUpdate();
+    buildClipsList();
+  });
+
+  // Keyboard
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    switch (e.key) {
+      case ' ': e.preventDefault(); video.paused ? video.play().catch(() => {}) : video.pause(); break;
+      case 'ArrowLeft': video.currentTime = Math.max(0, video.currentTime - 10); break;
+      case 'ArrowRight': video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); break;
+      case 'ArrowUp': e.preventDefault(); if (currentPageIndex > 0) showPage(currentPageIndex - 1); break;
+      case 'ArrowDown': e.preventDefault(); if (currentPageIndex < pageElements.length - 1) showPage(currentPageIndex + 1); break;
+      case 'f': case 'F': toggleFullscreen(); break;
+      case 'c': case 'C': setViewMode(viewMode === 'caption' ? 'document' : 'caption'); break;
+      case 'Escape': if (isFullscreen) document.exitFullscreen(); break;
+    }
+  });
+
+  // Double-click video to toggle fullscreen
+  video.addEventListener('dblclick', toggleFullscreen);
+
+  // Init
+  buildDocumentView();
+  updateVolumeIcon(1);
+  if (clips.length) buildClipsList();
+})();
   </script>
 </body>
 </html>

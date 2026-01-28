@@ -1341,9 +1341,10 @@ export default function TranscriptEditor({
                 ) : (
                   <button
                     className="btn-outline w-full"
-                    onClick={() =>
-                      viewerHtmlData && onDownload(viewerHtmlData, buildFilename('Viewer', '.html'), 'text/html')
-                    }
+                    onClick={() => {
+                      const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
+                      viewerHtmlData && onDownload(viewerHtmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
+                    }}
                     disabled={!viewerHtmlData}
                   >
                     Download HTML Viewer

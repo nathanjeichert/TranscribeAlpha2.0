@@ -885,7 +885,8 @@ export default function TranscribeForm() {
                           <button
                             onClick={() => {
                               if (transcriptData.viewer_html_base64) {
-                                downloadFile(transcriptData.viewer_html_base64, generateFilename('viewer', '.html'), 'text/html')
+                                const mediaBaseName = selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript'
+                                downloadFile(transcriptData.viewer_html_base64, generateFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
                               }
                             }}
                             className="btn-primary text-center py-3"
