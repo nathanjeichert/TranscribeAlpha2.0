@@ -779,7 +779,8 @@
   let payload = {};
   try {
     const raw = dataEl ? dataEl.textContent : '{}';
-    if (raw && raw !== '__TRANSCRIPT_JSON__') payload = JSON.parse(raw);
+    // Check if it starts with { (valid JSON) rather than __ (placeholder)
+    if (raw && raw.charAt(0) === '{') payload = JSON.parse(raw);
   } catch(e) { console.error('JSON parse error:', e); }
   if (dataEl) dataEl.remove();
 
@@ -1266,7 +1267,7 @@
         const m = html.match(/<script[^>]*id="transcript-data"[^>]*>([\s\S]*?)<\/script>/);
         if (!m) throw new Error('No transcript data found');
         const json = m[1].trim();
-        if (json === '__TRANSCRIPT_JSON__') throw new Error('Template file');
+        if (!json || json.charAt(0) !== '{') throw new Error('Template file');
         const d = JSON.parse(json);
         const name = (d.meta?.title?.FILE_NAME) || f.name;
         sources.push({ id: 'src-' + Date.now(), name, lines: d.lines || [] });
