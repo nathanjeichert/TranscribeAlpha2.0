@@ -388,27 +388,38 @@
     /* Caption Overlay */
     .caption-overlay {
       position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      padding: 20px 40px 30px;
+      inset: 0;
       display: none;
       flex-direction: column;
-      align-items: center;
-      background: linear-gradient(transparent, rgba(0,0,0,0.8));
+      justify-content: center;
+      align-items: stretch;
+      background: rgba(0,0,0,0.85);
+      padding: 40px 60px;
       pointer-events: none;
+      overflow: hidden;
     }
     .video-pane.caption-mode .caption-overlay { display: flex; }
     .caption-line {
-      font-size: 18px;
-      color: #ffffff;
-      text-align: center;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-      max-width: 80%;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 14px;
+      color: rgba(255,255,255,0.4);
+      padding: 4px 12px;
+      white-space: pre-wrap;
+      transition: all 0.2s ease;
+      border-left: 3px solid transparent;
     }
-    .caption-line.current { opacity: 1; font-weight: 500; }
-    .caption-line.next { opacity: 0.6; font-size: 16px; }
-    .caption-line.future { opacity: 0.3; font-size: 14px; }
+    .caption-line.current {
+      color: #ffffff;
+      font-weight: 500;
+      background: rgba(255,255,255,0.1);
+      border-left-color: var(--amber-500);
+      font-size: 16px;
+      padding: 8px 12px;
+    }
+    .caption-line.prev-1 { color: rgba(255,255,255,0.6); }
+    .caption-line.prev-2 { color: rgba(255,255,255,0.35); }
+    .caption-line.next-1 { color: rgba(255,255,255,0.6); }
+    .caption-line.next-2 { color: rgba(255,255,255,0.35); }
 
     /* Title Card */
     .title-card {
@@ -721,10 +732,12 @@
         <div class="video-pane" id="videoPane">
           <div class="video-container">
             <video id="video" preload="metadata" playsinline></video>
-            <div class="caption-overlay">
-              <div class="caption-line current" id="caption1"></div>
-              <div class="caption-line next" id="caption2"></div>
-              <div class="caption-line future" id="caption3"></div>
+            <div class="caption-overlay" id="captionOverlay">
+              <div class="caption-line prev-2" id="captionPrev2"></div>
+              <div class="caption-line prev-1" id="captionPrev1"></div>
+              <div class="caption-line current" id="captionCurrent"></div>
+              <div class="caption-line next-1" id="captionNext1"></div>
+              <div class="caption-line next-2" id="captionNext2"></div>
             </div>
             <div class="title-card" id="titleCard">
               <div class="title-card-name" id="titleCardName"></div>
@@ -820,9 +833,11 @@
   const pages = $('pages');
   const docScroll = $('docScroll');
   const headerTitle = $('headerTitle');
-  const caption1 = $('caption1');
-  const caption2 = $('caption2');
-  const caption3 = $('caption3');
+  const captionPrev2 = $('captionPrev2');
+  const captionPrev1 = $('captionPrev1');
+  const captionCurrent = $('captionCurrent');
+  const captionNext1 = $('captionNext1');
+  const captionNext2 = $('captionNext2');
   const titleCard = $('titleCard');
   const titleCardName = $('titleCardName');
   const titleCardMeta = $('titleCardMeta');
@@ -1009,10 +1024,12 @@
   // Captions
   function updateCaptions() {
     if (viewMode !== 'caption') return;
-    const get = i => (allLines[i] && allLines[i].text) || '';
-    caption1.textContent = get(activeLineIdx);
-    caption2.textContent = get(activeLineIdx + 1);
-    caption3.textContent = get(activeLineIdx + 2);
+    const get = i => (allLines[i] && allLines[i].rendered_text) || '';
+    captionPrev2.textContent = get(activeLineIdx - 2);
+    captionPrev1.textContent = get(activeLineIdx - 1);
+    captionCurrent.textContent = get(activeLineIdx);
+    captionNext1.textContent = get(activeLineIdx + 1);
+    captionNext2.textContent = get(activeLineIdx + 2);
   }
 
   // Time update
