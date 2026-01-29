@@ -606,6 +606,7 @@
       word-break: break-word;
       color: var(--text-primary);
     }
+    .line-text .speaker-name { font-weight: 600; }
 
     .doc-empty {
       text-align: center;
@@ -613,13 +614,20 @@
       color: var(--text-muted);
     }
 
-    /* Fullscreen */
+    /* Caption Mode - hide document pane, video takes full width */
+    .content-area.caption-mode .document-pane { display: none; }
+    .content-area.caption-mode .video-pane { flex: 1; }
+
+    /* Fullscreen - hide sidebar/header but keep transcript view */
     .app.fullscreen .sidebar,
-    .app.fullscreen .main-header,
-    .app.fullscreen .document-pane { display: none !important; }
-    .app.fullscreen .video-pane { flex: 1; }
-    .app.fullscreen .controls { background: transparent; position: absolute; bottom: 0; left: 0; right: 0; opacity: 0; transition: opacity 0.3s; }
+    .app.fullscreen .main-header { display: none !important; }
+    .app.fullscreen .video-pane { flex: 0 0 50%; }
+    .app.fullscreen .document-pane { flex: 1; }
+    .app.fullscreen .controls { background: transparent; position: absolute; bottom: 0; left: 0; right: 0; opacity: 0; transition: opacity 0.3s; z-index: 10; }
     .app.fullscreen:hover .controls { opacity: 1; }
+    /* Fullscreen + caption mode - video full with captions */
+    .app.fullscreen .content-area.caption-mode .video-pane { flex: 1; }
+    .app.fullscreen .content-area.caption-mode .document-pane { display: none; }
 
     /* Responsive */
     @media (max-width: 1024px) {
@@ -728,7 +736,7 @@
         </button>
       </div>
 
-      <div class="content-area">
+      <div class="content-area" id="contentArea">
         <div class="video-pane" id="videoPane">
           <div class="video-container">
             <video id="video" preload="metadata" playsinline></video>
@@ -827,6 +835,7 @@
   const fullscreenBtn = $('fullscreenBtn');
   const fsIcon = $('fsIcon');
   const videoPane = $('videoPane');
+  const contentArea = $('contentArea');
   const pageInfo = $('pageInfo');
   const prevPage = $('prevPage');
   const nextPage = $('nextPage');
@@ -954,7 +963,18 @@
 
         const txt = document.createElement('span');
         txt.className = 'line-text';
-        txt.textContent = ln.rendered_text || ln.text || '';
+        const lineText = ln.rendered_text || ln.text || '';
+        // Bold speaker names (format: "          SPEAKER X:   text")
+        if (!ln.is_continuation && ln.speaker) {
+          const speakerMatch = lineText.match(/^(\s*)([A-Z][A-Z\s]+:)(\s*)/);
+          if (speakerMatch) {
+            txt.innerHTML = speakerMatch[1] + '<span class="speaker-name">' + speakerMatch[2] + '</span>' + speakerMatch[3] + lineText.slice(speakerMatch[0].length).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          } else {
+            txt.textContent = lineText;
+          }
+        } else {
+          txt.textContent = lineText;
+        }
 
         row.appendChild(num);
         row.appendChild(txt);
@@ -1123,9 +1143,11 @@
   document.querySelectorAll('.view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       viewMode = btn.dataset.view;
-      videoPane.classList.toggle('caption-mode', viewMode === 'caption');
+      const isCaptionMode = viewMode === 'caption';
+      videoPane.classList.toggle('caption-mode', isCaptionMode);
+      contentArea.classList.toggle('caption-mode', isCaptionMode);
       document.querySelectorAll('.view-btn').forEach(b => b.classList.toggle('active', b === btn));
-      if (viewMode === 'caption') updateCaptions();
+      if (isCaptionMode) updateCaptions();
     });
   });
 
