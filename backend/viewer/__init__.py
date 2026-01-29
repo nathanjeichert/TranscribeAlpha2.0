@@ -19,7 +19,9 @@ def _load_template() -> str:
 
 def render_viewer_html(payload: Dict[str, Any]) -> str:
     """Render the standalone HTML viewer with embedded transcript payload."""
+    import re
     template = _load_template()
     json_blob = json.dumps(payload, ensure_ascii=False)
-    safe_blob = json_blob.replace("</script>", "<\\/script>")
+    # Escape </script> case-insensitively to prevent breaking out of script tag
+    safe_blob = re.sub(r'</script', r'<\\/script', json_blob, flags=re.IGNORECASE)
     return template.replace(_PLACEHOLDER, safe_blob)
