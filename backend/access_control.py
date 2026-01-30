@@ -57,27 +57,8 @@ def _get_user_from_request(request: Request) -> Optional[dict]:
 def _user_can_access_media_blob(user_id: str, blob_name: str, metadata: Optional[dict]) -> bool:
     if metadata and metadata.get("user_id"):
         return metadata.get("user_id") == user_id
-
-    try:
-        bucket = storage_client.bucket(BUCKET_NAME)
-        for blob in bucket.list_blobs(prefix="transcripts/"):
-            if not blob.name.endswith("/current.json"):
-                continue
-            try:
-                data = json.loads(blob.download_as_string())
-            except Exception:
-                continue
-            if data.get("user_id") != user_id:
-                continue
-            if data.get("media_blob_name") == blob_name:
-                return True
-            for clip in data.get("clips") or []:
-                if clip.get("media_blob_name") == blob_name:
-                    return True
-        return False
-    except Exception as exc:
-        logger.warning("Failed to verify media ownership for %s: %s", blob_name, exc)
-        return False
+    logger.warning("Media blob missing user metadata: %s", blob_name)
+    return False
 
 
 def _user_owns_media_key(media_key: str, user_id: str) -> bool:
