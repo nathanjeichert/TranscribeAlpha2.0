@@ -2,19 +2,30 @@ import logging
 import os
 import mimetypes
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 try:
-    from ..auth import get_current_user
+    from ..auth import get_current_user, create_media_token
 except ImportError:
     try:
-        from auth import get_current_user
+        from auth import get_current_user, create_media_token
     except ImportError:
         import auth as auth_module
         get_current_user = auth_module.get_current_user
+        create_media_token = auth_module.create_media_token
+
+try:
+    from ..config import MEDIA_TOKEN_TTL_MINUTES
+except ImportError:
+    try:
+        from config import MEDIA_TOKEN_TTL_MINUTES
+    except ImportError:
+        import config as config_module
+        MEDIA_TOKEN_TTL_MINUTES = config_module.MEDIA_TOKEN_TTL_MINUTES
 
 try:
     from ..access_control import _get_user_from_request, _user_can_access_media_blob
@@ -95,6 +106,23 @@ async def upload_media_preview(file: UploadFile = File(...), current_user: dict 
                 pass
 
 
+@router.post("/api/media-token")
+async def create_media_token_endpoint(current_user: dict = Depends(get_current_user)):
+    """Issue a short-lived token scoped for media playback."""
+    ttl_minutes = max(int(MEDIA_TOKEN_TTL_MINUTES or 0), 1)
+    expires_delta = timedelta(minutes=ttl_minutes)
+    expires_at = datetime.now(timezone.utc) + expires_delta
+    token = create_media_token(
+        data={"sub": current_user["username"], "role": current_user.get("role", "user")},
+        expires_delta=expires_delta,
+    )
+    return JSONResponse({
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+        "expires_in": ttl_minutes * 60,
+    })
+
+
 @router.get("/api/media/{file_id}")
 async def serve_media_file(file_id: str, request: Request):
     """Serve media file for preview"""
@@ -126,7 +154,7 @@ async def serve_media_file(file_id: str, request: Request):
         status_code = 200
         headers = {
             "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": "private, no-store",
         }
 
         if range_header and file_size:

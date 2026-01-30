@@ -27,3 +27,4 @@ CLIP_SESSION_TTL_DAYS = int(os.getenv("CLIP_SESSION_TTL_DAYS", str(EDITOR_SESSIO
 SNAPSHOT_TTL_DAYS = int(os.getenv("SNAPSHOT_TTL_DAYS", "14"))
 MEDIA_TTL_DAYS = int(os.getenv("MEDIA_TTL_DAYS", "1"))
 MEDIA_CLEANUP_PREFIXES = ("preview_", "clip_", "raw_")
+MEDIA_TOKEN_TTL_MINUTES = int(os.getenv("MEDIA_TOKEN_TTL_MINUTES", "5"))

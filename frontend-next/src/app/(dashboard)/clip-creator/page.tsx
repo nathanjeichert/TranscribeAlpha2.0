@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
-import { appendAccessTokenToMediaUrl, authenticatedFetch } from '@/utils/auth'
+import { authenticatedFetch } from '@/utils/auth'
 import ClipCreator from '@/components/ClipCreator'
 import MediaMissingBanner from '@/components/MediaMissingBanner'
+import { routes } from '@/utils/routes'
 
 export default function ClipCreatorPage() {
   const searchParams = useSearchParams()
@@ -43,7 +45,7 @@ export default function ClipCreatorPage() {
       setSession(data)
 
       if (data.media_blob_name) {
-        setMediaUrl(appendAccessTokenToMediaUrl(`/api/media/${data.media_blob_name}`))
+        setMediaUrl(`/api/media/${data.media_blob_name}`)
         setMediaType(data.media_content_type ?? undefined)
       }
     } catch (err: any) {
@@ -126,9 +128,9 @@ export default function ClipCreatorPage() {
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">No Transcript Selected</h2>
           <p className="text-gray-500 mb-6">Select a transcript from the sidebar or create a new one to use the clip creator.</p>
-          <a href="/transcribe" className="btn-primary px-6 py-3 inline-block">
+          <Link href={routes.transcribe()} className="btn-primary px-6 py-3 inline-block">
             Create New Transcript
-          </a>
+          </Link>
         </div>
       </div>
     )

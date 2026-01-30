@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { EditorSessionResponse, ClipSummary } from '@/components/TranscriptEditor'
-import { appendAccessTokenToMediaUrl, authenticatedFetch } from '@/utils/auth'
+import { buildMediaUrl, authenticatedFetch } from '@/utils/auth'
 
 interface ClipCreatorProps {
   session: EditorSessionResponse | null
@@ -159,6 +159,7 @@ export default function ClipCreator({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(-1)
   const [showSettings, setShowSettings] = useState(false)
+  const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string | null>(null)
 
   // Search functionality
   const searchMatches = useMemo(() => {
@@ -195,16 +196,16 @@ export default function ClipCreator({
     setSearchCurrentIndex(-1)
   }, [])
 
-  const effectiveMediaUrl = useMemo(() => {
+  const baseMediaUrl = useMemo(() => {
     if (activeClip?.media_blob_name) {
-      return appendAccessTokenToMediaUrl(`/api/media/${activeClip.media_blob_name}`)
+      return `/api/media/${activeClip.media_blob_name}`
     }
     if (mediaUrl && mediaUrl.trim()) {
-      return appendAccessTokenToMediaUrl(mediaUrl)
+      return mediaUrl
     }
     const blobName = session?.media_blob_name
     if (blobName && blobName.trim()) {
-      return appendAccessTokenToMediaUrl(`/api/media/${blobName}`)
+      return `/api/media/${blobName}`
     }
     return null
   }, [mediaUrl, session?.media_blob_name, activeClip?.media_blob_name])
@@ -223,10 +224,46 @@ export default function ClipCreator({
   const playerRef = isVideo ? videoRef : audioRef
 
   useEffect(() => {
-    if (!effectiveMediaUrl) {
+    if (!baseMediaUrl) {
+      setResolvedMediaUrl(null)
+      setPreviewing(false)
+      return
+    }
+    let isActive = true
+    const resolveMedia = async () => {
+      const resolved = await buildMediaUrl(baseMediaUrl)
+      if (isActive) {
+        setResolvedMediaUrl(resolved)
+      }
+    }
+    void resolveMedia()
+    return () => {
+      isActive = false
+    }
+  }, [baseMediaUrl])
+
+  useEffect(() => {
+    if (!resolvedMediaUrl) {
       setPreviewing(false)
     }
-  }, [effectiveMediaUrl])
+  }, [resolvedMediaUrl])
+
+  const handleMediaError = useCallback(async () => {
+    if (!baseMediaUrl) return
+    const currentPlayer = isVideo ? videoRef.current : audioRef.current
+    const resumeTime = currentPlayer?.currentTime ?? 0
+    const wasPaused = currentPlayer?.paused ?? true
+    const refreshed = await buildMediaUrl(baseMediaUrl, true)
+    setResolvedMediaUrl(refreshed)
+    setTimeout(() => {
+      const nextPlayer = isVideo ? videoRef.current : audioRef.current
+      if (!nextPlayer) return
+      nextPlayer.currentTime = resumeTime
+      if (!wasPaused) {
+        nextPlayer.play().catch(() => {})
+      }
+    }, 0)
+  }, [baseMediaUrl, isVideo])
 
   useEffect(() => {
     if (!session) {
@@ -451,7 +488,7 @@ export default function ClipCreator({
   }
 
   const handlePreviewClip = () => {
-    if (!clipBounds || !effectiveMediaUrl) return
+    if (!clipBounds || !resolvedMediaUrl) return
     setPreviewing(true)
   }
 
@@ -886,7 +923,7 @@ export default function ClipCreator({
                   type="button"
                   className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium"
                   onClick={handlePreviewClip}
-                  disabled={!clipBounds || !effectiveMediaUrl || isSubmitting}
+                  disabled={!clipBounds || !resolvedMediaUrl || isSubmitting}
                 >
                   Preview
                 </button>
@@ -1043,11 +1080,27 @@ export default function ClipCreator({
             <div className="space-y-4">
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div className="bg-gray-900 p-3">
-                  {effectiveMediaUrl ? (
+                  {resolvedMediaUrl ? (
                     isVideo ? (
-                      <video ref={videoRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full rounded-lg" />
+                      <video
+                        key={resolvedMediaUrl ?? 'media'}
+                        ref={videoRef}
+                        src={resolvedMediaUrl}
+                        onError={() => { void handleMediaError() }}
+                        controls
+                        preload="metadata"
+                        className="w-full rounded-lg"
+                      />
                     ) : (
-                      <audio ref={audioRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full" />
+                      <audio
+                        key={resolvedMediaUrl ?? 'media'}
+                        ref={audioRef}
+                        src={resolvedMediaUrl}
+                        onError={() => { void handleMediaError() }}
+                        controls
+                        preload="metadata"
+                        className="w-full"
+                      />
                     )
                   ) : (
                     <div className="py-8 text-center text-gray-400 text-sm">No media loaded</div>

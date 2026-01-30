@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { appendAccessTokenToMediaUrl, authenticatedFetch } from '@/utils/auth'
+import { buildMediaUrl, authenticatedFetch } from '@/utils/auth'
 
 interface EditorLine {
   id: string
@@ -168,6 +168,7 @@ export default function TranscriptEditor({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatches, setSearchMatches] = useState<string[]>([])
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(-1)
+  const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string | undefined>(undefined)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -209,14 +210,32 @@ export default function TranscriptEditor({
   const [isResyncing, setIsResyncing] = useState(false)
   const [resyncError, setResyncError] = useState<string | null>(null)
 
-  const effectiveMediaUrl = useMemo(() => {
+  const baseMediaUrl = useMemo(() => {
     if (localMediaPreviewUrl) return localMediaPreviewUrl
-    if (mediaUrl) return appendAccessTokenToMediaUrl(mediaUrl)
+    if (mediaUrl) return mediaUrl
     if (sessionMeta?.media_blob_name) {
-      return appendAccessTokenToMediaUrl(`/api/media/${sessionMeta.media_blob_name}`)
+      return `/api/media/${sessionMeta.media_blob_name}`
     }
     return undefined
   }, [localMediaPreviewUrl, mediaUrl, sessionMeta])
+
+  useEffect(() => {
+    let isActive = true
+    const resolveMedia = async () => {
+      if (!baseMediaUrl) {
+        if (isActive) setResolvedMediaUrl(undefined)
+        return
+      }
+      const resolved = await buildMediaUrl(baseMediaUrl)
+      if (isActive) {
+        setResolvedMediaUrl(resolved)
+      }
+    }
+    void resolveMedia()
+    return () => {
+      isActive = false
+    }
+  }, [baseMediaUrl])
 
   const effectiveMediaType = useMemo(
     () => localMediaType ?? mediaType ?? sessionMeta?.media_content_type ?? undefined,
@@ -227,6 +246,23 @@ export default function TranscriptEditor({
     () => (effectiveMediaType ?? '').startsWith('video/'),
     [effectiveMediaType],
   )
+
+  const handleMediaError = useCallback(async () => {
+    if (!baseMediaUrl || localMediaPreviewUrl) return
+    const currentPlayer = isVideo ? videoRef.current : audioRef.current
+    const resumeTime = currentPlayer?.currentTime ?? 0
+    const wasPaused = currentPlayer?.paused ?? true
+    const refreshed = await buildMediaUrl(baseMediaUrl, true)
+    setResolvedMediaUrl(refreshed)
+    setTimeout(() => {
+      const nextPlayer = isVideo ? videoRef.current : audioRef.current
+      if (!nextPlayer) return
+      nextPlayer.currentTime = resumeTime
+      if (!wasPaused) {
+        nextPlayer.play().catch(() => {})
+      }
+    }, 0)
+  }, [baseMediaUrl, isVideo, localMediaPreviewUrl])
 
   // Keep refs in sync with state for auto-save interval
   useEffect(() => { linesRef.current = lines }, [lines])
@@ -370,7 +406,7 @@ export default function TranscriptEditor({
   }, [editingLineId, editingFieldName]) // Only run when lineId or field changes, not when value changes
 
   useEffect(() => {
-    const player = effectiveMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
+    const player = resolvedMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
     if (!player) return
 
     const handleTimeUpdate = () => {
@@ -405,7 +441,7 @@ export default function TranscriptEditor({
     return () => {
       player.removeEventListener('timeupdate', handleTimeUpdate)
     }
-  }, [effectiveMediaUrl, isVideo, lineBoundaries, autoScroll])
+  }, [resolvedMediaUrl, isVideo, lineBoundaries, autoScroll])
 
   const handleLineFieldChange = useCallback(
     (lineId: string, field: keyof EditorLine, value: string | number) => {
@@ -452,7 +488,7 @@ export default function TranscriptEditor({
 
   const playLine = useCallback(
     (line: EditorLine) => {
-      if (!effectiveMediaUrl) return
+      if (!resolvedMediaUrl) return
       setSelectedLineId(line.id)
       const player = isVideo ? videoRef.current : audioRef.current
       if (!player) return
@@ -478,7 +514,7 @@ export default function TranscriptEditor({
         }
       }
     },
-    [effectiveMediaUrl, isVideo],
+    [resolvedMediaUrl, isVideo],
   )
 
   useEffect(() => {
@@ -1134,7 +1170,7 @@ export default function TranscriptEditor({
             <button
               className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-sm font-medium disabled:opacity-50"
               onClick={handleResync}
-              disabled={isResyncing || !effectiveMediaUrl}
+              disabled={isResyncing || !resolvedMediaUrl}
               title="Re-align timestamps to audio"
             >
               {isResyncing ? 'Re-syncing...' : 'Auto Re-sync'}
@@ -1211,25 +1247,27 @@ export default function TranscriptEditor({
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
             <div className="space-y-3">
               {/* Media Player */}
-              {effectiveMediaUrl ? (
+              {resolvedMediaUrl ? (
                 <div className="rounded-xl bg-gray-900 p-3">
                   {isVideo ? (
                     <video
-                      key={effectiveMediaUrl}
+                      key={resolvedMediaUrl}
                       ref={videoRef}
                       controls
                       preload="metadata"
                       className="w-full rounded-lg"
-                      src={effectiveMediaUrl}
+                      src={resolvedMediaUrl}
+                      onError={() => { void handleMediaError() }}
                     />
                   ) : (
                     <audio
-                      key={effectiveMediaUrl}
+                      key={resolvedMediaUrl}
                       ref={audioRef}
                       controls
                       preload="metadata"
                       className="w-full"
-                      src={effectiveMediaUrl}
+                      src={resolvedMediaUrl}
+                      onError={() => { void handleMediaError() }}
                     />
                   )}
                 </div>
@@ -1591,7 +1629,7 @@ export default function TranscriptEditor({
                               type="button"
                               className="rounded border border-primary-300 px-3 py-1 text-xs font-medium text-primary-700 hover:border-primary-500 hover:bg-primary-100"
                               onClick={() => playLine(line)}
-                              disabled={!effectiveMediaUrl}
+                              disabled={!resolvedMediaUrl}
                             >
                               Play
                             </button>

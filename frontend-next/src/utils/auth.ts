@@ -13,6 +13,16 @@ export interface AuthTokens {
   refresh_token: string;
 }
 
+interface MediaTokenResponse {
+  token?: string;
+  expires_in?: number;
+  expires_at?: string;
+}
+
+const MEDIA_TOKEN_REFRESH_BUFFER_MS = 10 * 1000
+let cachedMediaToken: { token: string; expiresAt: number } | null = null
+let mediaTokenPromise: Promise<string | null> | null = null
+
 /**
  * Get the current access token from localStorage
  */
@@ -58,6 +68,8 @@ export function clearAuth(): void {
   localStorage.removeItem('access_token');
   localStorage.removeItem('refresh_token');
   localStorage.removeItem('user');
+  cachedMediaToken = null
+  mediaTokenPromise = null
 }
 
 /**
@@ -144,7 +156,6 @@ export async function authenticatedFetch(
 
   // If unauthorized, try to refresh the token and retry once
   if (response.status === 401) {
-    console.log('Access token expired, refreshing...');
     token = await refreshAccessToken();
 
     if (token) {
@@ -192,6 +203,63 @@ export function appendAccessTokenToMediaUrl(url: string): string {
   }
   const separator = url.includes('?') ? '&' : '?';
   return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Fetch a short-lived media token for protected media URLs.
+ */
+export async function getMediaToken(forceRefresh = false): Promise<string | null> {
+  if (typeof window === 'undefined') return null
+  const now = Date.now()
+  if (!forceRefresh && cachedMediaToken && cachedMediaToken.expiresAt - MEDIA_TOKEN_REFRESH_BUFFER_MS > now) {
+    return cachedMediaToken.token
+  }
+  if (!forceRefresh && mediaTokenPromise) {
+    return mediaTokenPromise
+  }
+
+  mediaTokenPromise = (async () => {
+    try {
+      const response = await authenticatedFetch('/api/media-token', { method: 'POST' })
+      if (!response.ok) {
+        return null
+      }
+      const data: MediaTokenResponse = await response.json().catch(() => ({}))
+      if (!data.token) {
+        return null
+      }
+      const expiresIn = typeof data.expires_in === 'number' ? data.expires_in : 300
+      cachedMediaToken = {
+        token: data.token,
+        expiresAt: now + expiresIn * 1000,
+      }
+      return data.token
+    } catch {
+      return null
+    } finally {
+      mediaTokenPromise = null
+    }
+  })()
+
+  return mediaTokenPromise
+}
+
+/**
+ * Build a media URL with a short-lived token.
+ */
+export async function buildMediaUrl(url: string, forceRefresh = false): Promise<string> {
+  if (!url || !url.includes('/api/media/')) {
+    return url
+  }
+  const token = await getMediaToken(forceRefresh)
+  if (!token) {
+    return url
+  }
+  if (url.includes('token=')) {
+    return url
+  }
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
 }
 
 /**

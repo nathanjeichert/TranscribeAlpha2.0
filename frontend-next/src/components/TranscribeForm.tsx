@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import TranscriptEditor, { EditorSaveResponse, EditorSessionResponse } from '@/components/TranscriptEditor'
 import ClipCreator from '@/components/ClipCreator'
-import { appendAccessTokenToMediaUrl, authenticatedFetch, getAuthHeaders } from '@/utils/auth'
+import { buildMediaUrl, authenticatedFetch, getAuthHeaders } from '@/utils/auth'
 
 interface FormData {
   case_name: string
@@ -78,12 +78,13 @@ export default function TranscribeForm() {
   const stageTimerRef = useRef<number | null>(null)
 
   const updateMediaPreview = useCallback(
-    (blobName?: string | null, contentType?: string | null) => {
+    async (blobName?: string | null, contentType?: string | null) => {
       if (!blobName) return
       if (mediaPreviewUrl && mediaIsLocal) {
         URL.revokeObjectURL(mediaPreviewUrl)
       }
-      setMediaPreviewUrl(appendAccessTokenToMediaUrl(`/api/media/${blobName}`))
+      const resolvedUrl = await buildMediaUrl(`/api/media/${blobName}`)
+      setMediaPreviewUrl(resolvedUrl)
       setMediaContentType(contentType ?? undefined)
       setMediaIsLocal(false)
     },
@@ -126,7 +127,7 @@ export default function TranscribeForm() {
       setError('')
 
       if (data.media_blob_name) {
-        updateMediaPreview(data.media_blob_name, data.media_content_type ?? undefined)
+        void updateMediaPreview(data.media_blob_name, data.media_content_type ?? undefined)
       }
     },
     [updateMediaPreview],
@@ -534,16 +535,21 @@ export default function TranscribeForm() {
 
   const previewContentType = mediaContentType ?? selectedFile?.type ?? ''
   const isVideoPreview = previewContentType.startsWith('video/')
-  const remoteMediaUrl = transcriptData?.media_blob_name
-    ? appendAccessTokenToMediaUrl(`/api/media/${transcriptData.media_blob_name}`)
-    : mediaPreviewUrl || undefined
-  const clipMediaUrl = (mediaIsLocal && mediaPreviewUrl) || remoteMediaUrl
+  const remoteMediaBaseUrl = transcriptData?.media_blob_name
+    ? `/api/media/${transcriptData.media_blob_name}`
+    : null
+  const clipMediaUrl = mediaIsLocal ? mediaPreviewUrl || undefined : remoteMediaBaseUrl ?? undefined
   const clipMediaType =
     (mediaIsLocal ? mediaContentType ?? selectedFile?.type : undefined) ??
     transcriptData?.media_content_type ??
     mediaContentType ??
     selectedFile?.type
   const selectedHistoryGroup = historyGroups.find((group) => group.media_key === selectedHistoryKey)
+  const refreshMediaPreviewUrl = useCallback(async () => {
+    if (!remoteMediaBaseUrl) return
+    const refreshed = await buildMediaUrl(remoteMediaBaseUrl, true)
+    setMediaPreviewUrl(refreshed)
+  }, [remoteMediaBaseUrl])
 
   // Track if we've already loaded from localStorage to prevent re-fetching after import
   const hasLoadedFromStorage = useRef(false)
@@ -818,11 +824,29 @@ export default function TranscribeForm() {
                       <div className="card-body">
                         <div className="bg-primary-900 rounded-lg p-4">
                           {isVideoPreview ? (
-                            <video src={mediaPreviewUrl} controls className="w-full max-w-2xl mx-auto rounded">
+                            <video
+                              src={mediaPreviewUrl}
+                              onError={() => {
+                                if (!mediaIsLocal) {
+                                  void refreshMediaPreviewUrl()
+                                }
+                              }}
+                              controls
+                              className="w-full max-w-2xl mx-auto rounded"
+                            >
                               Your browser does not support video playback.
                             </video>
                           ) : (
-                            <audio src={mediaPreviewUrl} controls className="w-full max-w-2xl mx-auto">
+                            <audio
+                              src={mediaPreviewUrl}
+                              onError={() => {
+                                if (!mediaIsLocal) {
+                                  void refreshMediaPreviewUrl()
+                                }
+                              }}
+                              controls
+                              className="w-full max-w-2xl mx-auto"
+                            >
                               Your browser does not support audio playback.
                             </audio>
                           )}
@@ -929,7 +953,7 @@ export default function TranscribeForm() {
             <TranscriptEditor
               mediaKey={mediaKey}
               initialData={transcriptData}
-              mediaUrl={mediaPreviewUrl || undefined}
+              mediaUrl={mediaIsLocal ? mediaPreviewUrl || undefined : remoteMediaBaseUrl ?? undefined}
               mediaType={mediaContentType ?? selectedFile?.type}
               docxBase64={transcriptData?.docx_base64 ?? undefined}
               xmlBase64={transcriptData?.oncue_xml_base64 ?? undefined}

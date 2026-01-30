@@ -148,6 +148,20 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
+def create_media_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a short-lived JWT token scoped for media access."""
+    to_encode = data.copy()
+
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    to_encode.update({"exp": expire, "type": "media"})
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return encoded_jwt
+
+
 def create_refresh_token(data: dict) -> str:
     """Create a JWT refresh token."""
     to_encode = data.copy()

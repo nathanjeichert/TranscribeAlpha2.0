@@ -42,7 +42,7 @@ def _get_user_from_request(request: Request) -> Optional[dict]:
     if not token:
         return None
     payload = decode_token(token)
-    if not payload or payload.get("type") != "access":
+    if not payload or payload.get("type") not in {"access", "media"}:
         return None
     username = payload.get("sub")
     if not username:
