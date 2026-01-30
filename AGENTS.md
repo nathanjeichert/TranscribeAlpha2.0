@@ -52,6 +52,7 @@ TranscribeAlpha/
 │   │   ├── transcripts.py     # Transcribe/import/save/resync endpoints
 │   │   ├── media.py           # Media upload/streaming endpoints
 │   │   ├── clips.py           # Clip creation/lookup endpoints
+│   │   ├── cases.py           # Cases CRUD + transcript assignment
 │   │   └── health.py          # Health + cleanup endpoints
 │   ├── viewer/                # HTML viewer module (criminal variant)
 │   │   ├── __init__.py        # render_viewer_html() function
@@ -64,13 +65,27 @@ TranscribeAlpha/
 │
 ├── frontend-next/             # Next.js frontend
 │   ├── src/
-│   │   ├── app/               # App Router (layout, page)
+│   │   ├── app/               # App Router
+│   │   │   ├── layout.tsx           # Root layout (AuthProvider)
+│   │   │   └── (dashboard)/         # Dashboard route group
+│   │   │       ├── layout.tsx       # Dashboard layout with Sidebar
+│   │   │       ├── page.tsx         # Dashboard home (quick-start)
+│   │   │       ├── transcribe/      # Wizard transcription flow
+│   │   │       ├── editor/          # Transcript editor (?key=)
+│   │   │       ├── clip-creator/    # Clip extraction (?key=)
+│   │   │       ├── cases/           # Cases list + detail pages
+│   │   │       │   └── [caseId]/    # Case detail page
+│   │   │       └── settings/        # App settings
 │   │   ├── components/        # React components
-│   │   │   ├── TranscribeForm.tsx    # Main upload/transcribe UI
 │   │   │   ├── TranscriptEditor.tsx  # Line-by-line editor
 │   │   │   ├── ClipCreator.tsx       # Video clip extraction
+│   │   │   ├── MediaMissingBanner.tsx # Media re-import banner
 │   │   │   ├── AuthProvider.tsx      # Auth context
-│   │   │   └── LoginModal.tsx        # Login UI
+│   │   │   ├── LoginModal.tsx        # Login UI
+│   │   │   └── layout/              # Layout components
+│   │   │       └── Sidebar.tsx      # Dashboard sidebar navigation
+│   │   ├── context/           # React contexts
+│   │   │   └── DashboardContext.tsx # Shared dashboard state
 │   │   └── utils/             # Utility functions
 │   └── out/                   # Static export (production)
 │
@@ -170,6 +185,51 @@ The alignment step preserves original text (punctuation, capitalization) while o
 - The editor shows a speaker label on every line for easy reassignment.
 - DOCX/XML outputs collapse consecutive identical speakers by omitting repeated labels (via `is_continuation`).
 
+### Dashboard UI
+
+The frontend uses a dashboard layout with a persistent sidebar:
+
+**Route Structure:**
+- `/` - Dashboard home (quick-start landing page)
+- `/transcribe` - 3-step wizard flow (Upload → Configure → Transcribe)
+- `/editor?key=` - Transcript editor (loads by media_key)
+- `/clip-creator?key=` - Clip extraction tool
+- `/cases` - Cases list
+- `/cases/[caseId]` - Case detail with transcript list
+- `/settings` - App settings
+
+**Key UI Patterns:**
+- Collapsible sidebar with recent transcripts and cases
+- Settings/tools tucked away in collapsible panels
+- Clean header toolbars with primary actions visible
+- Media player embedded in sidebar for editor/clip pages
+
+### Cases System
+
+Cases are folders for organizing transcripts:
+
+**Storage Structure:**
+```
+cases/
+  {user_id}/
+    index.json                    # Quick list of all user's cases
+    {case_id}/
+      meta.json                   # Case metadata (name, description)
+      transcripts.json            # List of {media_key, added_at, title_label}
+```
+
+**TTL Rules:**
+| Condition | Behavior |
+|-----------|----------|
+| Transcript in a case | No expiration (persistent) |
+| Transcript uncategorized | 30-day TTL |
+| Media files | Standard cleanup policy |
+
+**Case-Wide Search:**
+- Searches across all transcripts in a case
+- Matches text content and speaker names
+- Returns results grouped by transcript
+
 ### Import Pattern
 The codebase uses a multi-context import pattern to work in different execution contexts:
 ```python
@@ -202,8 +262,14 @@ except ImportError:
 | `/api/transcripts/by-key/{media_key}/restore/{snapshot_id}` | POST | Restore a snapshot |
 | `/api/transcripts/import` | POST | Import XML/DOCX with media |
 | `/api/transcripts/by-key/{media_key}/gemini-refine` | POST | Gemini refine pass |
+| `/api/transcripts/uncategorized` | GET | List transcripts not in any case |
 | `/api/resync` | POST | Re-align transcript with audio (Rev AI) |
 | `/api/clips/*` | Various | Clip creation/management |
+| `/api/cases` | GET/POST | List user's cases / Create new case |
+| `/api/cases/{case_id}` | GET/PUT/DELETE | Get/update/delete case |
+| `/api/cases/{case_id}/transcripts` | POST | Assign transcript to case |
+| `/api/cases/{case_id}/transcripts/{media_key}` | DELETE | Remove transcript from case |
+| `/api/cases/{case_id}/search` | GET | Search text + speakers in case |
 | `/health` | GET | Health check + cleanup trigger |
 
 ## Development Guidelines
@@ -348,4 +414,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2025-01-26*
+*Last updated: 2026-01-30*

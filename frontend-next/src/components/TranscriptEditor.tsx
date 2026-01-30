@@ -194,6 +194,12 @@ export default function TranscriptEditor({
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const lastSnapshotRef = useRef<number>(0)
 
+  // Collapsible panel states
+  const [showSettings, setShowSettings] = useState(false)
+  const [showTools, setShowTools] = useState(false)
+  const [showImport, setShowImport] = useState(false)
+  const [showDownloads, setShowDownloads] = useState(false)
+
   // Refs for auto-save to avoid resetting timer on every edit
   const linesRef = useRef<EditorLine[]>(initialData?.lines ?? [])
   const isDirtyRef = useRef(false)
@@ -1065,101 +1071,116 @@ export default function TranscriptEditor({
           </div>
         </div>
       )}
-      <div className="card">
-        <div className="card-header flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-xl font-medium">Manual Sync Editor</h2>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-white">
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={autoScroll}
-                onChange={(event) => setAutoScroll(event.target.checked)}
-              />
-              Auto-scroll
-            </label>
-            <label
-              className="flex items-center gap-2 text-sm text-white"
-              title="When enabled, changing a line's end time snaps the next line's start time so it begins immediately after the edit."
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        {/* Clean Header Toolbar */}
+        <div className="flex items-center justify-between gap-4 p-4 border-b border-gray-200">
+          <div className="flex items-center gap-3">
+            <button
+              className="p-2 rounded-lg hover:bg-gray-100 text-gray-600 disabled:opacity-40"
+              onClick={handleUndo}
+              disabled={!history.length}
+              title="Undo (Ctrl+Z)"
             >
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={autoShiftNextLine}
-                onChange={(event) => setAutoShiftNextLine(event.target.checked)}
-              />
-              Auto-Shift Next Line
-            </label>
-            <div className="flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M3 10h10a5 5 0 015 5v2M3 10l6-6M3 10l6 6" />
+              </svg>
+            </button>
+            <button
+              className="p-2 rounded-lg hover:bg-gray-100 text-gray-600 disabled:opacity-40"
+              onClick={handleRedo}
+              disabled={!future.length}
+              title="Redo (Ctrl+Y)"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M21 10h-10a5 5 0 00-5 5v2M21 10l-6-6M21 10l-6 6" />
+              </svg>
+            </button>
+            <div className="w-px h-6 bg-gray-200" />
+            <button
+              className="px-3 py-1.5 rounded-lg bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium"
+              onClick={handleAddUtterance}
+              title="Add new line after selection"
+            >
+              + Add Line
+            </button>
+            <button
+              className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 text-sm font-medium"
+              onClick={handleDeleteUtterance}
+              title="Delete selected line"
+            >
+              Delete
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium flex items-center gap-2"
+              onClick={() => setShowSettings(!showSettings)}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              Settings
+            </button>
+            {onOpenHistory && (
               <button
-                className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50"
+                className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium"
                 onClick={onOpenHistory}
-                title="View transcript history and snapshots"
               >
                 History
               </button>
-              <button
-                className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50 disabled:opacity-60"
-                onClick={handleUndo}
-                disabled={!history.length}
-                title="Undo last edit"
-              >
-                Undo
-              </button>
-              <button
-                className="rounded-lg border-2 border-primary-200 bg-white px-3 py-2 text-sm font-semibold text-primary-800 shadow-sm hover:border-primary-400 hover:bg-primary-50 disabled:opacity-60"
-                onClick={handleRedo}
-                disabled={!future.length}
-                title="Redo"
-              >
-                Redo
-              </button>
-              <button
-                className="rounded-lg border-2 border-primary-300 bg-primary-50 px-4 py-2 text-sm font-semibold text-primary-900 shadow-sm hover:border-primary-500 hover:bg-primary-100"
-                onClick={handleAddUtterance}
-                title="Insert a new utterance after the selected line. If there's a 2s gap before the next line, the new entry fills it; otherwise it takes the second half of the selected line's timing."
-              >
-                Add Utterance
-              </button>
-              <span
-                className="cursor-help rounded-full border border-primary-300 px-2 py-0.5 text-xs font-bold text-primary-800"
-                title="Adds a line after the highlighted row. If a 2+ second gap exists before the next line, it fills the gap. Otherwise, it splits the selected line and gives the second half to the new speaker."
-              >
-                ?
-              </span>
-              <button
-                className="rounded-lg border-2 border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 shadow-sm hover:border-red-300 hover:bg-red-100"
-                onClick={handleDeleteUtterance}
-                title="Delete the selected utterance. At least one line must remain."
-              >
-                Delete Utterance
-              </button>
-            </div>
-            {onGeminiRefine && (
-              <button
-                className="rounded-lg border-2 border-amber-400 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900 shadow-sm hover:bg-amber-200 disabled:opacity-60"
-                onClick={onGeminiRefine}
-                disabled={isGeminiBusy}
-                title="Refine the current transcript using Gemini corrections."
-              >
-                {isGeminiBusy ? 'Running Gemini...' : 'Polish with Gemini 3.0'}
-              </button>
             )}
             <button
-              className="rounded-lg border-2 border-indigo-400 bg-indigo-100 px-4 py-2 text-sm font-semibold text-indigo-900 shadow-sm hover:bg-indigo-200 disabled:opacity-60"
+              className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-sm font-medium disabled:opacity-50"
               onClick={handleResync}
               disabled={isResyncing || !effectiveMediaUrl}
-              title="Automatically re-align timestamps to the media file."
+              title="Re-align timestamps to audio"
             >
               {isResyncing ? 'Re-syncing...' : 'Auto Re-sync'}
             </button>
-            <button className="btn-primary px-4 py-2" onClick={handleSave} disabled={saving || !sessionMeta || !isDirty}>
-              {saving ? 'Saving...' : 'Save Changes'}
+            {onGeminiRefine && (
+              <button
+                className="px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm font-medium disabled:opacity-50"
+                onClick={onGeminiRefine}
+                disabled={isGeminiBusy}
+              >
+                {isGeminiBusy ? 'Running...' : 'Polish with AI'}
+              </button>
+            )}
+            <button
+              className="px-4 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50"
+              onClick={handleSave}
+              disabled={saving || !sessionMeta || !isDirty}
+            >
+              {saving ? 'Saving...' : isDirty ? 'Save Changes' : 'Saved'}
             </button>
           </div>
         </div>
+
+        {/* Collapsible Settings Panel */}
+        {showSettings && (
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                className="rounded border-gray-300"
+                checked={autoScroll}
+                onChange={(event) => setAutoScroll(event.target.checked)}
+              />
+              Auto-scroll to current line
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer" title="When changing end time, adjust next line's start">
+              <input
+                type="checkbox"
+                className="rounded border-gray-300"
+                checked={autoShiftNextLine}
+                onChange={(event) => setAutoShiftNextLine(event.target.checked)}
+              />
+              Auto-shift next line timing
+            </label>
+          </div>
+        )}
         <div className="card-body space-y-6">
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -1187,18 +1208,18 @@ export default function TranscriptEditor({
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
-            <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
+            <div className="space-y-3">
+              {/* Media Player */}
               {effectiveMediaUrl ? (
-                <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-2">
-                  <p className="text-sm font-medium text-primary-900">Media Preview</p>
+                <div className="rounded-xl bg-gray-900 p-3">
                   {isVideo ? (
                     <video
                       key={effectiveMediaUrl}
                       ref={videoRef}
                       controls
                       preload="metadata"
-                      className="w-full rounded-lg border border-primary-200 shadow"
+                      className="w-full rounded-lg"
                       src={effectiveMediaUrl}
                     />
                   ) : (
@@ -1213,205 +1234,167 @@ export default function TranscriptEditor({
                   )}
                 </div>
               ) : (
-                <div className="rounded-lg border border-dashed border-primary-300 p-4 text-sm text-primary-500">
-                  Upload media to enable playback controls.
+                <div className="rounded-xl border-2 border-dashed border-gray-300 p-6 text-center text-sm text-gray-500">
+                  <svg className="w-8 h-8 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                  </svg>
+                  No media loaded
                 </div>
               )}
 
-              <div className="rounded-lg border border-primary-200 bg-primary-50 p-4 text-sm text-primary-700 space-y-2">
-                <div className="flex justify-between">
-                  <span className="font-medium text-primary-900">Updated</span>
-                  <span>{updatedLabel}</span>
+              {/* Quick Stats */}
+              <div className="rounded-xl bg-gray-50 p-4 text-sm space-y-2">
+                <div className="flex justify-between text-gray-600">
+                  <span>Lines</span>
+                  <span className="font-medium text-gray-900">{lines.length}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="font-medium text-primary-900">Expires</span>
-                  <span>{expiresLabel}</span>
+                <div className="flex justify-between text-gray-600">
+                  <span>Duration</span>
+                  <span className="font-medium text-gray-900">{secondsToLabel(sessionMeta?.audio_duration ?? 0)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="font-medium text-primary-900">Lines</span>
-                  <span>{lines.length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-medium text-primary-900">Duration</span>
-                  <span>{secondsToLabel(sessionMeta?.audio_duration ?? 0)}</span>
+                <div className="flex justify-between text-gray-600">
+                  <span>Updated</span>
+                  <span className="font-medium text-gray-900 text-xs">{updatedLabel}</span>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-3 text-sm text-primary-700">
-                <h3 className="font-medium text-primary-900">Case Details</h3>
-                <p>
-                  <span className="font-semibold">Case:</span> {sessionInfo.CASE_NAME || '—'}
-                </p>
-                <p>
-                  <span className="font-semibold">Number:</span> {sessionInfo.CASE_NUMBER || '—'}
-                </p>
-                <p>
-                  <span className="font-semibold">Firm:</span> {sessionInfo.FIRM_OR_ORGANIZATION_NAME || '—'}
-                </p>
-                <p>
-                  <span className="font-semibold">Date:</span> {sessionInfo.DATE || '—'}
-                </p>
-              </div>
-
-              <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-3 text-sm text-primary-700">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="font-medium text-primary-900">Rename Speaker</h3>
-                  <span className="text-[10px] uppercase tracking-wide text-primary-400">Find & Replace</span>
-                </div>
-                <p className="text-xs text-primary-600">Replace every instance of a speaker label across the transcript.</p>
-                {renameFeedback && (
-                  <div className="rounded border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-800">
-                    {renameFeedback}
-                  </div>
-                )}
-                <form className="space-y-3" onSubmit={handleRenameSpeaker}>
-                  <div className="grid grid-cols-1 gap-3">
-                    <div>
-                      <label className="text-xs font-medium text-primary-700">Current name</label>
+              {/* Collapsible: Tools */}
+              <div className="rounded-xl border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => setShowTools(!showTools)}
+                  className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
+                >
+                  <span>Speaker Tools</span>
+                  <svg className={`w-4 h-4 text-gray-500 transition-transform ${showTools ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showTools && (
+                  <div className="p-4 border-t border-gray-200 bg-white space-y-3">
+                    <p className="text-xs text-gray-500">Find & replace speaker names</p>
+                    {renameFeedback && (
+                      <div className="rounded bg-primary-50 px-3 py-2 text-xs text-primary-700">{renameFeedback}</div>
+                    )}
+                    <form className="space-y-2" onSubmit={handleRenameSpeaker}>
                       <input
                         type="text"
                         value={renameFrom}
-                        onChange={(event) => {
-                          setRenameFrom(event.target.value.toUpperCase())
-                          if (renameFeedback) setRenameFeedback(null)
-                        }}
-                        className="mt-1 w-full rounded border border-primary-200 px-3 py-2 text-xs uppercase text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
-                        placeholder="e.g., SPKR 01"
+                        onChange={(e) => { setRenameFrom(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
+                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs uppercase"
+                        placeholder="Current name"
                       />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-primary-700">New name</label>
                       <input
                         type="text"
                         value={renameTo}
-                        onChange={(event) => {
-                          setRenameTo(event.target.value.toUpperCase())
-                          if (renameFeedback) setRenameFeedback(null)
-                        }}
-                        className="mt-1 w-full rounded border border-primary-200 px-3 py-2 text-xs uppercase text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400"
-                        placeholder="e.g., WITNESS"
+                        onChange={(e) => { setRenameTo(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
+                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs uppercase"
+                        placeholder="New name"
                       />
-                    </div>
+                      <button type="submit" className="w-full py-2 rounded-lg bg-primary-600 text-white text-xs font-medium hover:bg-primary-700" disabled={!lines.length}>
+                        Rename All
+                      </button>
+                    </form>
                   </div>
-                  <button type="submit" className="btn-primary w-full text-sm" disabled={!lines.length}>
-                    Rename Speaker
-                  </button>
-                </form>
-              </div>
-
-              <div className="rounded-lg border-2 border-primary-200 bg-white p-4 space-y-3">
-                <h3 className="text-sm font-medium text-primary-900">Import Transcript</h3>
-                <p className="text-xs text-primary-600">
-                  Drag & drop files anywhere on the page, or use the inputs below.
-                </p>
-                {importError && (
-                  <p className="text-xs text-red-600">{importError}</p>
                 )}
-                <form className="space-y-3" onSubmit={handleImport}>
-                  <div>
-                    <label className="text-xs font-medium text-primary-700">
-                      Transcript ({isCriminal ? 'HTML or DOCX' : 'XML or DOCX'}) *
-                    </label>
-                    <input
-                      type="file"
-                      accept={isCriminal ? '.html,.htm,.docx' : '.xml,.docx'}
-                      onChange={(event) => setImportTranscriptFile(event.target.files?.[0] ?? null)}
-                      className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
-                    />
-                    {importTranscriptFile && (
-                      <p className="mt-1 text-xs text-primary-600">
-                        Selected: {importTranscriptFile.name}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-primary-700">Media File *</label>
-                    <input
-                      type="file"
-                      accept="audio/*,video/*"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0] ?? null
-                        setImportMediaFile(file)
-                        if (localMediaPreviewUrl) {
-                          URL.revokeObjectURL(localMediaPreviewUrl)
-                        }
-                        if (file) {
-                          const url = URL.createObjectURL(file)
-                          setLocalMediaPreviewUrl(url)
-                          setLocalMediaType(file.type)
-                        } else {
-                          setLocalMediaPreviewUrl(null)
-                          setLocalMediaType(undefined)
-                        }
-                      }}
-                      className="mt-1 w-full text-xs text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-1 file:text-primary-800"
-                    />
-                    {importMediaFile && (
-                      <p className="mt-1 text-xs text-primary-600">
-                        Selected: {importMediaFile.name}
-                      </p>
-                    )}
-                  </div>
-                  <p className="text-[10px] text-primary-500">
-                    DOCX imports run automatic timestamp alignment via Rev AI.
-                  </p>
-                  <button type="submit" className="btn-outline w-full text-sm" disabled={importing || !importTranscriptFile || !importMediaFile}>
-                    {importing ? 'Importing…' : 'Import Transcript'}
-                  </button>
-                </form>
               </div>
 
-              <div className="rounded-lg border border-primary-200 bg-white p-4 space-y-2 text-sm text-primary-700">
-                <h3 className="font-medium text-primary-900">Downloads</h3>
+              {/* Collapsible: Import */}
+              <div className="rounded-xl border border-gray-200 overflow-hidden">
                 <button
-                  className="btn-outline w-full"
-                  onClick={() =>
-                    docxData &&
-                    onDownload(
-                      docxData,
-                      buildFilename('Transcript-Edited', '.docx'),
-                      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    )
-                  }
-                  disabled={!docxData}
+                  onClick={() => setShowImport(!showImport)}
+                  className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
                 >
-                  Download DOCX
+                  <span>Import Transcript</span>
+                  <svg className={`w-4 h-4 text-gray-500 transition-transform ${showImport ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M19 9l-7 7-7-7" />
+                  </svg>
                 </button>
-                {appVariant === 'oncue' ? (
-                  <button
-                    className="btn-outline w-full"
-                    onClick={() =>
-                      xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')
-                    }
-                    disabled={!xmlData}
-                  >
-                    Download OnCue XML
-                  </button>
-                ) : (
-                  <button
-                    className="btn-outline w-full"
-                    onClick={() => {
-                      const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
-                      viewerHtmlData && onDownload(viewerHtmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
-                    }}
-                    disabled={!viewerHtmlData}
-                  >
-                    Download HTML Viewer
-                  </button>
+                {showImport && (
+                  <div className="p-4 border-t border-gray-200 bg-white space-y-3">
+                    <p className="text-xs text-gray-500">Drop files on page or select below</p>
+                    {importError && <p className="text-xs text-red-600">{importError}</p>}
+                    <form className="space-y-2" onSubmit={handleImport}>
+                      <div>
+                        <label className="text-xs text-gray-600">Transcript ({isCriminal ? 'HTML/DOCX' : 'XML/DOCX'})</label>
+                        <input
+                          type="file"
+                          accept={isCriminal ? '.html,.htm,.docx' : '.xml,.docx'}
+                          onChange={(e) => setImportTranscriptFile(e.target.files?.[0] ?? null)}
+                          className="mt-1 w-full text-xs file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-600">Media File</label>
+                        <input
+                          type="file"
+                          accept="audio/*,video/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] ?? null
+                            setImportMediaFile(file)
+                            if (localMediaPreviewUrl) URL.revokeObjectURL(localMediaPreviewUrl)
+                            if (file) { setLocalMediaPreviewUrl(URL.createObjectURL(file)); setLocalMediaType(file.type) }
+                            else { setLocalMediaPreviewUrl(null); setLocalMediaType(undefined) }
+                          }}
+                          className="mt-1 w-full text-xs file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
+                        />
+                      </div>
+                      <button type="submit" className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50" disabled={importing || !importTranscriptFile || !importMediaFile}>
+                        {importing ? 'Importing…' : 'Import'}
+                      </button>
+                    </form>
+                  </div>
                 )}
-                {transcriptText && (
-                  <button
-                    className="btn-outline w-full"
-                    onClick={() =>
-                      onDownload(
-                        btoa(unescape(encodeURIComponent(transcriptText))),
-                        buildFilename('Transcript-Preview', '.txt'),
-                        'text/plain',
-                      )
-                    }
-                  >
-                    Download Transcript Text
-                  </button>
+              </div>
+
+              {/* Collapsible: Downloads */}
+              <div className="rounded-xl border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => setShowDownloads(!showDownloads)}
+                  className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
+                >
+                  <span>Export Downloads</span>
+                  <svg className={`w-4 h-4 text-gray-500 transition-transform ${showDownloads ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showDownloads && (
+                  <div className="p-4 border-t border-gray-200 bg-white space-y-2">
+                    <button
+                      className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
+                      onClick={() => docxData && onDownload(docxData, buildFilename('Transcript-Edited', '.docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
+                      disabled={!docxData}
+                    >
+                      Download DOCX
+                    </button>
+                    {appVariant === 'oncue' ? (
+                      <button
+                        className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
+                        onClick={() => xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')}
+                        disabled={!xmlData}
+                      >
+                        Download OnCue XML
+                      </button>
+                    ) : (
+                      <button
+                        className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
+                        onClick={() => {
+                          const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
+                          viewerHtmlData && onDownload(viewerHtmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
+                        }}
+                        disabled={!viewerHtmlData}
+                      >
+                        Download HTML Viewer
+                      </button>
+                    )}
+                    {transcriptText && (
+                      <button
+                        className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50"
+                        onClick={() => onDownload(btoa(unescape(encodeURIComponent(transcriptText))), buildFilename('Transcript-Preview', '.txt'), 'text/plain')}
+                      >
+                        Download Text
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

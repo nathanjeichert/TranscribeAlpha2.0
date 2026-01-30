@@ -81,6 +81,8 @@ except ImportError:
 try:
     from ..storage import (
         BUCKET_NAME,
+        add_transcript_to_case,
+        check_media_exists,
         list_all_transcripts,
         load_current_transcript,
         prune_snapshots,
@@ -93,6 +95,8 @@ except ImportError:
     try:
         from storage import (
             BUCKET_NAME,
+            add_transcript_to_case,
+            check_media_exists,
             list_all_transcripts,
             load_current_transcript,
             prune_snapshots,
@@ -104,6 +108,8 @@ except ImportError:
     except ImportError:
         import storage as storage_module
         BUCKET_NAME = storage_module.BUCKET_NAME
+        add_transcript_to_case = storage_module.add_transcript_to_case
+        check_media_exists = storage_module.check_media_exists
         list_all_transcripts = storage_module.list_all_transcripts
         load_current_transcript = storage_module.load_current_transcript
         prune_snapshots = storage_module.prune_snapshots
@@ -206,6 +212,7 @@ async def transcribe(
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
     transcription_model: str = Form("assemblyai"),
+    case_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
 ):
     logger.info("Received transcription request for file: %s using model: %s", file.filename, transcription_model)
@@ -402,6 +409,8 @@ async def transcribe(
             "updated_at": created_at.isoformat(),
             "user_id": current_user["user_id"],
             "clips": [],
+            "case_id": case_id if case_id else None,
+            "is_persistent": bool(case_id),
         }
 
         media_filename = resolve_media_filename(title_data, media_blob_name, fallback=file.filename or "media.mp4")
@@ -426,6 +435,16 @@ async def transcribe(
             bucket = storage_client.bucket(BUCKET_NAME)
             snapshot_blob = bucket.blob(f"transcripts/{media_key}/history/{snapshot_id}.json")
             snapshot_blob.upload_from_string(json.dumps(snapshot_payload), content_type="application/json")
+
+            # If case_id provided, add transcript to case (makes it persistent)
+            if case_id:
+                try:
+                    title_label = title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or media_key
+                    add_transcript_to_case(current_user["user_id"], case_id, media_key, title_label)
+                    logger.info("Added transcript %s to case %s", media_key, case_id)
+                except Exception as case_err:
+                    logger.warning("Failed to add transcript to case %s: %s", case_id, case_err)
+                    # Don't fail the whole request - transcript was saved, case assignment can be retried
 
         except Exception as e:
             logger.error("Failed to store transcript: %s", e)
@@ -1178,3 +1197,99 @@ async def resync_transcript(
                 os.remove(audio_path)
             except OSError:
                 pass
+
+
+@router.get("/api/transcripts/by-key/{media_key:path}/media-status")
+async def get_media_status(media_key: str, current_user: dict = Depends(get_current_user)):
+    """
+    Check if the media file for a transcript still exists.
+    Returns availability status and blob info.
+    """
+    try:
+        # Load transcript and verify ownership
+        transcript = load_current_transcript(media_key)
+        if not transcript:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        if transcript.get("user_id") != current_user["user_id"]:
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
+
+        blob_name = transcript.get("media_blob_name")
+        content_type = transcript.get("media_content_type")
+
+        # Check if media exists
+        available = check_media_exists(blob_name) if blob_name else False
+
+        return JSONResponse({
+            "available": available,
+            "blob_name": blob_name,
+            "content_type": content_type,
+            "media_key": media_key,
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to check media status for %s: %s", media_key, e)
+        raise HTTPException(status_code=500, detail="Failed to check media status")
+
+
+@router.post("/api/transcripts/by-key/{media_key:path}/reattach-media")
+async def reattach_media(
+    media_key: str,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Upload a new media file to attach to an existing transcript.
+    Used when the original media has expired but the transcript is persistent.
+    """
+    try:
+        # Load transcript and verify ownership
+        transcript = load_current_transcript(media_key)
+        if not transcript:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        if transcript.get("user_id") != current_user["user_id"]:
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
+
+        # Save uploaded file to temp
+        temp_path, file_size = await save_upload_to_tempfile(file)
+
+        try:
+            # Upload to cloud storage
+            content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+            blob_name = upload_preview_file_to_cloud_storage_from_path(
+                temp_path,
+                file.filename,
+                content_type,
+                user_id=current_user["user_id"],
+                media_key=media_key,
+            )
+
+            # Update transcript with new media reference
+            transcript["media_blob_name"] = blob_name
+            transcript["media_content_type"] = content_type
+            transcript["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            save_current_transcript(media_key, transcript)
+
+            logger.info("Reattached media to transcript %s: %s", media_key, blob_name)
+
+            return JSONResponse({
+                "message": "Media file attached successfully",
+                "media_key": media_key,
+                "blob_name": blob_name,
+                "content_type": content_type,
+            })
+
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to reattach media for %s: %s", media_key, e)
+        raise HTTPException(status_code=500, detail="Failed to attach media file")

@@ -155,9 +155,10 @@ export default function ClipCreator({
   const [importError, setImportError] = useState<string | null>(null)
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [importResetKey, setImportResetKey] = useState(0)
-  const [importExpanded, setImportExpanded] = useState(true)
+  const [importExpanded, setImportExpanded] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(-1)
+  const [showSettings, setShowSettings] = useState(false)
 
   // Search functionality
   const searchMatches = useMemo(() => {
@@ -634,39 +635,52 @@ export default function ClipCreator({
       selectedRange && index >= selectedRange.startIndex && index <= selectedRange.endIndex
     const isSearchMatch = searchMatches.includes(index)
     const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === index
-    const pageLabel = line.page != null && line.line != null ? `Pg ${line.page} Ln ${line.line}` : ''
-    let bgClass = 'bg-white border-primary-200'
+    const pageLabel = line.page != null && line.line != null ? `${line.page}:${line.line}` : ''
+    let bgClass = 'bg-white hover:bg-gray-50'
     if (isCurrentSearchMatch) {
-      bgClass = 'bg-amber-300 border-amber-500'
+      bgClass = 'bg-amber-200'
     } else if (isSearchMatch) {
-      bgClass = 'bg-amber-100 border-amber-300'
+      bgClass = 'bg-amber-50'
     } else if (isSelected) {
-      bgClass = 'bg-primary-100 border-primary-400'
+      bgClass = 'bg-primary-50'
     }
     return (
       <div
         key={line.id}
         ref={(el) => { lineRefs.current[index] = el }}
-        className={`border rounded-lg p-3 mb-2 transition ${bgClass}`}
+        className={`px-3 py-2 border-b border-gray-100 last:border-b-0 transition ${bgClass}`}
       >
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold text-primary-600 bg-primary-200 px-2 py-1 rounded-full">
-              {formatSeconds(line.start)}
-            </span>
-            <span className="text-xs text-primary-500">{pageLabel || '—'}</span>
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-16 text-xs font-mono text-gray-500 pt-0.5">
+            {formatSeconds(line.start).replace(/\.\d{3}$/, '')}
           </div>
-          <div className="flex gap-2">
-            <button type="button" className="btn-outline text-xs" onClick={() => handleManualStart(line.id)}>
-              Start here
+          <div className="flex-shrink-0 w-12 text-xs text-gray-400 pt-0.5">
+            {pageLabel || '—'}
+          </div>
+          <div className="flex-1 min-w-0">
+            <span className="text-xs font-semibold text-gray-900">{line.speaker}:</span>{' '}
+            <span className="text-sm text-gray-700">{line.text}</span>
+          </div>
+          <div className="flex-shrink-0 flex gap-1">
+            <button
+              type="button"
+              className={`px-2 py-0.5 rounded text-xs font-medium transition ${
+                manualStartId === line.id ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-green-100 hover:text-green-700'
+              }`}
+              onClick={() => handleManualStart(line.id)}
+            >
+              Start
             </button>
-            <button type="button" className="btn-outline text-xs" onClick={() => handleManualEnd(line.id)}>
-              End here
+            <button
+              type="button"
+              className={`px-2 py-0.5 rounded text-xs font-medium transition ${
+                manualEndId === line.id ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-red-100 hover:text-red-700'
+              }`}
+              onClick={() => handleManualEnd(line.id)}
+            >
+              End
             </button>
           </div>
-        </div>
-        <div className="mt-2 text-sm text-primary-900">
-          <span className="font-semibold">{line.speaker}:</span> {line.text}
         </div>
       </div>
     )
@@ -677,36 +691,29 @@ export default function ClipCreator({
     return (
       <div
         key={summary.clip_id}
-        className={`border rounded-lg p-4 transition ${
-          isActive ? 'border-primary-500 bg-primary-50' : 'border-primary-200 bg-white'
+        className={`p-3 rounded-lg transition ${
+          isActive ? 'bg-primary-50 ring-1 ring-primary-200' : 'bg-gray-50 hover:bg-gray-100'
         }`}
       >
-        <div className="flex flex-wrap justify-between gap-3">
-          <div>
-            <div className="font-semibold text-primary-900">{summary.name}</div>
-            <div className="text-xs text-primary-600">
-              Created {new Date(summary.created_at).toLocaleString()} • {formatSeconds(summary.duration)}
-            </div>
-            <div className="text-xs text-primary-500 mt-1">
-              {summary.start_time != null && summary.end_time != null && (
-                <>
-                  Source {formatSeconds(summary.start_time)} – {formatSeconds(summary.end_time)}
-                </>
-              )}
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="font-medium text-gray-900 text-sm truncate">{summary.name}</div>
+            <div className="text-xs text-gray-500">
+              {formatSeconds(summary.duration)} • {formatSeconds(summary.start_time ?? 0)} – {formatSeconds(summary.end_time ?? 0)}
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 items-center justify-center md:justify-end">
+          <div className="flex gap-1 flex-shrink-0">
             <button
               type="button"
-              className="btn-outline text-xs"
+              className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50"
               onClick={() => handleSelectClip(summary.clip_id)}
               disabled={historyLoadingId === summary.clip_id}
             >
-              {historyLoadingId === summary.clip_id ? 'Loading…' : 'View'}
+              {historyLoadingId === summary.clip_id ? '...' : 'View'}
             </button>
             <button
               type="button"
-              className="btn-outline text-xs"
+              className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50"
               onClick={() => handleDownloadDocx(summary.clip_id)}
             >
               DOCX
@@ -714,7 +721,7 @@ export default function ClipCreator({
             {isCriminal ? (
               <button
                 type="button"
-                className="btn-outline text-xs"
+                className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50"
                 onClick={() => handleDownloadViewer(summary.clip_id)}
               >
                 HTML
@@ -722,21 +729,11 @@ export default function ClipCreator({
             ) : (
               <button
                 type="button"
-                className="btn-outline text-xs"
+                className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50"
                 onClick={() => handleDownloadXml(summary.clip_id)}
               >
                 XML
               </button>
-            )}
-            {summary.media_blob_name && (
-              <a
-                href={appendAccessTokenToMediaUrl(`/api/media/${summary.media_blob_name}`)}
-                className="btn-outline text-xs"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Media
-              </a>
             )}
           </div>
         </div>
@@ -748,34 +745,27 @@ export default function ClipCreator({
   const hasLines = hasSession && lines.length > 0
 
   return (
-    <div className="space-y-8">
-      {onOpenHistory && (
-        <div className="flex justify-end">
-          <button className="btn-outline text-sm" onClick={onOpenHistory}>
-            History
-          </button>
-        </div>
-      )}
-      <div className="card">
-        <div
-          className="card-header cursor-pointer flex justify-between items-center"
+    <div className="space-y-6">
+      {/* Compact Import Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <button
           onClick={() => setImportExpanded(!importExpanded)}
+          className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 text-sm font-medium text-gray-900"
         >
-          <h2 className="text-xl font-medium">Import Transcript</h2>
-          <svg
-            className={`w-5 h-5 text-primary-500 transition-transform ${importExpanded ? 'rotate-180' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            <span>Import Existing Transcript</span>
+          </div>
+          <svg className={`w-4 h-4 text-gray-500 transition-transform ${importExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path d="M19 9l-7 7-7-7" />
           </svg>
-        </div>
+        </button>
         {importExpanded && (
-          <div className="card-body space-y-4">
-            <p className="text-sm text-primary-700">
-              Bring an existing {isCriminal ? 'HTML viewer' : 'OnCue XML'} transcript into the clip builder. Optionally include the
-              corresponding media file for preview and clip exports.
+          <div className="p-4 border-t border-gray-200 bg-gray-50 space-y-4">
+            <p className="text-sm text-gray-600">
+              Import an existing {isCriminal ? 'HTML viewer' : 'OnCue XML'} transcript with its media file.
             </p>
             {importError && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importError}</div>
@@ -784,35 +774,31 @@ export default function ClipCreator({
               <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{importMessage}</div>
             )}
             <form className="grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={handleImportTranscript}>
-              <div className="space-y-2">
-                <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">
-                  {isCriminal ? 'HTML Viewer / OnCue XML *' : 'OnCue XML *'}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  {isCriminal ? 'Transcript (HTML/XML)' : 'Transcript (XML)'}
                 </label>
                 <input
                   key={`import-xml-${importResetKey}`}
                   type="file"
                   accept={isCriminal ? '.html,.htm,.xml' : '.xml'}
                   onChange={(event) => setImportXmlFile(event.target.files?.[0] ?? null)}
-                  className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
+                  className="w-full text-sm file:mr-2 file:rounded file:border-0 file:bg-gray-200 file:px-3 file:py-1.5 file:text-gray-700"
                 />
-                <p className="text-xs text-primary-500">
-                  Select the transcript exported from {isCriminal ? 'the HTML viewer or OnCue' : 'OnCue'}.
-                </p>
               </div>
-              <div className="space-y-2">
-                <label className="block text-xs font-medium uppercase tracking-wide text-primary-700">Media *</label>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Media File</label>
                 <input
                   key={`import-media-${importResetKey}`}
                   type="file"
                   accept="audio/*,video/*"
                   onChange={(event) => setImportMediaFile(event.target.files?.[0] ?? null)}
-                  className="mt-1 w-full text-sm text-primary-700 file:mr-3 file:rounded file:border-0 file:bg-primary-100 file:px-3 file:py-2 file:text-primary-800"
+                  className="w-full text-sm file:mr-2 file:rounded file:border-0 file:bg-gray-200 file:px-3 file:py-1.5 file:text-gray-700"
                 />
-                <p className="text-xs text-primary-500">Required. The corresponding video or audio file for clip extraction and preview.</p>
               </div>
               <div className="md:col-span-2">
-                <button type="submit" className="btn-outline w-full md:w-auto" disabled={importing}>
-                  {importing ? 'Importing…' : 'Import transcript'}
+                <button type="submit" className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700 disabled:opacity-50" disabled={importing || !importXmlFile || !importMediaFile}>
+                  {importing ? 'Importing…' : 'Import'}
                 </button>
               </div>
             </form>
@@ -821,315 +807,344 @@ export default function ClipCreator({
       </div>
 
       {!hasSession ? (
-        <div className="card">
-          <div className="card-header">
-            <h2 className="text-xl font-medium">Clip Creator</h2>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
           </div>
-          <div className="card-body space-y-3 text-primary-700">
-            <p>Import a transcript above or generate one from the Transcription tab to start building clips.</p>
-          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">No Transcript Loaded</h3>
+          <p className="text-gray-600 mb-4">Import a transcript above or generate one to start building clips.</p>
         </div>
       ) : !hasLines ? (
-        <div className="card">
-          <div className="card-header">
-            <h2 className="text-xl font-medium">Clip Creator</h2>
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
           </div>
-          <div className="card-body space-y-3 text-primary-700">
-            <p>
-              This session does not have any transcript lines yet. Complete the transcription or import process before
-              generating clips.
-            </p>
-          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">No Transcript Lines</h3>
+          <p className="text-gray-600">Complete the transcription or import process before creating clips.</p>
         </div>
       ) : (
         <>
-          <div className="card">
-            <div className="card-header">
-              <h2 className="text-xl font-medium">Build a Clip</h2>
-            </div>
-            <div className="card-body space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  {cardSectionTitle('Clip name')}
-                  <input
-                    type="text"
-                    value={clipName}
-                    onChange={(event) => setClipName(event.target.value)}
-                    className="input-field"
-                    placeholder="e.g., Opening statement"
-                  />
-                </div>
-                <div>
-                  {cardSectionTitle('Selection mode')}
-                  <div className="flex gap-2 flex-wrap">
-                    <button type="button" className={selectionButtonClasses(selectionMode === 'time')} onClick={() => setSelectionMode('time')}>
-                      Timecodes
-                    </button>
-                    <button type="button" className={selectionButtonClasses(selectionMode === 'pageLine')} onClick={() => setSelectionMode('pageLine')}>
-                      Page & Line
-                    </button>
-                    <button type="button" className={selectionButtonClasses(selectionMode === 'manual')} onClick={() => setSelectionMode('manual')}>
-                      Transcript Picker
-                    </button>
-                  </div>
+          {/* Main Clip Creator */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+            {/* Header Toolbar */}
+            <div className="flex items-center justify-between gap-4 p-4 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={clipName}
+                  onChange={(event) => setClipName(event.target.value)}
+                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm font-medium w-48"
+                  placeholder="Clip name..."
+                />
+                <div className="w-px h-6 bg-gray-200" />
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${selectionMode === 'time' ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    onClick={() => setSelectionMode('time')}
+                  >
+                    Time
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${selectionMode === 'pageLine' ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    onClick={() => setSelectionMode('pageLine')}
+                  >
+                    Page:Line
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${selectionMode === 'manual' ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    onClick={() => setSelectionMode('manual')}
+                  >
+                    Manual
+                  </button>
                 </div>
               </div>
 
-              {selectionMode === 'time' && (
-                <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex items-center gap-2">
+                <button
+                  className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium flex items-center gap-2"
+                  onClick={() => setShowSettings(!showSettings)}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                  Settings
+                </button>
+                {onOpenHistory && (
+                  <button className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium" onClick={onOpenHistory}>
+                    History
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium"
+                  onClick={handlePreviewClip}
+                  disabled={!clipBounds || !effectiveMediaUrl || isSubmitting}
+                >
+                  Preview
+                </button>
+                <button
+                  type="button"
+                  className="px-4 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50"
+                  onClick={handleCreateClip}
+                  disabled={isSubmitting || !selectedRange}
+                >
+                  {isSubmitting ? 'Creating…' : 'Create Clip'}
+                </button>
+              </div>
+            </div>
+
+            {/* Collapsible Settings Panel */}
+            {showSettings && (
+              <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                {selectionMode === 'time' && (
+                  <div className="flex flex-wrap items-end gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-primary-700 mb-1">
-                        Start time <span className="font-normal text-primary-500">(snaps to line)</span>
-                      </label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Start Time</label>
                       <input
                         type="text"
-                        className="input-field"
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm w-28"
                         value={timeStart}
                         onChange={(event) => setTimeStart(event.target.value)}
                         placeholder="0:00.000"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-primary-700 mb-1">
-                        End time <span className="font-normal text-primary-500">(snaps to line)</span>
-                      </label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">End Time</label>
                       <input
                         type="text"
-                        className="input-field"
+                        className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm w-28"
                         value={timeEnd}
                         onChange={(event) => setTimeEnd(event.target.value)}
                         placeholder="0:30.000"
                       />
                     </div>
+                    <span className="text-xs text-gray-500 pb-2">Times snap to nearest line boundaries</span>
                   </div>
-                  <p className="text-xs text-primary-500 md:col-span-2">
-                    Clips include complete transcript lines. Times will adjust to line boundaries.
+                )}
+                {selectionMode === 'pageLine' && (
+                  <div className="flex flex-wrap items-end gap-4">
+                    <div className="flex gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Start Page</label>
+                        <input type="text" className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm w-20" value={pageStart} onChange={(event) => setPageStart(event.target.value)} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Start Line</label>
+                        <input type="text" className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm w-20" value={lineStart} onChange={(event) => setLineStart(event.target.value)} />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">End Page</label>
+                        <input type="text" className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm w-20" value={pageEnd} onChange={(event) => setPageEnd(event.target.value)} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">End Line</label>
+                        <input type="text" className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm w-20" value={lineEnd} onChange={(event) => setLineEnd(event.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {selectionMode === 'manual' && (
+                  <p className="text-sm text-gray-600">
+                    Click "Start" and "End" buttons on transcript lines below to define your clip range.
                   </p>
-                </>
-              )}
-
-              {selectionMode === 'pageLine' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-primary-700 mb-1">Start page</label>
-                      <input type="text" className="input-field" value={pageStart} onChange={(event) => setPageStart(event.target.value)} />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-primary-700 mb-1">Start line</label>
-                      <input type="text" className="input-field" value={lineStart} onChange={(event) => setLineStart(event.target.value)} />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-primary-700 mb-1">End page</label>
-                      <input type="text" className="input-field" value={pageEnd} onChange={(event) => setPageEnd(event.target.value)} />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-primary-700 mb-1">End line</label>
-                      <input type="text" className="input-field" value={lineEnd} onChange={(event) => setLineEnd(event.target.value)} />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {selectionMode === 'manual' && (
-                <p className="text-sm text-primary-700">
-                  Click “Start here” and “End here” on the transcript lines below to define your clip. You can still fine-tune using
-                  timecodes or page numbers afterwards.
-                </p>
-              )}
-
-              <div>
-                {cardSectionTitle('Transcript lines')}
-                {/* Search Bar */}
-                <div className="mb-3 flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <input
-                      type="text"
-                      placeholder="Search transcript..."
-                      className="input-field w-full pr-20"
-                      value={searchQuery}
-                      onChange={(e) => {
-                        setSearchQuery(e.target.value)
-                        if (e.target.value.trim()) {
-                          setSearchCurrentIndex(0)
-                        } else {
-                          setSearchCurrentIndex(-1)
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          goToSearchResult(e.shiftKey ? 'prev' : 'next')
-                        } else if (e.key === 'Escape') {
-                          clearSearch()
-                        }
-                      }}
-                    />
-                    {searchQuery && (
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                        <span className="text-xs text-primary-500">
-                          {searchMatches.length > 0 ? `${searchCurrentIndex + 1}/${searchMatches.length}` : '0/0'}
-                        </span>
-                        <button
-                          type="button"
-                          className="p-1 text-primary-400 hover:text-primary-600"
-                          onClick={() => goToSearchResult('prev')}
-                          title="Previous"
-                        >
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 text-primary-400 hover:text-primary-600"
-                          onClick={() => goToSearchResult('next')}
-                          title="Next"
-                        >
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          className="p-1 text-primary-400 hover:text-primary-600"
-                          onClick={clearSearch}
-                          title="Clear"
-                        >
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="max-h-96 overflow-y-auto pr-1">
-                  {lines.map((line, index) => renderLineRow(line, index))}
-                </div>
+                )}
               </div>
+            )}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <div className="text-sm text-primary-700">
-                    <span className="font-semibold">Clip span:</span>{' '}
-                    {clipBounds ? `${formatSeconds(clipBounds.start)} – ${formatSeconds(clipBounds.end)}` : 'Select lines to calculate'}
-                  </div>
-                  <div className="text-sm text-primary-600">
-                    <span className="font-semibold">Duration:</span>{' '}
-                    {clipBounds ? formatSeconds(clipBounds.end - clipBounds.start) : '—'}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    className="btn-outline"
-                    onClick={handlePreviewClip}
-                    disabled={!clipBounds || !effectiveMediaUrl || isSubmitting}
-                  >
-                    {previewing ? 'Previewing…' : 'Preview clip'}
-                  </button>
-                  <button type="button" className="btn-primary" onClick={handleCreateClip} disabled={isSubmitting || !selectedRange}>
-                    {isSubmitting ? 'Creating…' : 'Create clip'}
-                  </button>
-                </div>
-              </div>
-
-              {creationError && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">{creationError}</div>}
-              {creationMessage && <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded">{creationMessage}</div>}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-            <div className="card">
-              <div className="card-header">
-                <h2 className="text-xl font-medium">Media preview</h2>
-              </div>
-              <div className="card-body space-y-4">
-                {effectiveMediaUrl ? (
+            {/* Status Bar */}
+            {(creationError || creationMessage || clipBounds) && (
+              <div className="px-4 py-2 border-b border-gray-200 flex items-center gap-4 text-sm">
+                {creationError && <span className="text-red-600">{creationError}</span>}
+                {creationMessage && <span className="text-green-600">{creationMessage}</span>}
+                {!creationError && !creationMessage && clipBounds && (
                   <>
-                    <div className="bg-primary-900 rounded-lg p-4">
-                      {isVideo ? (
-                        <video ref={videoRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full rounded" />
-                      ) : (
-                        <audio ref={audioRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full" />
-                      )}
-                    </div>
-                    {clipBounds && session?.audio_duration && !activeClip && (
-                      <div className="mt-3">
-                        <div className="text-xs text-primary-500 mb-1">Clip region</div>
-                        <div className="h-2 bg-primary-200 rounded-full relative overflow-hidden">
-                          <div
-                            className="absolute h-full bg-primary-500 rounded-full"
-                            style={{
-                              left: `${(clipBounds.start / session.audio_duration) * 100}%`,
-                              width: `${((clipBounds.end - clipBounds.start) / session.audio_duration) * 100}%`,
-                            }}
-                          />
-                        </div>
-                        <div className="flex justify-between text-xs text-primary-400 mt-1">
-                          <span>0:00</span>
-                          <span>{formatSeconds(session.audio_duration)}</span>
-                        </div>
-                      </div>
-                    )}
+                    <span className="text-gray-600">
+                      <span className="font-medium">Range:</span> {formatSeconds(clipBounds.start)} – {formatSeconds(clipBounds.end)}
+                    </span>
+                    <span className="text-gray-600">
+                      <span className="font-medium">Duration:</span> {formatSeconds(clipBounds.end - clipBounds.start)}
+                    </span>
                   </>
-                ) : (
-                  <p className="text-primary-700">No media preview available for this session.</p>
-                )}
-                {clipBounds && (
-                  <div className="text-xs text-primary-600">
-                    Clip will run from {formatSeconds(clipBounds.start)} to {formatSeconds(clipBounds.end)}.
-                  </div>
                 )}
               </div>
-            </div>
+            )}
 
-            <div className="card">
-              <div className="card-header">
-                <h2 className="text-xl font-medium">Clip history</h2>
+            <div className="p-4">
+              {/* Search Bar */}
+              <div className="mb-3">
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Search transcript..."
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm pr-24"
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value)
+                      if (e.target.value.trim()) {
+                        setSearchCurrentIndex(0)
+                      } else {
+                        setSearchCurrentIndex(-1)
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        goToSearchResult(e.shiftKey ? 'prev' : 'next')
+                      } else if (e.key === 'Escape') {
+                        clearSearch()
+                      }
+                    }}
+                  />
+                  {searchQuery && (
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                      <span className="text-xs text-gray-500">
+                        {searchMatches.length > 0 ? `${searchCurrentIndex + 1}/${searchMatches.length}` : '0/0'}
+                      </span>
+                      <button type="button" className="p-1 text-gray-400 hover:text-gray-600" onClick={() => goToSearchResult('prev')}>
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                      </button>
+                      <button type="button" className="p-1 text-gray-400 hover:text-gray-600" onClick={() => goToSearchResult('next')}>
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      <button type="button" className="p-1 text-gray-400 hover:text-gray-600" onClick={clearSearch}>
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="card-body space-y-4">
-                {clipHistory.length === 0 && <p className="text-primary-700">No clips yet. Create your first clip to see it here.</p>}
-                {clipHistory.map((summary) => renderHistoryRow(summary))}
+
+              {/* Transcript Lines */}
+              <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-gray-200">
+                {lines.map((line, index) => renderLineRow(line, index))}
               </div>
             </div>
           </div>
 
+          {/* Media Preview & Clip History Grid */}
+          <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)] gap-6">
+            {/* Media Preview - Sidebar */}
+            <div className="space-y-4">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div className="bg-gray-900 p-3">
+                  {effectiveMediaUrl ? (
+                    isVideo ? (
+                      <video ref={videoRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full rounded-lg" />
+                    ) : (
+                      <audio ref={audioRef} src={effectiveMediaUrl} controls preload="metadata" className="w-full" />
+                    )
+                  ) : (
+                    <div className="py-8 text-center text-gray-400 text-sm">No media loaded</div>
+                  )}
+                </div>
+                {clipBounds && session?.audio_duration && !activeClip && (
+                  <div className="p-3 border-t border-gray-200">
+                    <div className="text-xs text-gray-500 mb-1">Clip region</div>
+                    <div className="h-2 bg-gray-200 rounded-full relative overflow-hidden">
+                      <div
+                        className="absolute h-full bg-primary-500 rounded-full"
+                        style={{
+                          left: `${(clipBounds.start / session.audio_duration) * 100}%`,
+                          width: `${((clipBounds.end - clipBounds.start) / session.audio_duration) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-400 mt-1">
+                      <span>0:00</span>
+                      <span>{formatSeconds(session.audio_duration)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Quick Stats */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h3 className="text-sm font-medium text-gray-900 mb-3">Session Info</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between text-gray-600">
+                    <span>Lines</span>
+                    <span className="font-medium text-gray-900">{lines.length}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-600">
+                    <span>Clips Created</span>
+                    <span className="font-medium text-gray-900">{clipHistory.length}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-600">
+                    <span>Duration</span>
+                    <span className="font-medium text-gray-900">{formatSeconds(session?.audio_duration ?? 0)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Clip History - Main Area */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+              <div className="px-4 py-3 border-b border-gray-200">
+                <h3 className="text-sm font-medium text-gray-900">Clip History</h3>
+              </div>
+              <div className="p-4">
+                {clipHistory.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                      <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </div>
+                    <p className="text-gray-500 text-sm">No clips yet</p>
+                    <p className="text-gray-400 text-xs mt-1">Created clips will appear here</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[40vh] overflow-y-auto">
+                    {clipHistory.map((summary) => renderHistoryRow(summary))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Active Clip Detail */}
           {activeClip && (
-            <div className="card">
-              <div className="card-header flex justify-between items-center">
-                <h2 className="text-xl font-medium">Selected clip</h2>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+              <div className="px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <div>
+                  <h3 className="text-sm font-medium text-gray-900">{activeClip.name}</h3>
+                  <p className="text-xs text-gray-500">
+                    {formatSeconds(activeClip.duration)} • {formatSeconds(activeClip.start_time)} – {formatSeconds(activeClip.end_time)}
+                  </p>
+                </div>
                 <button
                   type="button"
-                  className="text-primary-500 hover:text-primary-700 text-sm"
+                  className="text-gray-400 hover:text-gray-600 p-1"
                   onClick={() => setActiveClip(null)}
                 >
-                  Clear selection
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M6 18L18 6M6 6l12 12" />
+                  </svg>
                 </button>
               </div>
-              <div className="card-body space-y-4">
-                <div>
-                  <div className="text-lg font-semibold text-primary-900">{activeClip.name}</div>
-                  <div className="text-sm text-primary-600">
-                    Duration: {formatSeconds(activeClip.duration)}
-                  </div>
-                  <div className="text-sm text-primary-500">
-                    Source: {formatSeconds(activeClip.start_time)} – {formatSeconds(activeClip.end_time)}
-                  </div>
-                </div>
-                <div>
-                  {cardSectionTitle('Transcript preview')}
-                  <div className="bg-primary-50 border border-primary-200 rounded-lg p-4 max-h-64 overflow-y-auto">
-                    {activeClip.lines.map((line) => (
-                      <div key={line.id} className="text-sm text-primary-800 mb-2">
-                        <span className="font-semibold">{line.speaker}</span>: {line.text}
-                      </div>
-                    ))}
-                  </div>
+              <div className="p-4">
+                <div className="bg-gray-50 rounded-lg p-4 max-h-48 overflow-y-auto">
+                  {activeClip.lines.map((line) => (
+                    <div key={line.id} className="text-sm text-gray-800 mb-2">
+                      <span className="font-semibold text-gray-900">{line.speaker}:</span> {line.text}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>

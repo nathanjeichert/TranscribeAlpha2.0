@@ -57,17 +57,28 @@ def save_current_transcript(media_key: str, transcript_data: dict) -> None:
 
         # Set TTL metadata
         created_at = transcript_data.get("created_at", datetime.now(timezone.utc).isoformat())
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
-        blob.metadata = {
+        # Check if transcript is persistent (in a case) - don't set TTL
+        is_persistent = transcript_data.get("is_persistent", False) or transcript_data.get("case_id")
+
+        metadata = {
             "media_key": media_key,
             "created_at": created_at,
-            "expires_at": expires_at,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": now,
             "user_id": transcript_data.get("user_id"),
         }
+
+        if is_persistent:
+            metadata["is_persistent"] = "true"
+            # No expires_at for persistent transcripts
+        else:
+            metadata["is_persistent"] = "false"
+            metadata["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+        blob.metadata = metadata
         blob.upload_from_string(json.dumps(transcript_data), content_type="application/json")
-        logger.info("Saved current transcript for media_key %s", media_key)
+        logger.info("Saved current transcript for media_key %s (persistent: %s)", media_key, is_persistent)
     except Exception as e:
         logger.error("Failed to save current transcript for %s: %s", media_key, e)
         raise
@@ -545,3 +556,565 @@ async def save_upload_to_tempfile(upload) -> Tuple[str, int]:
     except Exception:
         pass
     return temp_file.name, size
+
+
+# ============================================================================
+# Cases Storage Functions
+# ============================================================================
+
+
+def _case_meta_path(user_id: str, case_id: str) -> str:
+    """Return GCS path for case metadata."""
+    return f"cases/{user_id}/{case_id}/meta.json"
+
+
+def _case_transcripts_path(user_id: str, case_id: str) -> str:
+    """Return GCS path for case transcript list."""
+    return f"cases/{user_id}/{case_id}/transcripts.json"
+
+
+def _case_index_path(user_id: str) -> str:
+    """Return GCS path for user's case index."""
+    return f"cases/{user_id}/index.json"
+
+
+def create_case(user_id: str, case_id: str, name: str, description: Optional[str] = None) -> dict:
+    """Create a new case and return its metadata."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        now = datetime.now(timezone.utc).isoformat()
+
+        case_meta = {
+            "case_id": case_id,
+            "user_id": user_id,
+            "name": name,
+            "description": description or "",
+            "created_at": now,
+            "updated_at": now,
+            "transcript_count": 0,
+        }
+
+        # Save case metadata
+        meta_blob = bucket.blob(_case_meta_path(user_id, case_id))
+        meta_blob.upload_from_string(json.dumps(case_meta), content_type="application/json")
+
+        # Initialize empty transcripts list
+        transcripts_blob = bucket.blob(_case_transcripts_path(user_id, case_id))
+        transcripts_blob.upload_from_string(json.dumps([]), content_type="application/json")
+
+        # Update user's case index
+        _update_case_index(user_id)
+
+        logger.info("Created case %s for user %s", case_id, user_id)
+        return case_meta
+
+    except Exception as e:
+        logger.error("Failed to create case %s: %s", case_id, e)
+        raise
+
+
+def load_case_meta(user_id: str, case_id: str) -> Optional[dict]:
+    """Load case metadata."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_case_meta_path(user_id, case_id))
+
+        if not blob.exists():
+            return None
+
+        return json.loads(blob.download_as_string())
+
+    except Exception as e:
+        logger.error("Failed to load case meta %s: %s", case_id, e)
+        return None
+
+
+def update_case_meta(user_id: str, case_id: str, updates: dict) -> Optional[dict]:
+    """Update case metadata fields (name, description)."""
+    try:
+        case_meta = load_case_meta(user_id, case_id)
+        if not case_meta:
+            return None
+
+        # Only allow updating specific fields
+        allowed_fields = {"name", "description"}
+        for field in allowed_fields:
+            if field in updates:
+                case_meta[field] = updates[field]
+
+        case_meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_case_meta_path(user_id, case_id))
+        blob.upload_from_string(json.dumps(case_meta), content_type="application/json")
+
+        # Update index
+        _update_case_index(user_id)
+
+        logger.info("Updated case %s", case_id)
+        return case_meta
+
+    except Exception as e:
+        logger.error("Failed to update case %s: %s", case_id, e)
+        raise
+
+
+def delete_case(user_id: str, case_id: str, delete_transcripts: bool = False) -> List[str]:
+    """
+    Delete a case. Returns list of media_keys that were affected.
+    If delete_transcripts=True, also deletes the transcripts.
+    If delete_transcripts=False, moves transcripts to uncategorized (restores TTL).
+    """
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        affected_keys = []
+
+        # Get transcript list
+        transcripts = get_case_transcripts(user_id, case_id)
+
+        for entry in transcripts:
+            media_key = entry.get("media_key")
+            if not media_key:
+                continue
+
+            affected_keys.append(media_key)
+
+            if delete_transcripts:
+                # Delete the transcript entirely
+                _delete_transcript(media_key)
+            else:
+                # Remove case association and restore TTL
+                _remove_case_from_transcript(media_key)
+                restore_transcript_ttl(media_key)
+
+        # Delete case files
+        meta_blob = bucket.blob(_case_meta_path(user_id, case_id))
+        if meta_blob.exists():
+            meta_blob.delete()
+
+        transcripts_blob = bucket.blob(_case_transcripts_path(user_id, case_id))
+        if transcripts_blob.exists():
+            transcripts_blob.delete()
+
+        # Update index
+        _update_case_index(user_id)
+
+        logger.info("Deleted case %s (transcripts deleted: %s)", case_id, delete_transcripts)
+        return affected_keys
+
+    except Exception as e:
+        logger.error("Failed to delete case %s: %s", case_id, e)
+        raise
+
+
+def list_user_cases(user_id: str) -> List[dict]:
+    """List all cases for a user."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_case_index_path(user_id))
+
+        if blob.exists():
+            index_data = json.loads(blob.download_as_string())
+            return index_data.get("cases", [])
+
+        # Fallback: scan for cases if index doesn't exist
+        return _rebuild_case_index(user_id)
+
+    except Exception as e:
+        logger.error("Failed to list cases for user %s: %s", user_id, e)
+        return []
+
+
+def _update_case_index(user_id: str) -> None:
+    """Rebuild and save the user's case index."""
+    try:
+        cases = _rebuild_case_index(user_id)
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_case_index_path(user_id))
+
+        index_data = {
+            "user_id": user_id,
+            "cases": cases,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        blob.upload_from_string(json.dumps(index_data), content_type="application/json")
+
+    except Exception as e:
+        logger.error("Failed to update case index for user %s: %s", user_id, e)
+
+
+def _rebuild_case_index(user_id: str) -> List[dict]:
+    """Scan GCS and rebuild case list for user."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = f"cases/{user_id}/"
+        cases = []
+
+        # Find all case directories by looking for meta.json files
+        for blob in bucket.list_blobs(prefix=prefix):
+            if blob.name.endswith("/meta.json"):
+                try:
+                    case_meta = json.loads(blob.download_as_string())
+                    cases.append(case_meta)
+                except Exception:
+                    continue
+
+        # Sort by updated_at descending
+        cases.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+        return cases
+
+    except Exception as e:
+        logger.error("Failed to rebuild case index for user %s: %s", user_id, e)
+        return []
+
+
+def get_case_transcripts(user_id: str, case_id: str) -> List[dict]:
+    """Get list of transcripts in a case."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(_case_transcripts_path(user_id, case_id))
+
+        if not blob.exists():
+            return []
+
+        return json.loads(blob.download_as_string())
+
+    except Exception as e:
+        logger.error("Failed to get case transcripts for %s: %s", case_id, e)
+        return []
+
+
+def add_transcript_to_case(user_id: str, case_id: str, media_key: str, title_label: Optional[str] = None) -> bool:
+    """
+    Add a transcript to a case.
+    Also sets the transcript as persistent (removes TTL) and adds case_id to transcript.
+    """
+    try:
+        # Verify case exists and belongs to user
+        case_meta = load_case_meta(user_id, case_id)
+        if not case_meta:
+            logger.warning("Case %s not found for user %s", case_id, user_id)
+            return False
+
+        # Verify transcript exists and belongs to user
+        transcript = load_current_transcript(media_key)
+        if not transcript:
+            logger.warning("Transcript %s not found", media_key)
+            return False
+        if transcript.get("user_id") != user_id:
+            logger.warning("Transcript %s does not belong to user %s", media_key, user_id)
+            return False
+
+        # Check if transcript is already in another case
+        existing_case_id = transcript.get("case_id")
+        if existing_case_id and existing_case_id != case_id:
+            # Remove from old case first
+            remove_transcript_from_case(user_id, existing_case_id, media_key)
+
+        bucket = storage_client.bucket(BUCKET_NAME)
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Get current transcripts list
+        transcripts = get_case_transcripts(user_id, case_id)
+
+        # Check if already in this case
+        if any(t.get("media_key") == media_key for t in transcripts):
+            return True  # Already added
+
+        # Add to case
+        transcripts.append({
+            "media_key": media_key,
+            "added_at": now,
+            "title_label": title_label or transcript.get("title_data", {}).get("CASE_NAME") or media_key,
+        })
+
+        # Save updated transcripts list
+        transcripts_blob = bucket.blob(_case_transcripts_path(user_id, case_id))
+        transcripts_blob.upload_from_string(json.dumps(transcripts), content_type="application/json")
+
+        # Update case metadata
+        case_meta["transcript_count"] = len(transcripts)
+        case_meta["updated_at"] = now
+        meta_blob = bucket.blob(_case_meta_path(user_id, case_id))
+        meta_blob.upload_from_string(json.dumps(case_meta), content_type="application/json")
+
+        # Update transcript with case_id and make persistent
+        _set_case_on_transcript(media_key, case_id)
+        set_transcript_persistent(media_key)
+
+        # Update index
+        _update_case_index(user_id)
+
+        logger.info("Added transcript %s to case %s", media_key, case_id)
+        return True
+
+    except Exception as e:
+        logger.error("Failed to add transcript %s to case %s: %s", media_key, case_id, e)
+        raise
+
+
+def remove_transcript_from_case(user_id: str, case_id: str, media_key: str) -> bool:
+    """
+    Remove a transcript from a case.
+    Restores TTL on the transcript.
+    """
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+
+        # Get current transcripts list
+        transcripts = get_case_transcripts(user_id, case_id)
+        original_count = len(transcripts)
+
+        # Remove the transcript
+        transcripts = [t for t in transcripts if t.get("media_key") != media_key]
+
+        if len(transcripts) == original_count:
+            return False  # Wasn't in the case
+
+        # Save updated list
+        transcripts_blob = bucket.blob(_case_transcripts_path(user_id, case_id))
+        transcripts_blob.upload_from_string(json.dumps(transcripts), content_type="application/json")
+
+        # Update case metadata
+        case_meta = load_case_meta(user_id, case_id)
+        if case_meta:
+            case_meta["transcript_count"] = len(transcripts)
+            case_meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+            meta_blob = bucket.blob(_case_meta_path(user_id, case_id))
+            meta_blob.upload_from_string(json.dumps(case_meta), content_type="application/json")
+
+        # Remove case_id from transcript and restore TTL
+        _remove_case_from_transcript(media_key)
+        restore_transcript_ttl(media_key)
+
+        # Update index
+        _update_case_index(user_id)
+
+        logger.info("Removed transcript %s from case %s", media_key, case_id)
+        return True
+
+    except Exception as e:
+        logger.error("Failed to remove transcript %s from case %s: %s", media_key, case_id, e)
+        raise
+
+
+def _set_case_on_transcript(media_key: str, case_id: str) -> None:
+    """Set case_id on a transcript's current.json."""
+    try:
+        transcript = load_current_transcript(media_key)
+        if not transcript:
+            return
+
+        transcript["case_id"] = case_id
+        transcript["is_persistent"] = True
+        save_current_transcript(media_key, transcript)
+
+    except Exception as e:
+        logger.error("Failed to set case on transcript %s: %s", media_key, e)
+
+
+def _remove_case_from_transcript(media_key: str) -> None:
+    """Remove case_id from a transcript's current.json."""
+    try:
+        transcript = load_current_transcript(media_key)
+        if not transcript:
+            return
+
+        transcript["case_id"] = None
+        transcript["is_persistent"] = False
+        save_current_transcript(media_key, transcript)
+
+    except Exception as e:
+        logger.error("Failed to remove case from transcript %s: %s", media_key, e)
+
+
+def set_transcript_persistent(media_key: str) -> None:
+    """Remove TTL from a transcript (make it persistent)."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(f"transcripts/{media_key}/current.json")
+
+        if not blob.exists():
+            return
+
+        blob.reload()
+        metadata = blob.metadata or {}
+
+        # Remove expires_at to make persistent
+        if "expires_at" in metadata:
+            del metadata["expires_at"]
+        metadata["is_persistent"] = "true"
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        blob.metadata = metadata
+        blob.patch()
+
+        logger.info("Set transcript %s as persistent", media_key)
+
+    except Exception as e:
+        logger.error("Failed to set transcript %s as persistent: %s", media_key, e)
+
+
+def restore_transcript_ttl(media_key: str) -> None:
+    """Restore 30-day TTL to a transcript."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(f"transcripts/{media_key}/current.json")
+
+        if not blob.exists():
+            return
+
+        blob.reload()
+        metadata = blob.metadata or {}
+
+        # Set new expiration 30 days from now
+        metadata["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        metadata["is_persistent"] = "false"
+        metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        blob.metadata = metadata
+        blob.patch()
+
+        logger.info("Restored TTL on transcript %s", media_key)
+
+    except Exception as e:
+        logger.error("Failed to restore TTL on transcript %s: %s", media_key, e)
+
+
+def _delete_transcript(media_key: str) -> None:
+    """Delete a transcript and all its history."""
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        prefix = f"transcripts/{media_key}/"
+
+        for blob in bucket.list_blobs(prefix=prefix):
+            try:
+                blob.delete()
+            except Exception:
+                continue
+
+        logger.info("Deleted transcript %s", media_key)
+
+    except Exception as e:
+        logger.error("Failed to delete transcript %s: %s", media_key, e)
+
+
+def list_uncategorized_transcripts(user_id: str) -> List[dict]:
+    """List transcripts not in any case (with TTL info)."""
+    try:
+        # Get all user's transcripts
+        all_transcripts = list_all_transcripts(user_id)
+
+        # Filter to only those without case_id
+        uncategorized = []
+        for t in all_transcripts:
+            transcript = load_current_transcript(t["media_key"])
+            if transcript and not transcript.get("case_id"):
+                # Get expiration info from blob metadata
+                bucket = storage_client.bucket(BUCKET_NAME)
+                blob = bucket.blob(f"transcripts/{t['media_key']}/current.json")
+                expires_at = None
+                if blob.exists():
+                    blob.reload()
+                    if blob.metadata:
+                        expires_at = blob.metadata.get("expires_at")
+
+                uncategorized.append({
+                    **t,
+                    "expires_at": expires_at,
+                })
+
+        return uncategorized
+
+    except Exception as e:
+        logger.error("Failed to list uncategorized transcripts: %s", e)
+        return []
+
+
+def search_case_transcripts(user_id: str, case_id: str, query: str) -> List[dict]:
+    """
+    Search text and speaker names across all transcripts in a case.
+    Returns list of CaseSearchResult-like dicts.
+    """
+    try:
+        if not query or len(query.strip()) < 2:
+            return []
+
+        query_lower = query.lower().strip()
+        results = []
+
+        # Get all transcripts in case
+        transcripts = get_case_transcripts(user_id, case_id)
+
+        for entry in transcripts:
+            media_key = entry.get("media_key")
+            if not media_key:
+                continue
+
+            transcript = load_current_transcript(media_key)
+            if not transcript:
+                continue
+
+            matches = []
+            lines = transcript.get("lines", [])
+
+            for line in lines:
+                line_text = line.get("text", "")
+                speaker = line.get("speaker", "")
+                match_type = None
+
+                # Search in text
+                if query_lower in line_text.lower():
+                    match_type = "text"
+                # Search in speaker name
+                elif query_lower in speaker.lower():
+                    match_type = "speaker"
+
+                if match_type:
+                    matches.append({
+                        "line_id": line.get("id", ""),
+                        "page": line.get("page", 0),
+                        "line": line.get("line", 0),
+                        "text": line_text,
+                        "speaker": speaker,
+                        "match_type": match_type,
+                    })
+
+            if matches:
+                results.append({
+                    "media_key": media_key,
+                    "title_label": entry.get("title_label", media_key),
+                    "matches": matches,
+                })
+
+        return results
+
+    except Exception as e:
+        logger.error("Failed to search case %s: %s", case_id, e)
+        return []
+
+
+def check_media_exists(blob_name: str) -> bool:
+    """Check if a media blob exists in GCS."""
+    try:
+        if not blob_name:
+            return False
+
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        return blob.exists()
+
+    except Exception as e:
+        logger.error("Failed to check media existence for %s: %s", blob_name, e)
+        return False
+
+
+def get_transcript_case_id(media_key: str) -> Optional[str]:
+    """Get the case_id for a transcript, if any."""
+    try:
+        transcript = load_current_transcript(media_key)
+        if transcript:
+            return transcript.get("case_id")
+        return None
+    except Exception:
+        return None

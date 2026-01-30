@@ -80,6 +80,15 @@ except ImportError:
         import api.health as health_module
         health_router = health_module.router
 
+try:
+    from .api.cases import router as cases_router
+except ImportError:
+    try:
+        from api.cases import router as cases_router
+    except ImportError:
+        import api.cases as cases_module
+        cases_router = cases_module.router
+
 
 app = FastAPI(
     title="TranscribeAlpha API",
@@ -106,6 +115,7 @@ async def startup_event():
 
 app.include_router(auth_router)
 app.include_router(transcripts_router)
+app.include_router(cases_router)
 app.include_router(clips_router)
 app.include_router(media_router)
 app.include_router(health_router)
