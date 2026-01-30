@@ -1,8 +1,9 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
+import { normalizePathname, routes } from '@/utils/routes'
 
 interface NavItemProps {
   href: string
@@ -28,19 +29,24 @@ function NavItem({ href, icon, label, active }: NavItemProps) {
 }
 
 export default function Sidebar() {
-  const pathname = usePathname()
+  const router = useRouter()
+  const rawPathname = usePathname()
+  const searchParams = useSearchParams()
+  const pathname = normalizePathname(rawPathname)
   const { cases, uncategorizedCount, recentTranscripts, setActiveMediaKey } = useDashboard()
 
   const isActive = (path: string) => {
     if (path === '/') return pathname === '/'
     return pathname.startsWith(path)
   }
+  const activeCaseId = searchParams.get('id')
+  const isCaseDetail = pathname === routes.caseDetailBase()
 
   return (
     <aside className="w-72 bg-primary-900 text-white flex flex-col h-screen sticky top-0">
       {/* Logo */}
       <div className="p-5 border-b border-primary-700">
-        <Link href="/" className="flex items-center gap-3">
+        <Link href={routes.home()} className="flex items-center gap-3">
           <div className="w-9 h-9 bg-gradient-to-br from-primary-600 to-primary-500 rounded-lg flex items-center justify-center font-semibold text-lg">
             T
           </div>
@@ -51,8 +57,8 @@ export default function Sidebar() {
       {/* Main Navigation */}
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
         <NavItem
-          href="/"
-          active={isActive('/') && pathname === '/'}
+          href={routes.home()}
+          active={isActive(routes.home()) && pathname === routes.home()}
           icon={
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
               <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
@@ -62,8 +68,8 @@ export default function Sidebar() {
         />
 
         <NavItem
-          href="/transcribe"
-          active={isActive('/transcribe')}
+          href={routes.transcribe()}
+          active={isActive(routes.transcribe())}
           icon={
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
               <path d="M12 14l9-5-9-5-9 5 9 5z" />
@@ -74,8 +80,8 @@ export default function Sidebar() {
         />
 
         <NavItem
-          href="/editor"
-          active={isActive('/editor')}
+          href={routes.editor()}
+          active={isActive(routes.editor())}
           icon={
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
               <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -85,8 +91,8 @@ export default function Sidebar() {
         />
 
         <NavItem
-          href="/clip-creator"
-          active={isActive('/clip-creator')}
+          href={routes.clipCreator()}
+          active={isActive(routes.clipCreator())}
           icon={
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
               <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -102,7 +108,7 @@ export default function Sidebar() {
               Cases
             </span>
             <Link
-              href="/cases"
+              href={routes.cases()}
               className="text-xs text-primary-400 hover:text-white transition-colors"
             >
               View All
@@ -113,9 +119,9 @@ export default function Sidebar() {
             {cases.slice(0, 5).map((caseItem) => (
               <Link
                 key={caseItem.case_id}
-                href={`/cases/${caseItem.case_id}`}
+                href={routes.caseDetail(caseItem.case_id)}
                 className={`flex items-center gap-3 px-4 py-2 rounded-lg text-sm transition-colors ${
-                  pathname === `/cases/${caseItem.case_id}`
+                  (isCaseDetail && activeCaseId === caseItem.case_id)
                     ? 'bg-primary-700 text-white'
                     : 'text-primary-300 hover:bg-primary-800 hover:text-white'
                 }`}
@@ -129,7 +135,7 @@ export default function Sidebar() {
 
             {uncategorizedCount > 0 && (
               <Link
-                href="/cases?tab=uncategorized"
+                href={routes.casesTab('uncategorized')}
                 className="flex items-center gap-3 px-4 py-2 rounded-lg text-sm text-primary-400 hover:bg-primary-800 hover:text-white transition-colors"
               >
                 <span className="w-7 h-7 bg-primary-800 rounded flex items-center justify-center text-xs">
@@ -161,7 +167,7 @@ export default function Sidebar() {
                 key={transcript.media_key}
                 onClick={() => {
                   setActiveMediaKey(transcript.media_key)
-                  window.location.href = `/editor?key=${transcript.media_key}`
+                  router.push(routes.editor(transcript.media_key))
                 }}
                 className="w-full flex items-center gap-3 px-4 py-2 rounded-lg text-sm text-left text-primary-300 hover:bg-primary-800 hover:text-white transition-colors"
               >
@@ -186,8 +192,8 @@ export default function Sidebar() {
       {/* Footer - Settings */}
       <div className="p-4 border-t border-primary-700">
         <NavItem
-          href="/settings"
-          active={isActive('/settings')}
+          href={routes.settings()}
+          active={isActive(routes.settings())}
           icon={
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
               <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />

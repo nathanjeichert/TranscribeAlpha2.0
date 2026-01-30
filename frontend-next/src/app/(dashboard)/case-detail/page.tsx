@@ -1,10 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
 import { authenticatedFetch } from '@/utils/auth'
+import { routes } from '@/utils/routes'
 
 interface CaseMeta {
   case_id: string
@@ -40,9 +41,9 @@ interface SearchResult {
 }
 
 export default function CaseDetailPage() {
-  const params = useParams()
+  const searchParams = useSearchParams()
   const router = useRouter()
-  const caseId = params.caseId as string
+  const caseId = searchParams.get('id') ?? ''
   const { refreshCases, setActiveMediaKey } = useDashboard()
 
   const [caseMeta, setCaseMeta] = useState<CaseMeta | null>(null)
@@ -71,6 +72,11 @@ export default function CaseDetailPage() {
   const [removingTranscript, setRemovingTranscript] = useState<string | null>(null)
 
   const loadCase = useCallback(async () => {
+    if (!caseId) {
+      setError('No case selected')
+      setIsLoading(false)
+      return
+    }
     setIsLoading(true)
     setError('')
     try {
@@ -98,7 +104,7 @@ export default function CaseDetailPage() {
   }, [loadCase])
 
   const handleSaveEdit = async () => {
-    if (!editName.trim()) return
+    if (!editName.trim() || !caseId) return
     setSaving(true)
     try {
       const response = await authenticatedFetch(`/api/cases/${caseId}`, {
@@ -119,6 +125,7 @@ export default function CaseDetailPage() {
   }
 
   const handleDeleteCase = async () => {
+    if (!caseId) return
     setDeleting(true)
     try {
       const response = await authenticatedFetch(
@@ -127,7 +134,7 @@ export default function CaseDetailPage() {
       )
       if (!response.ok) throw new Error('Failed to delete case')
       await refreshCases()
-      router.push('/cases')
+      router.push(routes.cases())
     } catch (err) {
       setError('Failed to delete case')
       setDeleting(false)
@@ -135,6 +142,7 @@ export default function CaseDetailPage() {
   }
 
   const handleRemoveTranscript = async (mediaKey: string) => {
+    if (!caseId) return
     setRemovingTranscript(mediaKey)
     try {
       const response = await authenticatedFetch(
@@ -152,7 +160,7 @@ export default function CaseDetailPage() {
   }
 
   const handleSearch = async () => {
-    if (!searchQuery.trim() || searchQuery.length < 2) return
+    if (!searchQuery.trim() || searchQuery.length < 2 || !caseId) return
     setSearching(true)
     setShowSearchResults(true)
     try {
@@ -201,7 +209,7 @@ export default function CaseDetailPage() {
         <div className="bg-red-50 border border-red-200 rounded-xl p-8 text-center">
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Error</h2>
           <p className="text-gray-600 mb-6">{error}</p>
-          <Link href="/cases" className="btn-primary px-6 py-3">
+          <Link href={routes.cases()} className="btn-primary px-6 py-3">
             Back to Cases
           </Link>
         </div>
@@ -213,7 +221,7 @@ export default function CaseDetailPage() {
     <div className="p-8 max-w-6xl mx-auto">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-gray-500 mb-6">
-        <Link href="/cases" className="hover:text-primary-600">Cases</Link>
+        <Link href={routes.cases()} className="hover:text-primary-600">Cases</Link>
         <span>/</span>
         <span className="text-gray-900">{caseMeta?.name}</span>
       </div>
@@ -340,7 +348,7 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => {
                       setActiveMediaKey(result.media_key)
-                      router.push(`/editor?key=${result.media_key}`)
+                      router.push(routes.editor(result.media_key))
                     }}
                     className="font-medium text-primary-600 hover:text-primary-700 mb-2 text-left"
                   >
@@ -373,7 +381,7 @@ export default function CaseDetailPage() {
         <div className="p-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900">Transcripts</h2>
           <Link
-            href={`/transcribe?case_id=${caseId}`}
+            href={routes.transcribe(caseId)}
             className="btn-primary px-4 py-2 text-sm flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -392,7 +400,7 @@ export default function CaseDetailPage() {
             </div>
             <h3 className="text-lg font-medium text-gray-900 mb-2">No transcripts yet</h3>
             <p className="text-gray-500 mb-4">Create your first transcript for this case</p>
-            <Link href={`/transcribe?case_id=${caseId}`} className="btn-primary px-4 py-2">
+            <Link href={routes.transcribe(caseId)} className="btn-primary px-4 py-2">
               Create Transcript
             </Link>
           </div>
@@ -406,7 +414,7 @@ export default function CaseDetailPage() {
                 <button
                   onClick={() => {
                     setActiveMediaKey(transcript.media_key)
-                    router.push(`/editor?key=${transcript.media_key}`)
+                    router.push(routes.editor(transcript.media_key))
                   }}
                   className="flex items-center gap-4 flex-1 min-w-0 text-left"
                 >
@@ -426,7 +434,7 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => {
                       setActiveMediaKey(transcript.media_key)
-                      router.push(`/clip-creator?key=${transcript.media_key}`)
+                      router.push(routes.clipCreator(transcript.media_key))
                     }}
                     className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
                     title="Create clips"

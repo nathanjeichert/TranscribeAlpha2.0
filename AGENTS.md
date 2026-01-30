@@ -73,8 +73,8 @@ TranscribeAlpha/
 │   │   │       ├── transcribe/      # Wizard transcription flow
 │   │   │       ├── editor/          # Transcript editor (?key=)
 │   │   │       ├── clip-creator/    # Clip extraction (?key=)
-│   │   │       ├── cases/           # Cases list + detail pages
-│   │   │       │   └── [caseId]/    # Case detail page
+│   │   │       ├── cases/           # Cases list
+│   │   │       ├── case-detail/     # Case detail page (?id=...)
 │   │   │       └── settings/        # App settings
 │   │   ├── components/        # React components
 │   │   │   ├── TranscriptEditor.tsx  # Line-by-line editor
@@ -195,7 +195,7 @@ The frontend uses a dashboard layout with a persistent sidebar:
 - `/editor?key=` - Transcript editor (loads by media_key)
 - `/clip-creator?key=` - Clip extraction tool
 - `/cases` - Cases list
-- `/cases/[caseId]` - Case detail with transcript list
+- `/case-detail/?id=` - Case detail with transcript list
 - `/settings` - App settings
 
 **Key UI Patterns:**

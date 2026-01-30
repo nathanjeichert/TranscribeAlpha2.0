@@ -4,6 +4,7 @@ import { useCallback, useRef, useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { authenticatedFetch, getAuthHeaders } from '@/utils/auth'
 import { useDashboard } from '@/context/DashboardContext'
+import { routes } from '@/utils/routes'
 
 interface FormData {
   case_name: string
@@ -513,7 +514,7 @@ export default function TranscribePage() {
                 </p>
                 <div className="flex justify-center gap-4">
                   <button
-                    onClick={() => router.push(`/editor?key=${transcriptResult.media_key}`)}
+                    onClick={() => router.push(routes.editor(transcriptResult.media_key))}
                     className="btn-primary px-6 py-3"
                   >
                     Open in Editor

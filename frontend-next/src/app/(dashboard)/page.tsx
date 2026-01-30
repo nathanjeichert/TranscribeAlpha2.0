@@ -1,9 +1,12 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
+import { routes } from '@/utils/routes'
 
 export default function DashboardHome() {
+  const router = useRouter()
   const { cases, recentTranscripts, setActiveMediaKey } = useDashboard()
 
   return (
@@ -15,7 +18,7 @@ export default function DashboardHome() {
           Generate professional legal transcripts from audio and video files
         </p>
         <Link
-          href="/transcribe"
+          href={routes.transcribe()}
           className="inline-flex items-center gap-3 bg-white text-primary-700 px-8 py-4 rounded-xl font-semibold text-lg hover:bg-primary-50 transition-colors shadow-lg"
         >
           <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -40,7 +43,7 @@ export default function DashboardHome() {
                   </svg>
                 </div>
                 <p className="text-gray-500 mb-4">No transcripts yet</p>
-                <Link href="/transcribe" className="text-primary-600 hover:text-primary-700 font-medium text-sm">
+                <Link href={routes.transcribe()} className="text-primary-600 hover:text-primary-700 font-medium text-sm">
                   Create your first transcript →
                 </Link>
               </div>
@@ -50,7 +53,7 @@ export default function DashboardHome() {
                   key={transcript.media_key}
                   onClick={() => {
                     setActiveMediaKey(transcript.media_key)
-                    window.location.href = `/editor?key=${transcript.media_key}`
+                    router.push(routes.editor(transcript.media_key))
                   }}
                   className="w-full p-4 text-left hover:bg-gray-50 transition-colors flex items-center gap-4"
                 >
@@ -74,7 +77,7 @@ export default function DashboardHome() {
           </div>
           {recentTranscripts.length > 0 && (
             <div className="p-4 border-t border-gray-100">
-              <Link href="/cases" className="text-sm text-primary-600 hover:text-primary-700 font-medium">
+              <Link href={routes.cases()} className="text-sm text-primary-600 hover:text-primary-700 font-medium">
                 View all transcripts →
               </Link>
             </div>
@@ -86,7 +89,7 @@ export default function DashboardHome() {
           <div className="p-5 border-b border-gray-100 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-gray-900">Your Cases</h2>
             <Link
-              href="/cases"
+              href={routes.cases()}
               className="text-sm text-primary-600 hover:text-primary-700 font-medium"
             >
               Manage
@@ -101,7 +104,7 @@ export default function DashboardHome() {
                   </svg>
                 </div>
                 <p className="text-gray-500 mb-4">No cases yet</p>
-                <Link href="/cases" className="text-primary-600 hover:text-primary-700 font-medium text-sm">
+                <Link href={routes.cases()} className="text-primary-600 hover:text-primary-700 font-medium text-sm">
                   Create a case to organize transcripts →
                 </Link>
               </div>
@@ -109,7 +112,7 @@ export default function DashboardHome() {
               cases.slice(0, 5).map((caseItem) => (
                 <Link
                   key={caseItem.case_id}
-                  href={`/cases/${caseItem.case_id}`}
+                  href={routes.caseDetail(caseItem.case_id)}
                   className="p-4 hover:bg-gray-50 transition-colors flex items-center gap-4"
                 >
                   <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center flex-shrink-0">
@@ -134,7 +137,7 @@ export default function DashboardHome() {
       {/* Quick Actions */}
       <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
         <Link
-          href="/transcribe"
+          href={routes.transcribe()}
           className="bg-white rounded-xl p-5 border border-gray-100 hover:border-primary-200 hover:shadow-md transition-all flex items-center gap-4"
         >
           <div className="w-12 h-12 bg-primary-100 rounded-xl flex items-center justify-center">
@@ -149,7 +152,7 @@ export default function DashboardHome() {
         </Link>
 
         <Link
-          href="/editor"
+          href={routes.editor()}
           className="bg-white rounded-xl p-5 border border-gray-100 hover:border-primary-200 hover:shadow-md transition-all flex items-center gap-4"
         >
           <div className="w-12 h-12 bg-green-100 rounded-xl flex items-center justify-center">
@@ -164,7 +167,7 @@ export default function DashboardHome() {
         </Link>
 
         <Link
-          href="/clip-creator"
+          href={routes.clipCreator()}
           className="bg-white rounded-xl p-5 border border-gray-100 hover:border-primary-200 hover:shadow-md transition-all flex items-center gap-4"
         >
           <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
 import { authenticatedFetch } from '@/utils/auth'
+import { routes } from '@/utils/routes'
 
 interface TranscriptListItem {
   media_key: string
@@ -114,7 +115,7 @@ export default function CasesPage() {
         <button
           onClick={() => {
             setActiveTab('cases')
-            router.push('/cases')
+            router.push(routes.cases())
           }}
           className={`px-4 py-3 font-medium text-sm border-b-2 -mb-px transition-colors ${
             activeTab === 'cases'
@@ -127,7 +128,7 @@ export default function CasesPage() {
         <button
           onClick={() => {
             setActiveTab('uncategorized')
-            router.push('/cases?tab=uncategorized')
+            router.push(routes.casesTab('uncategorized'))
           }}
           className={`px-4 py-3 font-medium text-sm border-b-2 -mb-px transition-colors ${
             activeTab === 'uncategorized'
@@ -159,7 +160,7 @@ export default function CasesPage() {
             cases.map((caseItem) => (
               <Link
                 key={caseItem.case_id}
-                href={`/cases/${caseItem.case_id}`}
+                href={routes.caseDetail(caseItem.case_id)}
                 className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md hover:border-primary-200 transition-all"
               >
                 <div className="flex items-start justify-between mb-3">
@@ -239,7 +240,7 @@ export default function CasesPage() {
                       <button
                         onClick={() => {
                           setActiveMediaKey(transcript.media_key)
-                          router.push(`/editor?key=${transcript.media_key}`)
+                          router.push(routes.editor(transcript.media_key))
                         }}
                         className="btn-outline text-sm px-3 py-1"
                       >
