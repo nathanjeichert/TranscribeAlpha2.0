@@ -97,14 +97,6 @@ except ImportError:
         resolve_media_filename = transcript_utils_module.resolve_media_filename
         sanitize_clip_label = transcript_utils_module.sanitize_clip_label
 
-try:
-    from ..transcript_formatting import create_clip_docx
-except ImportError:
-    try:
-        from transcript_formatting import create_clip_docx
-    except ImportError:
-        import transcript_formatting as transcript_formatting_module
-        create_clip_docx = transcript_formatting_module.create_clip_docx
 
 router = APIRouter()
 
@@ -233,8 +225,6 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         lines_per_page,
         enforce_min_line_duration=False,
     )
-    docx_bytes = create_clip_docx(clip_title_data, turns, clip_name)
-
     docx_b64 = base64.b64encode(docx_bytes).decode()
 
     clip_media_blob_name, clip_media_content_type = clip_media_segment(
