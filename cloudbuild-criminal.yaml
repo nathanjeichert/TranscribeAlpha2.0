@@ -36,6 +36,8 @@ steps:
       - '--port'
       - '8080'
       - '--use-http2'
+      - '--labels'
+      - 'managed-by=gcp-cloud-build-deploy-cloud-run,gcb-trigger-id=${TRIGGER_ID},gcb-trigger-name=${TRIGGER_NAME},gcb-build-id=${BUILD_ID},commit-sha=${COMMIT_SHA}'
       - '--set-env-vars'
       - 'APP_VARIANT=criminal,ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},GEMINI_MODEL_NAME=${_GEMINI_MODEL_NAME},JWT_SECRET_KEY=${_JWT_SECRET_KEY},REV_AI_API_KEY=${_REV_AI_API_KEY},ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
 
