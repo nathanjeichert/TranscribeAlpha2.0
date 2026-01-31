@@ -334,7 +334,7 @@ export default function CaseDetailPage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-6">
           <div className="p-4 border-b border-gray-100">
             <h3 className="font-semibold text-gray-900">
-              Search Results for "{searchQuery}"
+              Search Results for &quot;{searchQuery}&quot;
             </h3>
           </div>
           {searchResults.length === 0 ? (
@@ -473,7 +473,7 @@ export default function CaseDetailPage() {
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete Case</h3>
             <p className="text-gray-600 mb-4">
-              Are you sure you want to delete "{caseMeta?.name}"?
+              Are you sure you want to delete &quot;{caseMeta?.name}&quot;?
             </p>
             {transcripts.length > 0 && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
