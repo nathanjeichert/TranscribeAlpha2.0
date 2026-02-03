@@ -219,21 +219,15 @@ def transcribe_with_assemblyai(
 
     try:
         # Configure transcription with speaker diarization
-        prompt = (
-            "Produce a verbatim legal transcript. Include every word from each speaker, "
-            "including disfluencies and fillers (um, uh, er, ah, hmm, mhm, like, you know, I mean), "
-            "repetitions (I I, the the), restarts (I was- I went), stutters (th-that, b-but), "
-            "and informal speech (gonna, wanna, gotta). Do not omit or normalize disfluencies."
+        raw_config = aai.RawTranscriptionConfig(
+            language_model="slam_1",
+            acoustic_model="slam_1",
         )
 
         config = aai.TranscriptionConfig(
-            speech_models=["universal-3-pro"],
-            prompt=prompt,
-            temperature=0.1,
-            disfluencies=True,
-            format_text=True,
             speaker_labels=True,
             speakers_expected=len(speaker_name_list) if speaker_name_list else None,
+            raw_transcription_config=raw_config,
         )
 
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
