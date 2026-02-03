@@ -992,7 +992,7 @@ export default function ClipCreator({
                 )}
                 {selectionMode === 'manual' && (
                   <p className="text-sm text-gray-600">
-                    Click "Start" and "End" buttons on transcript lines below to define your clip range.
+                    Click &quot;Start&quot; and &quot;End&quot; buttons on transcript lines below to define your clip range.
                   </p>
                 )}
               </div>
