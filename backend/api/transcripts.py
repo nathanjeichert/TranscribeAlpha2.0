@@ -1199,6 +1199,63 @@ async def resync_transcript(
                 pass
 
 
+@router.post("/api/transcripts/by-key/{media_key:path}/regenerate-viewer")
+async def regenerate_viewer_html(media_key: str, current_user: dict = Depends(get_current_user)):
+    """Rebuild HTML viewer export from current session state without creating a snapshot."""
+    if APP_VARIANT != "criminal":
+        raise HTTPException(status_code=400, detail="HTML viewer exports are not enabled for this variant")
+    try:
+        transcript = load_current_transcript(media_key)
+        if not transcript:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        if transcript.get("user_id") != current_user["user_id"]:
+            raise HTTPException(status_code=403, detail="Access denied to this transcript")
+
+        lines = transcript.get("lines") or []
+        title_data = transcript.get("title_data") or {}
+        audio_duration = float(transcript.get("audio_duration") or 0.0)
+        lines_per_page = transcript.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+
+        media_filename = resolve_media_filename(
+            title_data,
+            transcript.get("media_blob_name"),
+            fallback=title_data.get("FILE_NAME") or "media.mp4",
+        )
+
+        oncue_xml = None
+        oncue_b64 = transcript.get("oncue_xml_base64")
+        if oncue_b64:
+            try:
+                oncue_xml = base64.b64decode(oncue_b64).decode("utf-8", errors="replace")
+            except Exception:
+                oncue_xml = None
+
+        exports = build_variant_exports(
+            APP_VARIANT,
+            lines,
+            title_data,
+            audio_duration,
+            lines_per_page,
+            media_filename,
+            transcript.get("media_content_type"),
+            oncue_xml=oncue_xml,
+        )
+        transcript.update(exports)
+        transcript["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_current_transcript(media_key, transcript)
+
+        return JSONResponse({
+            "viewer_html_base64": transcript.get("viewer_html_base64"),
+            "updated_at": transcript.get("updated_at"),
+        })
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to regenerate viewer HTML for %s: %s", media_key, exc)
+        raise HTTPException(status_code=500, detail="Failed to regenerate viewer HTML") from exc
+
+
 @router.get("/api/transcripts/by-key/{media_key:path}/media-status")
 async def get_media_status(media_key: str, current_user: dict = Depends(get_current_user)):
     """
@@ -1220,6 +1277,7 @@ async def get_media_status(media_key: str, current_user: dict = Depends(get_curr
         available = check_media_exists(blob_name) if blob_name else False
 
         return JSONResponse({
+            "media_available": available,
             "available": available,
             "blob_name": blob_name,
             "content_type": content_type,
@@ -1266,9 +1324,56 @@ async def reattach_media(
             )
 
             # Update transcript with new media reference
+            title_data = transcript.get("title_data") or {}
+            if file.filename:
+                title_data["FILE_NAME"] = file.filename
+            transcript["title_data"] = title_data
             transcript["media_blob_name"] = blob_name
             transcript["media_content_type"] = content_type
             transcript["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            lines = transcript.get("lines") or []
+            audio_duration = float(transcript.get("audio_duration") or 0.0)
+            lines_per_page = transcript.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+            oncue_xml = None
+            oncue_b64 = transcript.get("oncue_xml_base64")
+            if oncue_b64:
+                try:
+                    oncue_xml = base64.b64decode(oncue_b64).decode("utf-8", errors="replace")
+                except Exception:
+                    oncue_xml = None
+
+            if APP_VARIANT == "oncue" and oncue_xml is None:
+                normalized_lines, normalized_duration = normalize_line_payloads(lines, audio_duration)
+                turns = construct_turns_from_lines(normalized_lines)
+                if turns:
+                    _docx_bytes, oncue_xml, _transcript_text, updated_lines = build_session_artifacts(
+                        turns,
+                        title_data,
+                        normalized_duration,
+                        lines_per_page,
+                        enforce_min_line_duration=False,
+                    )
+                    transcript["lines"] = updated_lines
+                    transcript["audio_duration"] = normalized_duration
+
+            media_filename = resolve_media_filename(
+                title_data,
+                blob_name,
+                fallback=file.filename or "media.mp4",
+            )
+            transcript.update(
+                build_variant_exports(
+                    APP_VARIANT,
+                    transcript.get("lines") or [],
+                    title_data,
+                    float(transcript.get("audio_duration") or 0.0),
+                    lines_per_page,
+                    media_filename,
+                    content_type,
+                    oncue_xml=oncue_xml,
+                )
+            )
 
             save_current_transcript(media_key, transcript)
 

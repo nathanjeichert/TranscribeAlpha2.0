@@ -60,7 +60,7 @@ export default function ClipCreatorPage() {
       const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}/media-status`)
       if (response.ok) {
         const data = await response.json()
-        setMediaAvailable(data.media_available)
+        setMediaAvailable(data.media_available ?? data.available ?? true)
       }
     } catch {
       setMediaAvailable(true)

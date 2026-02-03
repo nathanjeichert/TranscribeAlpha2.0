@@ -524,6 +524,32 @@ export default function TranscribeForm() {
     }
   }, [mediaKey, hydrateTranscript])
 
+  const regenerateViewerHtml = useCallback(async () => {
+    if (!mediaKey) return null
+    try {
+      const response = await authenticatedFetch(
+        `/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/regenerate-viewer`,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to regenerate HTML viewer')
+      }
+      const data = await response.json()
+      if (data?.viewer_html_base64) {
+        setTranscriptData((prev) => prev ? ({
+          ...prev,
+          viewer_html_base64: data.viewer_html_base64,
+          updated_at: data.updated_at ?? prev.updated_at,
+        }) : prev)
+      }
+      return data?.viewer_html_base64 ?? null
+    } catch (err: any) {
+      setError(err.message || 'Failed to regenerate HTML viewer')
+      return null
+    }
+  }, [mediaKey])
+
   const tabClasses = (tab: AppTab) =>
     `px-4 py-2 rounded-lg font-medium transition ${activeTab === tab
       ? 'bg-primary-900 text-white shadow-lg'
@@ -908,13 +934,18 @@ export default function TranscribeForm() {
                         ) : (
                           <button
                             onClick={() => {
-                              if (transcriptData.viewer_html_base64) {
-                                const mediaBaseName = selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript'
-                                downloadFile(transcriptData.viewer_html_base64, generateFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
+                              const triggerDownload = async () => {
+                                const refreshed = await regenerateViewerHtml()
+                                const htmlData = refreshed ?? transcriptData?.viewer_html_base64
+                                if (htmlData) {
+                                  const mediaBaseName = selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript'
+                                  downloadFile(htmlData, generateFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
+                                }
                               }
+                              void triggerDownload()
                             }}
                             className="btn-primary text-center py-3"
-                            disabled={!transcriptData.viewer_html_base64}
+                            disabled={!mediaKey}
                           >
                             🎬 Download HTML Viewer
                           </button>

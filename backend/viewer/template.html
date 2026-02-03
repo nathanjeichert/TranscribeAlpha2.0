@@ -260,6 +260,28 @@
     .clip-item-delete svg { width: 14px; height: 14px; fill: currentColor; }
     .no-clips { font-size: 12px; color: var(--text-muted); text-align: center; padding: 16px; }
 
+    /* Media */
+    .media-meta {
+      background: var(--color-50);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .media-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .media-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
     /* Settings */
     .setting-row {
       display: flex;
@@ -701,7 +723,21 @@
         </div>
 
         <div class="sidebar-section">
-          <div class="section-title">Sources</div>
+          <div class="section-title">Media</div>
+          <div class="btn-row">
+            <button type="button" class="btn" id="loadMediaBtn">
+              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              Load Media
+            </button>
+          </div>
+          <div class="media-meta">
+            <div class="media-name" id="mediaName">No media file selected</div>
+            <div class="media-hint">Attach a local audio/video file for playback. This does not import transcripts.</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="section-title">Transcript Sources</div>
           <div class="btn-row">
             <button type="button" class="btn" id="importSource"><svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>Add Source</button>
           </div>
@@ -789,6 +825,7 @@
 
   <input type="file" class="hidden" id="importSourceFile" accept=".html,.htm">
   <input type="file" class="hidden" id="importClipsFile" accept=".json">
+  <input type="file" class="hidden" id="loadMediaFile" accept="audio/*,video/*">
 
   <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
   <script>
@@ -870,6 +907,9 @@
   const titleCardToggle = $('titleCardToggle');
   const importSourceFile = $('importSourceFile');
   const importClipsFile = $('importClipsFile');
+  const loadMediaBtn = $('loadMediaBtn');
+  const loadMediaFile = $('loadMediaFile');
+  const mediaName = $('mediaName');
 
   // State
   let clips = [];
@@ -884,6 +924,7 @@
   let searchMatches = [];
   let searchIdx = -1;
   let isFullscreen = false;
+  let localMediaUrl = null;
 
   // Icons
   const icons = {
@@ -915,18 +956,50 @@
   }
 
   // Setup video
-  function setupVideo() {
-    if (!mediaPath) return;
-    const paths = [mediaPath];
-    const fname = mediaPath.split('/').pop().split('\\').pop();
-    if (fname !== mediaPath) paths.push(fname);
-    paths.forEach(src => {
+  function updateMediaLabel(label) {
+    if (!mediaName) return;
+    const value = label || 'No media file selected';
+    mediaName.textContent = value;
+    mediaName.title = value;
+  }
+
+  function clearVideoSources() {
+    while (video.firstChild) {
+      video.removeChild(video.firstChild);
+    }
+  }
+
+  function setVideoSources(srcList, contentType) {
+    clearVideoSources();
+    srcList.forEach(src => {
       const s = document.createElement('source');
       s.src = src;
-      if (mediaMeta.content_type) s.type = mediaMeta.content_type;
+      if (contentType) s.type = contentType;
       video.appendChild(s);
     });
     video.load();
+  }
+
+  function setupVideo() {
+    if (!mediaPath) {
+      updateMediaLabel('');
+      return;
+    }
+    const paths = [mediaPath];
+    const fname = mediaPath.split('/').pop().split('\\').pop();
+    if (fname !== mediaPath) paths.push(fname);
+    setVideoSources(paths, mediaMeta.content_type);
+    updateMediaLabel(titleData.FILE_NAME || fname || mediaPath);
+  }
+
+  function loadLocalMedia(file) {
+    if (!file) return;
+    if (localMediaUrl) {
+      URL.revokeObjectURL(localMediaUrl);
+    }
+    localMediaUrl = URL.createObjectURL(file);
+    setVideoSources([localMediaUrl], file.type || mediaMeta.content_type);
+    updateMediaLabel(file.name);
   }
 
   // Build pages
@@ -1316,6 +1389,17 @@
     r.readAsText(f);
     e.target.value = '';
   });
+
+  // Load local media (playback only, does not import transcripts)
+  if (loadMediaBtn && loadMediaFile) {
+    loadMediaBtn.addEventListener('click', () => loadMediaFile.click());
+    loadMediaFile.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      loadLocalMedia(f);
+      e.target.value = '';
+    });
+  }
 
   function buildSources() {
     sourcesList.innerHTML = '';

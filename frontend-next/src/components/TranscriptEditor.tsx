@@ -850,14 +850,14 @@ export default function TranscriptEditor({
     setIsDirty(true)
   }, [future, cloneLines, lines])
 
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (): Promise<EditorSaveResponse | null> => {
     if (!activeMediaKey) {
       setError('No media key available to save.')
-      return
+      return null
     }
     if (!sessionMeta) {
       setError('No transcript available to save.')
-      return
+      return null
     }
 
     setSaving(true)
@@ -910,12 +910,67 @@ export default function TranscriptEditor({
       onSaveComplete(data)
       onSessionChange(data)
 
+      return data
+
     } catch (err: any) {
       setError(err.message || 'Failed to save')
+      return null
     } finally {
       setSaving(false)
     }
   }, [activeMediaKey, lines, sessionMeta, onSaveComplete, onSessionChange])
+
+  const regenerateViewerHtml = useCallback(async () => {
+    if (!activeMediaKey) return null
+    try {
+      const response = await authenticatedFetch(
+        `/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}/regenerate-viewer`,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to regenerate HTML viewer')
+      }
+      const data = await response.json()
+      if (data?.viewer_html_base64) {
+        setSessionMeta((prev) => {
+          if (!prev) return prev
+          const next = {
+            ...prev,
+            viewer_html_base64: data.viewer_html_base64,
+            updated_at: data.updated_at ?? prev.updated_at,
+          }
+          onSessionChange(next)
+          return next
+        })
+      }
+      return data?.viewer_html_base64 ?? null
+    } catch (err: any) {
+      setError(err.message || 'Failed to regenerate HTML viewer')
+      return null
+    }
+  }, [activeMediaKey, onSessionChange])
+
+  const handleDownloadViewer = useCallback(async () => {
+    if (!isCriminal) return
+    let htmlData = viewerHtmlData
+    if (isDirty) {
+      const saved = await handleSave()
+      if (!saved?.viewer_html_base64) {
+        return
+      }
+      htmlData = saved.viewer_html_base64
+    } else {
+      const refreshed = await regenerateViewerHtml()
+      htmlData = refreshed ?? htmlData
+    }
+    if (!htmlData) {
+      setError('HTML viewer export is not available for this transcript.')
+      return
+    }
+    const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
+    onDownload(htmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
+  }, [activeMediaKey, buildFilename, handleSave, isCriminal, isDirty, onDownload, regenerateViewerHtml, sessionMeta, viewerHtmlData])
 
   const handleImport = useCallback(
     async (event: React.FormEvent) => {
@@ -1415,11 +1470,8 @@ export default function TranscriptEditor({
                     ) : (
                       <button
                         className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
-                        onClick={() => {
-                          const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
-                          viewerHtmlData && onDownload(viewerHtmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
-                        }}
-                        disabled={!viewerHtmlData}
+                        onClick={handleDownloadViewer}
+                        disabled={!activeMediaKey}
                       >
                         Download HTML Viewer
                       </button>
