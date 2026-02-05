@@ -323,7 +323,7 @@ def resolve_media_filename(title_data: dict, media_blob_name: Optional[str] = No
     if isinstance(title_data, dict):
         name = title_data.get("FILE_NAME")
         if isinstance(name, str) and name.strip():
-            return name.strip()
+            return os.path.basename(name.strip())
     if isinstance(fallback, str) and fallback.strip():
         return os.path.basename(fallback.strip())
     if media_blob_name:
