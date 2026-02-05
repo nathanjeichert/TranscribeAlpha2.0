@@ -197,7 +197,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     <span className="w-7 h-7 bg-primary-800 rounded flex items-center justify-center text-xs">
                       {uncategorizedCount}
                     </span>
-                    <span className="truncate flex-1">Needs a case</span>
+                    <span className="truncate flex-1">Uncategorized</span>
                   </Link>
                 )}
 
