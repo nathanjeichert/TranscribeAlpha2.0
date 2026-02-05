@@ -498,7 +498,7 @@ async def list_transcripts_endpoint(current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/transcripts/by-key/{media_key:path}/history")
+@router.get("/api/transcripts/by-key/{media_key}/history")
 async def list_transcript_history_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """List all snapshots for a media_key."""
     try:
@@ -543,7 +543,7 @@ async def list_transcript_history_by_media_key(media_key: str, current_user: dic
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/transcripts/by-key/{media_key:path}")
+@router.get("/api/transcripts/by-key/{media_key}")
 async def get_transcript_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """Get current transcript state or latest snapshot by media_key."""
     try:
@@ -562,7 +562,7 @@ async def get_transcript_by_media_key(media_key: str, current_user: dict = Depen
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/api/transcripts/by-key/{media_key:path}")
+@router.put("/api/transcripts/by-key/{media_key}")
 async def save_transcript_by_media_key(media_key: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Save transcript changes (auto-save or manual save)."""
     try:
@@ -649,7 +649,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/transcripts/by-key/{media_key:path}/restore/{snapshot_id}")
+@router.post("/api/transcripts/by-key/{media_key}/restore/{snapshot_id}")
 async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, current_user: dict = Depends(get_current_user)):
     """Restore a specific snapshot as current state."""
     try:
@@ -722,7 +722,7 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/transcripts/by-key/{media_key:path}/gemini-refine")
+@router.post("/api/transcripts/by-key/{media_key}/gemini-refine")
 async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(get_current_user)):
     session_data = load_current_transcript(media_key)
     if not session_data:
@@ -1222,7 +1222,7 @@ async def resync_transcript(
                 pass
 
 
-@router.post("/api/transcripts/by-key/{media_key:path}/regenerate-viewer")
+@router.post("/api/transcripts/by-key/{media_key}/regenerate-viewer")
 async def regenerate_viewer_html(media_key: str, current_user: dict = Depends(get_current_user)):
     """Rebuild HTML viewer export from current session state without creating a snapshot."""
     if APP_VARIANT != "criminal":
@@ -1279,7 +1279,7 @@ async def regenerate_viewer_html(media_key: str, current_user: dict = Depends(ge
         raise HTTPException(status_code=500, detail="Failed to regenerate viewer HTML") from exc
 
 
-@router.get("/api/transcripts/by-key/{media_key:path}/media-status")
+@router.get("/api/transcripts/by-key/{media_key}/media-status")
 async def get_media_status(media_key: str, current_user: dict = Depends(get_current_user)):
     """
     Check if the media file for a transcript still exists.
@@ -1314,7 +1314,7 @@ async def get_media_status(media_key: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=500, detail="Failed to check media status")
 
 
-@router.post("/api/transcripts/by-key/{media_key:path}/reattach-media")
+@router.post("/api/transcripts/by-key/{media_key}/reattach-media")
 async def reattach_media(
     media_key: str,
     file: UploadFile = File(...),
