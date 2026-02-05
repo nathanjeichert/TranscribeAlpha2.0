@@ -4,6 +4,7 @@ hypercorn>=0.16.0
 python-multipart>=0.0.6
 google-cloud-storage>=2.10.0
 python-docx>=1.1.0
+reportlab>=4.2.0
 ffmpeg-python>=0.2.0
 pydub>=0.25.1
 pydantic>=2.5.0

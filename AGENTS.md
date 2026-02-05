@@ -21,8 +21,8 @@ This codebase supports **two deployment variants** controlled by the `APP_VARIAN
 
 | Variant | Value | Export Formats | Target Users |
 |---------|-------|----------------|--------------|
-| **OnCue** | `oncue` (default) | DOCX + OnCue XML | Legal software integration |
-| **Criminal** | `criminal` | DOCX + HTML Viewer | DA/PD offices |
+| **OnCue** | `oncue` (default) | PDF + OnCue XML | Legal software integration |
+| **Criminal** | `criminal` | PDF + HTML Viewer | DA/PD offices |
 
 **What differs between variants:**
 - `oncue`: Generates OnCue XML for proprietary legal software import
@@ -30,7 +30,7 @@ This codebase supports **two deployment variants** controlled by the `APP_VARIAN
 
 **What stays the same:**
 - All features (transcription, editor, Gemini refinement, Rev AI resync, clips)
-- DOCX export formatting
+- PDF export formatting
 - Branding ("TranscribeAlpha")
 - Lines per page (25)
 
@@ -42,8 +42,9 @@ TranscribeAlpha/
 │   ├── server.py              # FastAPI app wiring (routers, middleware, static files)
 │   ├── config.py              # Env-driven constants (CORS, TTLs, APP_VARIANT)
 │   ├── models.py              # Pydantic models (TranscriptTurn, WordTimestamp, Gemini structs)
-│   ├── transcript_formatting.py # DOCX/XML generation + line timing helpers
+│   ├── transcript_formatting.py # PDF/XML generation + line timing helpers
 │   ├── transcript_utils.py    # Session serialization + viewer HTML generation
+│   ├── word_legacy.py         # Deprecated Word/DOCX helpers (legacy import path)
 │   ├── storage.py             # Cloud Storage ops + snapshots/sessions persistence
 │   ├── media_processing.py    # ffmpeg helpers, clip extraction, audio prep
 │   ├── gemini.py              # Gemini transcription + refine flow
@@ -60,7 +61,7 @@ TranscribeAlpha/
 │   ├── transcriber.py         # AssemblyAI integration + media probing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
 │   ├── auth.py                # JWT authentication
-│   ├── templates/             # Word document templates
+│   ├── templates/             # Legacy Word templates (deprecated)
 │   └── requirements.txt       # Python dependencies
 │
 ├── frontend-next/             # Next.js frontend
@@ -134,7 +135,7 @@ else:
 
 ### HTML Viewer (Criminal Variant)
 
-The HTML viewer (`backend/viewer/template.html`) is designed to match DOCX formatting exactly:
+The HTML viewer (`backend/viewer/template.html`) is designed to match PDF transcript formatting:
 - Font: Courier New 12pt
 - Line spacing: 2.0 (double-spaced)
 - First-line indent: 1 inch for speaker lines
@@ -152,7 +153,7 @@ kept intentionally thin to wire middleware, include routers, and mount the stati
 | `server.py` | HTTP app wiring | Router inclusion, middleware, startup cleanup, static mount |
 | `backend/api/*.py` | HTTP layer | Endpoints and request/response handling |
 | `transcriber.py` | Core transcription logic | AssemblyAI integration, media probing, transcription flow |
-| `transcript_formatting.py` | Transcript rendering | DOCX/XML generation, line timing rules |
+| `transcript_formatting.py` | Transcript rendering | PDF/XML generation, line timing rules |
 | `transcript_utils.py` | Transcript/session helpers | Line normalization, snapshot payloads, viewer HTML generation |
 | `storage.py` | Persistence layer | GCS ops, snapshots, session storage |
 | `media_processing.py` | Media utilities | ffmpeg conversion, clip extraction, audio prep |
@@ -166,15 +167,15 @@ kept intentionally thin to wire middleware, include routers, and mount the stati
 The transcription flow uses ASR timestamps first, with optional Rev AI alignment later:
 
 ```
-Audio/Video → ASR (AssemblyAI or Gemini) → DOCX + (OnCue XML or HTML Viewer)
-                         ↘ Rev AI Alignment (re-sync + DOCX import only)
+Audio/Video → ASR (AssemblyAI or Gemini) → PDF + (OnCue XML or HTML Viewer)
+                         ↘ Rev AI Alignment (re-sync + legacy DOCX import only)
 ```
 
 1. **ASR Stage**: AssemblyAI or Gemini extracts text + word timestamps
-2. **Artifact Generation**: DOCX and OnCue XML (or HTML viewer) generated from ASR timestamps
-3. **Alignment Stage (optional)**: Rev AI forced alignment re-syncs edited transcripts or aligns DOCX imports
+2. **Artifact Generation**: PDF and OnCue XML (or HTML viewer) generated from shared line entries
+3. **Alignment Stage (optional)**: Rev AI forced alignment re-syncs edited transcripts or aligns legacy DOCX imports
 
-If `REV_AI_API_KEY` is not configured, re-sync and DOCX import alignment are skipped.
+If `REV_AI_API_KEY` is not configured, re-sync and legacy DOCX import alignment are skipped.
 The alignment step preserves original text (punctuation, capitalization) while only updating timestamps.
 
 **Line timing rules**
@@ -183,7 +184,7 @@ The alignment step preserves original text (punctuation, capitalization) while o
 
 **Speaker label display**
 - The editor shows a speaker label on every line for easy reassignment.
-- DOCX/XML outputs collapse consecutive identical speakers by omitting repeated labels (via `is_continuation`).
+- PDF/XML outputs collapse consecutive identical speakers by omitting repeated labels (via `is_continuation`).
 
 ### Dashboard UI
 
@@ -249,7 +250,7 @@ except ImportError:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/config` | GET | Returns app variant and feature flags |
-| `/api/transcribe` | POST | Main transcription (file → DOCX + XML/HTML) |
+| `/api/transcribe` | POST | Main transcription (file → PDF + XML/HTML) |
 | `/api/upload-preview` | POST | Upload media for preview |
 | `/api/media/{file_id}` | GET | Stream media files |
 | `/api/auth/login` | POST | User authentication |
@@ -260,7 +261,7 @@ except ImportError:
 | `/api/transcripts/by-key/{media_key}` | GET/PUT | Load/save transcript session |
 | `/api/transcripts/by-key/{media_key}/history` | GET | List snapshots for a transcript |
 | `/api/transcripts/by-key/{media_key}/restore/{snapshot_id}` | POST | Restore a snapshot |
-| `/api/transcripts/import` | POST | Import XML/DOCX with media |
+| `/api/transcripts/import` | POST | Import XML/HTML or legacy DOCX with media |
 | `/api/transcripts/by-key/{media_key}/gemini-refine` | POST | Gemini refine pass |
 | `/api/transcripts/uncategorized` | GET | List transcripts not in any case |
 | `/api/resync` | POST | Re-align transcript with audio (Rev AI) |
@@ -366,7 +367,12 @@ docker run -p 8080:8080 \
 
 ### Modify Transcript Formatting
 - Edit `backend/transcript_formatting.py`
-- Functions: `create_docx()`, `generate_oncue_xml()`, `compute_transcript_line_entries()`
+- Functions: `create_pdf()`, `generate_oncue_xml_from_line_entries()`, `compute_transcript_line_entries()`
+
+### Legacy Word Path (Deprecated)
+- Word/DOCX logic is isolated in `backend/word_legacy.py`
+- Deprecated behavior notes live in `docs/word-export-deprecated.md`
+- New export changes should target the PDF pipeline, not DOCX generation
 
 ### Modify HTML Viewer (Criminal Variant)
 - Edit `backend/viewer/template.html`
@@ -407,11 +413,11 @@ After any change, verify:
 1. `curl https://your-app.run.app/health` returns 200
 2. `curl https://your-app.run.app/api/config` returns correct variant
 3. File upload completes without error
-4. Transcript download works (DOCX + XML for oncue, DOCX + HTML for criminal)
+4. Transcript download works (PDF + XML for oncue, PDF + HTML for criminal)
 5. Editor loads and saves correctly
 6. Media playback functions
 7. History modal shows snapshots after edits
 
 ---
 
-*Last updated: 2026-01-30*
+*Last updated: 2026-02-05*

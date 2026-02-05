@@ -46,6 +46,8 @@ export interface EditorSessionResponse {
   created_at?: string
   updated_at?: string
   expires_at?: string
+  pdf_base64?: string | null
+  // Deprecated, retained for legacy sessions.
   docx_base64?: string | null
   oncue_xml_base64?: string | null
   viewer_html_base64?: string | null
@@ -61,6 +63,7 @@ interface TranscriptEditorProps {
   initialData?: EditorSessionResponse | null
   mediaUrl?: string
   mediaType?: string
+  pdfBase64?: string | null
   docxBase64?: string | null
   xmlBase64?: string | null
   viewerHtmlBase64?: string | null
@@ -139,6 +142,7 @@ export default function TranscriptEditor({
   initialData,
   mediaUrl,
   mediaType,
+  pdfBase64,
   docxBase64,
   xmlBase64,
   viewerHtmlBase64,
@@ -977,7 +981,9 @@ export default function TranscriptEditor({
       event.preventDefault()
       if (!importTranscriptFile) {
         setImportError(
-          isCriminal ? 'Select a transcript file (HTML or DOCX) to import.' : 'Select a transcript file (XML or DOCX) to import.',
+          isCriminal
+            ? 'Select a transcript file (HTML or DOCX (legacy)) to import.'
+            : 'Select a transcript file (XML or DOCX (legacy)) to import.',
         )
         return
       }
@@ -1076,7 +1082,7 @@ export default function TranscriptEditor({
       setSessionMeta((prev) => prev ? {
         ...prev,
         lines: data.lines ?? prev.lines,
-        docx_base64: data.docx_base64 ?? prev.docx_base64,
+        pdf_base64: data.pdf_base64 ?? prev.pdf_base64,
         oncue_xml_base64: data.oncue_xml_base64 ?? prev.oncue_xml_base64,
         viewer_html_base64: data.viewer_html_base64 ?? prev.viewer_html_base64,
       } : prev)
@@ -1087,7 +1093,7 @@ export default function TranscriptEditor({
         onSessionChange({
           ...sessionMeta,
           lines: data.lines ?? sessionMeta.lines,
-          docx_base64: data.docx_base64 ?? sessionMeta.docx_base64,
+          pdf_base64: data.pdf_base64 ?? sessionMeta.pdf_base64,
           oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta.oncue_xml_base64,
           viewer_html_base64: data.viewer_html_base64 ?? sessionMeta.viewer_html_base64,
         })
@@ -1100,7 +1106,7 @@ export default function TranscriptEditor({
     }
   }, [activeMediaKey, sessionMeta, onSessionChange, pushHistory, lines])
 
-  const docxData = docxBase64 ?? sessionMeta?.docx_base64 ?? ''
+  const pdfData = pdfBase64 ?? sessionMeta?.pdf_base64 ?? docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
   const viewerHtmlData = viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
   const transcriptText = sessionMeta?.transcript ?? sessionMeta?.transcript_text ?? ''
@@ -1159,7 +1165,7 @@ export default function TranscriptEditor({
           <div className="rounded-2xl border-4 border-dashed border-white bg-primary-800/80 px-12 py-10 text-center shadow-2xl">
             <p className="text-2xl font-bold text-white">Drop files to import</p>
             <p className="mt-2 text-sm text-primary-200">
-              Transcript ({isCriminal ? 'HTML or DOCX' : 'XML or DOCX'}) + Media file
+              Transcript ({isCriminal ? 'HTML or DOCX (legacy)' : 'XML or DOCX (legacy)'}) + Media file
             </p>
           </div>
         </div>
@@ -1410,7 +1416,7 @@ export default function TranscriptEditor({
                     {importError && <p className="text-xs text-red-600">{importError}</p>}
                     <form className="space-y-2" onSubmit={handleImport}>
                       <div>
-                        <label className="text-xs text-gray-600">Transcript ({isCriminal ? 'HTML/DOCX' : 'XML/DOCX'})</label>
+                        <label className="text-xs text-gray-600">Transcript ({isCriminal ? 'HTML/DOCX (legacy)' : 'XML/DOCX (legacy)'})</label>
                         <input
                           type="file"
                           accept={isCriminal ? '.html,.htm,.docx' : '.xml,.docx'}
@@ -1456,10 +1462,10 @@ export default function TranscriptEditor({
                   <div className="p-4 border-t border-gray-200 bg-white space-y-2">
                     <button
                       className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
-                      onClick={() => docxData && onDownload(docxData, buildFilename('Transcript-Edited', '.docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')}
-                      disabled={!docxData}
+                      onClick={() => pdfData && onDownload(pdfData, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')}
+                      disabled={!pdfData}
                     >
-                      Download DOCX
+                      Download PDF
                     </button>
                     {appVariant === 'oncue' ? (
                       <button

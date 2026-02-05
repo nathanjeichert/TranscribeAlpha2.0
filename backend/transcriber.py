@@ -30,15 +30,6 @@ except ImportError:
         TranscriptTurn = models.TranscriptTurn
         WordTimestamp = models.WordTimestamp
 
-try:
-    from .transcript_formatting import create_docx
-except ImportError:
-    try:
-        from transcript_formatting import create_docx
-    except ImportError:
-        import transcript_formatting as transcript_formatting_module
-        create_docx = transcript_formatting_module.create_docx
-
 # AssemblyAI integration
 try:
     import assemblyai as aai
@@ -438,6 +429,4 @@ def process_transcription(
         if not turns:
             raise RuntimeError("AssemblyAI transcription failed")
 
-        docx_bytes = create_docx(title_data, turns)
-
-        return turns, docx_bytes, duration_seconds
+        return turns, duration_seconds

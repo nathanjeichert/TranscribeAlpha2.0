@@ -138,13 +138,13 @@ except ImportError:
         process_transcription = transcriber_module.process_transcription
 
 try:
-    from ..transcript_formatting import parse_docx_to_turns
+    from ..word_legacy import parse_docx_to_turns
 except ImportError:
     try:
-        from transcript_formatting import parse_docx_to_turns
+        from word_legacy import parse_docx_to_turns
     except ImportError:
-        import transcript_formatting as transcript_formatting_module
-        parse_docx_to_turns = transcript_formatting_module.parse_docx_to_turns
+        import word_legacy as word_legacy_module
+        parse_docx_to_turns = word_legacy_module.parse_docx_to_turns
 
 try:
     from ..transcript_utils import (
@@ -300,7 +300,7 @@ async def transcribe(
         if transcription_model == "assemblyai":
             logger.info("Starting AssemblyAI transcription...")
             try:
-                turns, _docx_bytes, duration_seconds = process_transcription(
+                turns, duration_seconds = process_transcription(
                     None,
                     file.filename,
                     speaker_list,
@@ -405,13 +405,13 @@ async def transcribe(
 
         logger.info("Preserving native ASR/Gemini word timestamps for initial transcription")
 
-        docx_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+        pdf_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
             turns,
             title_data,
             duration_seconds or 0,
             DEFAULT_LINES_PER_PAGE,
         )
-        docx_b64 = base64.b64encode(docx_bytes).decode()
+        pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
         created_at = datetime.now(timezone.utc)
 
@@ -424,7 +424,7 @@ async def transcribe(
             "turns": serialize_transcript_turns(turns),
             "source_turns": serialize_transcript_turns(turns),
             "lines": line_payloads,
-            "docx_base64": docx_b64,
+            "pdf_base64": pdf_b64,
             "transcript_text": transcript_text,
             "transcript": transcript_text,
             "media_blob_name": media_blob_name,
@@ -597,7 +597,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
                 float(transcript_data.get("audio_duration") or 0.0),
             )
             turns = construct_turns_from_lines(normalized_lines)
-            docx_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
+            pdf_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
                 turns,
                 title_data,
                 normalized_duration,
@@ -606,7 +606,7 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
             )
             transcript_data["lines"] = updated_lines
             transcript_data["audio_duration"] = normalized_duration
-            transcript_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
+            transcript_data["pdf_base64"] = base64.b64encode(pdf_bytes).decode("ascii")
             transcript_data["transcript_text"] = transcript_text
             transcript_data["transcript"] = transcript_text
 
@@ -676,7 +676,7 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
                 normalized_lines, normalized_duration = normalize_line_payloads(lines, audio_duration)
                 turns = construct_turns_from_lines(normalized_lines)
                 if turns:
-                    docx_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
+                    pdf_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
                         turns,
                         title_data,
                         normalized_duration,
@@ -685,7 +685,7 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
                     )
                     snapshot_data["lines"] = updated_lines
                     snapshot_data["audio_duration"] = normalized_duration
-                    snapshot_data["docx_base64"] = base64.b64encode(docx_bytes).decode("ascii")
+                    snapshot_data["pdf_base64"] = base64.b64encode(pdf_bytes).decode("ascii")
                     snapshot_data["transcript_text"] = transcript_text
                     snapshot_data["transcript"] = transcript_text
 
@@ -768,14 +768,14 @@ async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(
         lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
         title_data = session_data.get("title_data") or {}
 
-        docx_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
+        pdf_bytes, oncue_xml, transcript_text, updated_lines_payload = build_session_artifacts(
             turns,
             title_data,
             normalized_duration,
             lines_per_page,
         )
 
-        docx_b64 = base64.b64encode(docx_bytes).decode()
+        pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
         hours, rem = divmod(normalized_duration, 3600)
         minutes, seconds = divmod(rem, 60)
@@ -790,7 +790,7 @@ async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(
         session_data["lines"] = updated_lines_payload
         session_data["title_data"] = title_data
         session_data["audio_duration"] = normalized_duration
-        session_data["docx_base64"] = docx_b64
+        session_data["pdf_base64"] = pdf_b64
         session_data["transcript_text"] = transcript_text
         session_data["transcript"] = transcript_text
         session_data["updated_at"] = updated_at.isoformat()
@@ -838,11 +838,11 @@ async def import_transcript(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Import a transcript from OnCue XML, HTML viewer, or DOCX file.
+    Import a transcript from OnCue XML, HTML viewer, or DOCX file (deprecated path).
 
     - XML: Parses OnCue format, uses embedded timestamps
     - HTML: Parses embedded viewer JSON payload for timestamps
-    - DOCX: Parses speaker/text, runs Rev AI alignment for timestamps
+    - DOCX (deprecated): Parses speaker/text, runs Rev AI alignment for timestamps
 
     Media file is required for both to enable playback and re-sync.
     """
@@ -1001,7 +1001,7 @@ async def import_transcript(
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported file type: {file_ext}. Use .xml (OnCue), .html (viewer), or .docx",
+                detail=f"Unsupported file type: {file_ext}. Use .xml (OnCue), .html (viewer), or .docx (deprecated)",
             )
 
         overrides = {
@@ -1017,14 +1017,14 @@ async def import_transcript(
 
         title_data["MEDIA_ID"] = media_key
 
-        docx_bytes_out, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+        pdf_bytes_out, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
             turns,
             title_data,
             duration_seconds,
             lines_per_page,
         )
 
-        docx_b64 = base64.b64encode(docx_bytes_out).decode()
+        pdf_b64 = base64.b64encode(pdf_bytes_out).decode()
 
         created_at = datetime.now(timezone.utc)
 
@@ -1039,7 +1039,7 @@ async def import_transcript(
                 "turns": serialize_transcript_turns(turns),
                 "source_turns": serialize_transcript_turns(turns),
                 "lines": line_payloads,
-                "docx_base64": docx_b64,
+                "pdf_base64": pdf_b64,
                 "transcript_text": transcript_text,
                 "transcript": transcript_text,
                 "media_blob_name": media_blob_name,
@@ -1166,7 +1166,7 @@ async def resync_transcript(
         title_data = session_data.get("title_data", {})
         lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
 
-        docx_bytes, oncue_xml, transcript_text, new_line_entries = build_session_artifacts(
+        pdf_bytes, oncue_xml, transcript_text, new_line_entries = build_session_artifacts(
             updated_turns,
             title_data,
             audio_duration,
@@ -1175,7 +1175,7 @@ async def resync_transcript(
 
         session_data["lines"] = new_line_entries
         session_data["turns"] = serialize_transcript_turns(updated_turns)
-        session_data["docx_base64"] = base64.b64encode(docx_bytes).decode()
+        session_data["pdf_base64"] = base64.b64encode(pdf_bytes).decode()
         session_data["transcript_text"] = transcript_text
         session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -1183,7 +1183,7 @@ async def resync_transcript(
         response_data = {
             "status": "success",
             "lines": new_line_entries,
-            "docx_base64": session_data["docx_base64"],
+            "pdf_base64": session_data["pdf_base64"],
         }
 
         media_filename = resolve_media_filename(
@@ -1370,7 +1370,7 @@ async def reattach_media(
                 normalized_lines, normalized_duration = normalize_line_payloads(lines, audio_duration)
                 turns = construct_turns_from_lines(normalized_lines)
                 if turns:
-                    _docx_bytes, oncue_xml, _transcript_text, updated_lines = build_session_artifacts(
+                    _pdf_bytes, oncue_xml, _transcript_text, updated_lines = build_session_artifacts(
                         turns,
                         title_data,
                         normalized_duration,

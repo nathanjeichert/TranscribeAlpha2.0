@@ -100,6 +100,9 @@ export default function TranscribeForm() {
         const merged: TranscriptData = {
           ...(sameKey ? previous : {}),
           ...data,
+          pdf_base64: data.pdf_base64
+            ?? data.docx_base64
+            ?? (sameKey ? previous?.pdf_base64 ?? previous?.docx_base64 : undefined),
           docx_base64: data.docx_base64 ?? (sameKey ? previous?.docx_base64 : undefined),
           oncue_xml_base64: data.oncue_xml_base64 ?? (sameKey ? previous?.oncue_xml_base64 : undefined),
           viewer_html_base64: data.viewer_html_base64 ?? (sameKey ? previous?.viewer_html_base64 : undefined),
@@ -906,18 +909,19 @@ export default function TranscribeForm() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <button
                           onClick={() => {
-                            if (transcriptData.docx_base64) {
+                            const pdfData = transcriptData.pdf_base64 ?? transcriptData.docx_base64
+                            if (pdfData) {
                               downloadFile(
-                                transcriptData.docx_base64,
-                                generateFilename('transcript', '.docx'),
-                                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                pdfData,
+                                generateFilename('transcript', '.pdf'),
+                                'application/pdf',
                               )
                             }
                           }}
                           className="btn-primary text-center py-3"
-                          disabled={!transcriptData.docx_base64}
+                          disabled={!transcriptData.pdf_base64 && !transcriptData.docx_base64}
                         >
-                          📄 Download DOCX
+                          📄 Download PDF
                         </button>
                         {appVariant === 'oncue' ? (
                           <button
@@ -986,6 +990,7 @@ export default function TranscribeForm() {
               initialData={transcriptData}
               mediaUrl={mediaIsLocal ? mediaPreviewUrl || undefined : remoteMediaBaseUrl ?? undefined}
               mediaType={mediaContentType ?? selectedFile?.type}
+              pdfBase64={transcriptData?.pdf_base64 ?? transcriptData?.docx_base64 ?? undefined}
               docxBase64={transcriptData?.docx_base64 ?? undefined}
               xmlBase64={transcriptData?.oncue_xml_base64 ?? undefined}
               viewerHtmlBase64={transcriptData?.viewer_html_base64 ?? undefined}

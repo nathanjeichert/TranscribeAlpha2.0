@@ -44,23 +44,23 @@ except ImportError:
 
 try:
     from .transcript_formatting import (
-        create_docx,
-        generate_oncue_xml,
+        create_pdf,
+        generate_oncue_xml_from_line_entries,
         compute_transcript_line_entries,
         seconds_to_timestamp,
     )
 except ImportError:
     try:
         from transcript_formatting import (
-            create_docx,
-            generate_oncue_xml,
+            create_pdf,
+            generate_oncue_xml_from_line_entries,
             compute_transcript_line_entries,
             seconds_to_timestamp,
         )
     except ImportError:
         import transcript_formatting as transcript_formatting_module
-        create_docx = transcript_formatting_module.create_docx
-        generate_oncue_xml = transcript_formatting_module.generate_oncue_xml
+        create_pdf = transcript_formatting_module.create_pdf
+        generate_oncue_xml_from_line_entries = transcript_formatting_module.generate_oncue_xml_from_line_entries
         compute_transcript_line_entries = transcript_formatting_module.compute_transcript_line_entries
         seconds_to_timestamp = transcript_formatting_module.seconds_to_timestamp
 
@@ -167,24 +167,22 @@ def build_session_artifacts(
     lines_per_page: int,
     enforce_min_line_duration: bool = True,
 ) -> Tuple[bytes, str, str, List[dict]]:
-    """Generate DOCX, OnCue XML, transcript text, and line entries for a session."""
-    docx_bytes = create_docx(title_data, turns)
-    oncue_xml = generate_oncue_xml(
-        turns,
-        title_data,
-        audio_duration,
-        lines_per_page,
-        enforce_min_duration=enforce_min_line_duration,
-    )
-    transcript_text = format_transcript_text(turns)
     line_entries, _ = compute_transcript_line_entries(
         turns,
         audio_duration,
         lines_per_page,
         enforce_min_duration=enforce_min_line_duration,
     )
+    pdf_bytes = create_pdf(title_data, line_entries, lines_per_page=lines_per_page)
+    oncue_xml = generate_oncue_xml_from_line_entries(
+        line_entries,
+        title_data,
+        audio_duration,
+        lines_per_page,
+    )
+    transcript_text = format_transcript_text(turns)
     serialized_entries = serialize_line_entries(line_entries)
-    return docx_bytes, oncue_xml, transcript_text, serialized_entries
+    return pdf_bytes, oncue_xml, transcript_text, serialized_entries
 
 
 def build_viewer_payload(

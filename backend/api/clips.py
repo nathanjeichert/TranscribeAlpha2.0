@@ -218,14 +218,14 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
     clip_title_data["CLIP_DURATION"] = f"{int(hours):02d}:{int(minutes):02d}:{int(round(seconds)):02d}"
     clip_title_data["CLIP_TITLE"] = clip_name
 
-    docx_bytes, oncue_xml, transcript_text, clip_line_entries = build_session_artifacts(
+    pdf_bytes, oncue_xml, transcript_text, clip_line_entries = build_session_artifacts(
         turns,
         clip_title_data,
         normalized_duration,
         lines_per_page,
         enforce_min_line_duration=False,
     )
-    docx_b64 = base64.b64encode(docx_bytes).decode()
+    pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
     clip_media_blob_name, clip_media_content_type = clip_media_segment(
         session_data.get("media_blob_name"),
@@ -275,7 +275,7 @@ async def create_clip(payload: Dict = Body(...), current_user: dict = Depends(ge
         "start_line_number": start_line.get("line"),
         "end_page": end_line.get("page"),
         "end_line_number": end_line.get("line"),
-        "docx_base64": docx_b64,
+        "pdf_base64": pdf_b64,
         "transcript_text": transcript_text,
         "lines": clip_line_entries,
         "title_data": clip_title_data,

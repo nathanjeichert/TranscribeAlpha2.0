@@ -41,7 +41,8 @@ interface ClipDetailResponse {
   start_line_number?: number | null
   end_page?: number | null
   end_line_number?: number | null
-  docx_base64: string
+  pdf_base64?: string
+  docx_base64?: string
   oncue_xml_base64: string
   viewer_html_base64?: string
   transcript: string
@@ -526,12 +527,14 @@ export default function ClipCreator({
     [fetchClipDetail],
   )
 
-  const handleDownloadDocx = useCallback(
+  const handleDownloadPdf = useCallback(
     async (clipId: string) => {
       const detail = await fetchClipDetail(clipId)
       if (!detail) return
-      const filename = buildFilename(detail.name.replace(/\s+/g, '-').toLowerCase(), '.docx')
-      onDownload(detail.docx_base64, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+      const pdfData = detail.pdf_base64 ?? detail.docx_base64
+      if (!pdfData) return
+      const filename = buildFilename(detail.name.replace(/\s+/g, '-').toLowerCase(), '.pdf')
+      onDownload(pdfData, filename, 'application/pdf')
     },
     [buildFilename, fetchClipDetail, onDownload],
   )
@@ -751,9 +754,9 @@ export default function ClipCreator({
             <button
               type="button"
               className="px-2 py-1 rounded bg-white border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50"
-              onClick={() => handleDownloadDocx(summary.clip_id)}
+              onClick={() => handleDownloadPdf(summary.clip_id)}
             >
-              DOCX
+              PDF
             </button>
             {isCriminal ? (
               <button

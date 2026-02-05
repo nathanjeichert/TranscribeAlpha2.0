@@ -2,10 +2,13 @@ import io
 import logging
 import os
 import re
-from typing import List, Optional, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
-from docx import Document
-from docx.shared import Inches, Pt
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
 
 try:
     from .models import TranscriptTurn, WordTimestamp
@@ -31,6 +34,21 @@ MIN_LINE_DURATION_SECONDS = 1.25
 # OnCue XML constants
 ONCUE_FIRST_PGLN = 101      # First page-line number (page 1, line 1 = 101)
 DEFAULT_VIDEO_ID = "1"      # Default video ID for single-video transcripts
+
+# PDF layout constants (mirrors transcript_template.docx transcript section)
+PDF_PAGE_WIDTH, PDF_PAGE_HEIGHT = letter
+PDF_MARGIN_LEFT = 1.0 * inch
+PDF_MARGIN_RIGHT = 1.0 * inch
+PDF_MARGIN_TOP = 0.75 * inch
+PDF_MARGIN_BOTTOM = 0.75 * inch
+PDF_LINE_NUMBER_GUTTER = 0.7 * inch
+PDF_LINE_HEIGHT = 24.0  # 12pt Courier at double spacing
+PDF_TEXT_FONT = "Courier"
+PDF_TEXT_FONT_BOLD = "Courier-Bold"
+PDF_TEXT_SIZE = 12
+PDF_LINE_NUMBER_SIZE = 10
+PDF_BORDER_INSET = 0.33 * inch
+PDF_BORDER_GAP = 4.0
 
 
 def timestamp_to_seconds(timestamp: Optional[str]) -> float:
@@ -105,249 +123,129 @@ def wrap_text_for_transcript(text: str, max_width: int) -> List[str]:
     return lines if lines else [""]
 
 
-def replace_placeholder_text(element, placeholder: str, replacement: str) -> None:
-    if hasattr(element, "paragraphs"):
-        for paragraph in element.paragraphs:
-            replace_placeholder_text(paragraph, placeholder, replacement)
-    if hasattr(element, "runs"):
-        if placeholder in element.text:
-            inline = element.runs
-            for idx in range(len(inline)):
-                if placeholder in inline[idx].text:
-                    inline[idx].text = inline[idx].text.replace(placeholder, replacement)
-    if hasattr(element, "tables"):
-        for table in element.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    replace_placeholder_text(cell, placeholder, replacement)
+def _safe_text(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
-def _resolve_docx_template_path() -> Optional[str]:
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "transcript_template.docx"),
-        os.path.join(os.getcwd(), "transcript_template.docx"),
+def _draw_double_page_border(pdf_canvas: canvas.Canvas) -> None:
+    outer_x = PDF_BORDER_INSET
+    outer_y = PDF_BORDER_INSET
+    outer_w = PDF_PAGE_WIDTH - (2 * PDF_BORDER_INSET)
+    outer_h = PDF_PAGE_HEIGHT - (2 * PDF_BORDER_INSET)
+
+    inner_x = outer_x + (PDF_BORDER_GAP / 2.0)
+    inner_y = outer_y + (PDF_BORDER_GAP / 2.0)
+    inner_w = outer_w - PDF_BORDER_GAP
+    inner_h = outer_h - PDF_BORDER_GAP
+
+    pdf_canvas.setStrokeColor(colors.black)
+    pdf_canvas.setLineWidth(0.8)
+    pdf_canvas.rect(outer_x, outer_y, outer_w, outer_h, stroke=1, fill=0)
+    pdf_canvas.rect(inner_x, inner_y, inner_w, inner_h, stroke=1, fill=0)
+
+
+def _draw_title_page(pdf_canvas: canvas.Canvas, title_data: dict) -> None:
+    center_x = PDF_PAGE_WIDTH / 2.0
+    y = PDF_PAGE_HEIGHT - (1.7 * inch)
+
+    firm_name = _safe_text(title_data.get("FIRM_OR_ORGANIZATION_NAME"))
+    if firm_name:
+        pdf_canvas.setFont(PDF_TEXT_FONT_BOLD, 14)
+        pdf_canvas.drawCentredString(center_x, y, firm_name)
+        y -= 0.6 * inch
+
+    pdf_canvas.setFont(PDF_TEXT_FONT_BOLD, 18)
+    pdf_canvas.drawCentredString(center_x, y, "Generated Transcript")
+    y -= 0.6 * inch
+
+    metadata_lines = [
+        f"Case Name: {_safe_text(title_data.get('CASE_NAME'))}",
+        f"Case Number: {_safe_text(title_data.get('CASE_NUMBER'))}",
+        "",
+        f"Date: {_safe_text(title_data.get('DATE'))}",
+        f"Time: {_safe_text(title_data.get('TIME'))}",
+        f"Location: {_safe_text(title_data.get('LOCATION'))}",
+        "",
+        f"Original File: {_safe_text(title_data.get('FILE_NAME'))}",
+        f"Duration: {_safe_text(title_data.get('FILE_DURATION'))}",
     ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    return None
+
+    pdf_canvas.setFont(PDF_TEXT_FONT, PDF_TEXT_SIZE)
+    for line in metadata_lines:
+        if line:
+            pdf_canvas.drawCentredString(center_x, y, line)
+        y -= 0.35 * inch
 
 
-def _resolve_clip_template_path() -> Optional[str]:
-    """Resolve path to clip-specific DOCX template."""
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "clip_template.docx"),
-        os.path.join(os.getcwd(), "clip_template.docx"),
-    ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    return None
+def _draw_transcript_page(
+    pdf_canvas: canvas.Canvas,
+    page_entries: List[dict],
+    lines_per_page: int,
+) -> None:
+    _draw_double_page_border(pdf_canvas)
 
+    if not page_entries:
+        return
 
-def create_docx(title_data: dict, transcript_turns: List[TranscriptTurn]) -> bytes:
-    """
-    Create a DOCX transcript with template-based formatting.
-    """
-    template_path = _resolve_docx_template_path()
-    if template_path:
-        doc = Document(template_path)
-    else:
-        logger.warning("DOCX template not found; falling back to a blank document.")
-        doc = Document()
+    top_baseline = PDF_PAGE_HEIGHT - PDF_MARGIN_TOP - PDF_TEXT_SIZE
+    number_right_x = PDF_MARGIN_LEFT - 6.0
+    text_x = PDF_MARGIN_LEFT
 
-    for key, value in title_data.items():
-        placeholder = f"{{{{{key}}}}}"
-        replace_placeholder_text(doc, placeholder, str(value) if value else "")
-
-    body_placeholder = "{{TRANSCRIPT_BODY}}"
-    placeholder_paragraph = None
-    for paragraph in doc.paragraphs:
-        if body_placeholder in paragraph.text:
-            placeholder_paragraph = paragraph
-            break
-
-    if placeholder_paragraph:
-        paragraph_element = placeholder_paragraph._element
-        paragraph_element.getparent().remove(paragraph_element)
-        for turn in transcript_turns:
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.0)  # Standard legal transcript indent
-            p.paragraph_format.line_spacing = 2.0
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.widow_control = False
-
-            if not turn.is_continuation:
-                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
-                speaker_run.font.name = "Courier New"
-            text_run = p.add_run(turn.text)
-            text_run.font.name = "Courier New"
-    else:
-        for turn in transcript_turns:
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.0)
-            p.paragraph_format.line_spacing = 2.0
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.widow_control = False
-
-            if not turn.is_continuation:
-                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
-                speaker_run.font.name = "Courier New"
-            text_run = p.add_run(turn.text)
-            text_run.font.name = "Courier New"
-
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer.read()
-
-
-def create_clip_docx(title_data: dict, transcript_turns: List[TranscriptTurn], clip_title: str) -> bytes:
-    """
-    Create a DOCX transcript for a clip using the clip-specific template.
-
-    Args:
-        title_data: Session metadata (CASE_NAME, FILE_NAME, etc.)
-        transcript_turns: The transcript content
-        clip_title: The name/label for this clip
-
-    Returns:
-        DOCX file as bytes
-    """
-    template_path = _resolve_clip_template_path()
-    if not template_path:
-        logger.warning("Clip template not found; falling back to standard template.")
-        template_path = _resolve_docx_template_path()
-
-    if template_path:
-        doc = Document(template_path)
-    else:
-        logger.warning("No DOCX template found; using blank document.")
-        doc = Document()
-
-    clip_title_data = dict(title_data)
-    clip_title_data["CLIP_TITLE"] = clip_title
-
-    for key, value in clip_title_data.items():
-        placeholder = f"{{{{{key}}}}}"
-        replace_placeholder_text(doc, placeholder, str(value) if value else "")
-
-    body_placeholder = "{{TRANSCRIPT_BODY}}"
-    placeholder_paragraph = None
-    for paragraph in doc.paragraphs:
-        if body_placeholder in paragraph.text:
-            placeholder_paragraph = paragraph
-            break
-
-    if placeholder_paragraph:
-        paragraph_element = placeholder_paragraph._element
-        paragraph_element.getparent().remove(paragraph_element)
-        for turn in transcript_turns:
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.0)
-            p.paragraph_format.line_spacing = 2.0
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.widow_control = False
-
-            if not turn.is_continuation:
-                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
-                speaker_run.font.name = "Courier New"
-            text_run = p.add_run(turn.text)
-            text_run.font.name = "Courier New"
-    else:
-        for turn in transcript_turns:
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Inches(0.0)
-            p.paragraph_format.first_line_indent = Inches(1.0)
-            p.paragraph_format.line_spacing = 2.0
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.widow_control = False
-
-            if not turn.is_continuation:
-                speaker_run = p.add_run(f"{turn.speaker.upper()}:   ")
-                speaker_run.font.name = "Courier New"
-            text_run = p.add_run(turn.text)
-            text_run.font.name = "Courier New"
-
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer.read()
-
-
-def parse_docx_to_turns(docx_bytes: bytes) -> List[dict]:
-    """
-    Parse a DOCX file (exported from TranscribeAlpha) back into transcript turns.
-
-    Expected format per paragraph: "SPEAKER:   Text of what they said..."
-    Returns list of dicts with 'speaker' and 'text' keys.
-
-    Automatically skips title page content (Generated Transcript, Case Name, etc.)
-    """
-    buffer = io.BytesIO(docx_bytes)
-    doc = Document(buffer)
-
-    # Title page patterns to skip (case-insensitive)
-    title_page_patterns = [
-        r'^generated\s+transcript\s*$',
-        r'^case\s+name:\s*',
-        r'^case\s+number:\s*',
-        r'^date:\s*',
-        r'^time:\s*',
-        r'^location:\s*',
-        r'^original\s+file:\s*',
-        r'^duration:\s*',
-        r'^firm\s*(name|or\s+organization)?\s*:\s*',
-    ]
-    title_page_regex = re.compile('|'.join(title_page_patterns), re.IGNORECASE)
-
-    turns = []
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
+    sorted_entries = sorted(page_entries, key=lambda entry: (int(entry.get("line", 0) or 0), entry.get("id", "")))
+    for entry in sorted_entries:
+        try:
+            line_number = int(entry.get("line", 0) or 0)
+        except (TypeError, ValueError):
+            line_number = 0
+        if line_number <= 0 or line_number > lines_per_page:
             continue
 
-        # Skip title page content
-        if title_page_regex.match(text):
+        y = top_baseline - ((line_number - 1) * PDF_LINE_HEIGHT)
+        if y < PDF_MARGIN_BOTTOM:
             continue
 
-        # Look for speaker pattern: "SPEAKER:   text" (colon + spaces)
-        # Handle various spacing patterns
-        match = re.match(r'^([A-Z][A-Z0-9\s\-\.\']*?):\s{1,5}(.+)$', text, re.IGNORECASE)
-        if match:
-            speaker = match.group(1).strip().upper()
-            content = match.group(2).strip()
-            if speaker and content:
-                # Check if same speaker as previous turn
-                is_continuation = False
-                if turns and turns[-1]['speaker'] == speaker:
-                    is_continuation = True
-                turns.append({
-                    'speaker': speaker,
-                    'text': content,
-                    'is_continuation': is_continuation,
-                })
-        else:
-            # No speaker pattern - this is a continuation of the previous speaker
-            if turns and not text.startswith('['):
-                # Create as separate continuation turn (inherits speaker from previous)
-                turns.append({
-                    'speaker': turns[-1]['speaker'],
-                    'text': text,
-                    'is_continuation': True,
-                })
-            elif text and not text.startswith('['):
-                turns.append({
-                    'speaker': 'UNKNOWN',
-                    'text': text,
-                    'is_continuation': False,
-                })
+        pdf_canvas.setFillColor(colors.Color(0.45, 0.45, 0.45))
+        pdf_canvas.setFont(PDF_TEXT_FONT, PDF_LINE_NUMBER_SIZE)
+        pdf_canvas.drawRightString(number_right_x, y, str(line_number))
 
-    logger.info("Parsed %d turns from DOCX (skipped title page content)", len(turns))
-    return turns
+        line_text = str(entry.get("rendered_text", ""))
+        pdf_canvas.setFillColor(colors.black)
+        pdf_canvas.setFont(PDF_TEXT_FONT, PDF_TEXT_SIZE)
+        pdf_canvas.drawString(text_x, y, line_text)
+
+
+def create_pdf(title_data: dict, line_entries: List[dict], lines_per_page: int = 25) -> bytes:
+    """
+    Create a deterministic PDF transcript from precomputed line entries.
+
+    The PDF uses the same wrapped line/page assignments as XML and HTML outputs.
+    """
+    output = io.BytesIO()
+    pdf_canvas = canvas.Canvas(output, pagesize=letter, pageCompression=1)
+
+    _draw_title_page(pdf_canvas, title_data)
+    pdf_canvas.showPage()
+
+    pages: Dict[int, List[dict]] = defaultdict(list)
+    for entry in line_entries:
+        try:
+            page_number = int(entry.get("page", 1) or 1)
+        except (TypeError, ValueError):
+            page_number = 1
+        pages[page_number].append(entry)
+
+    if not pages:
+        pages[1] = []
+
+    for page_number in sorted(pages):
+        _draw_transcript_page(pdf_canvas, pages[page_number], lines_per_page)
+        pdf_canvas.showPage()
+
+    pdf_canvas.save()
+    output.seek(0)
+    return output.read()
 
 
 def calculate_line_timestamps_from_words(
@@ -737,15 +635,34 @@ def generate_oncue_xml(
     audio_duration: float,
     lines_per_page: int = 25,
     enforce_min_duration: bool = True,
+    precomputed_line_entries: Optional[List[dict]] = None,
 ) -> str:
-    """
-    Generate OnCue-compatible XML from transcript turns.
+    """Generate OnCue-compatible XML from transcript turns or precomputed line entries."""
+    if precomputed_line_entries is None:
+        line_entries, _ = compute_transcript_line_entries(
+            transcript_turns,
+            audio_duration,
+            lines_per_page,
+            enforce_min_duration=enforce_min_duration,
+        )
+    else:
+        line_entries = precomputed_line_entries
 
-    This function breaks long utterances into multiple lines to match the DOCX formatting:
-    - First line: 15 spaces + "SPEAKER:" (padded to ~21 chars) + text (max ~48 chars)
-    - Continuation lines: 5 spaces + text (max ~57 chars)
-    - Total line length: ~71 chars for speaker lines, ~62 chars for continuation lines
-    """
+    return generate_oncue_xml_from_line_entries(
+        line_entries,
+        metadata,
+        audio_duration,
+        lines_per_page,
+    )
+
+
+def generate_oncue_xml_from_line_entries(
+    line_entries: List[dict],
+    metadata: dict,
+    audio_duration: float,
+    lines_per_page: int = 25,
+) -> str:
+    """Generate OnCue-compatible XML from already-computed line entries."""
     from xml.etree.ElementTree import Element, SubElement, tostring
 
     root = Element(
@@ -778,31 +695,36 @@ def generate_oncue_xml(
     }
     depo_video = SubElement(deposition, "depoVideo", video_attrs)
 
-    line_entries, last_pgln = compute_transcript_line_entries(
-        transcript_turns,
-        audio_duration,
-        lines_per_page,
-        enforce_min_duration=enforce_min_duration,
-    )
-
     for entry in line_entries:
+        page_value = int(entry.get("page", 1) or 1)
+        line_value = int(entry.get("line", 1) or 1)
+        pgln_value = int(entry.get("pgln", (page_value * 100) + line_value) or ((page_value * 100) + line_value))
+        start_value = float(entry.get("start", 0.0) or 0.0)
+        stop_value = float(entry.get("end", start_value) or start_value)
         SubElement(
             depo_video,
             "depoLine",
             {
                 "prefix": "",
-                "text": entry["rendered_text"],
-                "page": str(entry["page"]),
-                "line": str(entry["line"]),
-                "pgLN": str(entry["pgln"]),
+                "text": str(entry.get("rendered_text", "")),
+                "page": str(page_value),
+                "line": str(line_value),
+                "pgLN": str(pgln_value),
                 "videoID": DEFAULT_VIDEO_ID,
-                "videoStart": f"{entry['start']:.2f}",
-                "videoStop": f"{entry['end']:.2f}",
+                "videoStart": f"{start_value:.2f}",
+                "videoStop": f"{stop_value:.2f}",
                 "isEdited": "no",
                 "isSynched": "yes",
                 "isRedacted": "no",
             },
         )
+
+    last_pgln = ONCUE_FIRST_PGLN
+    if line_entries:
+        try:
+            last_pgln = int(line_entries[-1].get("pgln", ONCUE_FIRST_PGLN) or ONCUE_FIRST_PGLN)
+        except (TypeError, ValueError):
+            last_pgln = ONCUE_FIRST_PGLN
 
     depo_video.set("lastPGLN", str(last_pgln))
 

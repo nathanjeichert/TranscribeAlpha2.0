@@ -63,12 +63,12 @@ export default function SettingsPage() {
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="flex items-center gap-3 mb-2">
                 <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <span className="text-blue-600 font-bold text-sm">DOCX</span>
+                  <span className="text-blue-600 font-bold text-sm">PDF</span>
                 </div>
-                <p className="font-medium text-gray-900">Word Document</p>
+                <p className="font-medium text-gray-900">Transcript PDF</p>
               </div>
               <p className="text-sm text-gray-500">
-                Standard document format for editing and printing
+                Canonical transcript layout for printing and page/line references
               </p>
             </div>
             {appVariant === 'oncue' ? (
