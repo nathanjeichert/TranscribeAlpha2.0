@@ -953,7 +953,7 @@ export default function TranscriptEditor({
 
   const handleDownloadViewer = useCallback(async () => {
     if (!isCriminal) return
-    let htmlData = viewerHtmlData
+    let htmlData = viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
     if (isDirty) {
       const saved = await handleSave()
       if (!saved?.viewer_html_base64) {
@@ -970,7 +970,7 @@ export default function TranscriptEditor({
     }
     const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
     onDownload(htmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
-  }, [activeMediaKey, buildFilename, handleSave, isCriminal, isDirty, onDownload, regenerateViewerHtml, sessionMeta, viewerHtmlData])
+  }, [activeMediaKey, buildFilename, handleSave, isCriminal, isDirty, onDownload, regenerateViewerHtml, sessionMeta, viewerHtmlBase64])
 
   const handleImport = useCallback(
     async (event: React.FormEvent) => {
