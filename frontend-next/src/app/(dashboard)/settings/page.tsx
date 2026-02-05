@@ -105,10 +105,10 @@ export default function SettingsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">
             <div className="flex items-center justify-between py-2">
               <span className="text-gray-600">Save transcript</span>
-              <kbd className="px-2 py-1 bg-gray-100 rounded text-sm font-mono text-gray-700">Ctrl+S</kbd>
+              <kbd className="px-2 py-1 bg-gray-100 rounded text-sm font-mono text-gray-700">Ctrl/Cmd+S</kbd>
             </div>
             <div className="flex items-center justify-between py-2">
-              <span className="text-gray-600">Play/Pause media</span>
+              <span className="text-gray-600">Play/pause media (outside text fields)</span>
               <kbd className="px-2 py-1 bg-gray-100 rounded text-sm font-mono text-gray-700">Space</kbd>
             </div>
             <div className="flex items-center justify-between py-2">

@@ -1044,7 +1044,7 @@ export default function TranscriptEditor({
       return
     }
 
-    if (!confirm('This will update all timestamps based on audio alignment. Text changes will be preserved. Continue?')) {
+    if (!confirm('This will update timestamps to match the media. Text stays the same. Continue?')) {
       return
     }
 
@@ -1152,6 +1152,59 @@ export default function TranscriptEditor({
     }
   }, [isCriminal, localMediaPreviewUrl])
 
+  const isTypingInField = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) return false
+    const tag = target.tagName
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable
+  }, [])
+
+  useEffect(() => {
+    const handleKeydown = (event: KeyboardEvent) => {
+      const wantsSave = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's'
+      if (wantsSave) {
+        event.preventDefault()
+        if (!saving && sessionMeta && isDirty) {
+          void handleSave()
+        }
+        return
+      }
+
+      if (isTypingInField(event.target)) return
+
+      const player = isVideo ? videoRef.current : audioRef.current
+      if (!player) return
+
+      if (event.code === 'Space') {
+        event.preventDefault()
+        if (player.paused) {
+          player.play().catch(() => {})
+        } else {
+          player.pause()
+        }
+        return
+      }
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        player.currentTime = Math.max(0, player.currentTime - 5)
+        return
+      }
+
+      if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        const nextTime = player.currentTime + 5
+        if (Number.isFinite(player.duration)) {
+          player.currentTime = Math.min(player.duration, nextTime)
+        } else {
+          player.currentTime = nextTime
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeydown)
+    return () => window.removeEventListener('keydown', handleKeydown)
+  }, [handleSave, isDirty, isTypingInField, isVideo, saving, sessionMeta])
+
   return (
     <div
       className="space-y-6 relative"
@@ -1207,7 +1260,7 @@ export default function TranscriptEditor({
               onClick={handleDeleteUtterance}
               title="Delete selected line"
             >
-              Delete
+              Delete Line
             </button>
           </div>
 
@@ -1236,7 +1289,7 @@ export default function TranscriptEditor({
               disabled={isResyncing || !resolvedMediaUrl}
               title="Re-align timestamps to audio"
             >
-              {isResyncing ? 'Re-syncing...' : 'Auto Re-sync'}
+              {isResyncing ? 'Fixing...' : 'Fix Timing to Audio'}
             </button>
             {onGeminiRefine && (
               <button
@@ -1244,7 +1297,7 @@ export default function TranscriptEditor({
                 onClick={onGeminiRefine}
                 disabled={isGeminiBusy}
               >
-                {isGeminiBusy ? 'Running...' : 'Polish with AI'}
+                {isGeminiBusy ? 'Running...' : 'Clean Wording (AI)'}
               </button>
             )}
             <button
@@ -1307,7 +1360,7 @@ export default function TranscriptEditor({
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]">
             <div className="space-y-3">
               {/* Media Player */}
               {resolvedMediaUrl ? (
@@ -1365,33 +1418,33 @@ export default function TranscriptEditor({
                   onClick={() => setShowTools(!showTools)}
                   className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
                 >
-                  <span>Speaker Tools</span>
+                  <span>Speaker Names</span>
                   <svg className={`w-4 h-4 text-gray-500 transition-transform ${showTools ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                     <path d="M19 9l-7 7-7-7" />
                   </svg>
                 </button>
                 {showTools && (
                   <div className="p-4 border-t border-gray-200 bg-white space-y-3">
-                    <p className="text-xs text-gray-500">Find & replace speaker names</p>
+                    <p className="text-sm text-gray-500">Find and replace speaker names</p>
                     {renameFeedback && (
-                      <div className="rounded bg-primary-50 px-3 py-2 text-xs text-primary-700">{renameFeedback}</div>
+                      <div className="rounded bg-primary-50 px-3 py-2 text-sm text-primary-700">{renameFeedback}</div>
                     )}
                     <form className="space-y-2" onSubmit={handleRenameSpeaker}>
                       <input
                         type="text"
                         value={renameFrom}
                         onChange={(e) => { setRenameFrom(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
-                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs uppercase"
+                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase"
                         placeholder="Current name"
                       />
                       <input
                         type="text"
                         value={renameTo}
                         onChange={(e) => { setRenameTo(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
-                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs uppercase"
+                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase"
                         placeholder="New name"
                       />
-                      <button type="submit" className="w-full py-2 rounded-lg bg-primary-600 text-white text-xs font-medium hover:bg-primary-700" disabled={!lines.length}>
+                      <button type="submit" className="w-full py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700" disabled={!lines.length}>
                         Rename All
                       </button>
                     </form>
@@ -1405,27 +1458,27 @@ export default function TranscriptEditor({
                   onClick={() => setShowImport(!showImport)}
                   className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
                 >
-                  <span>Import Transcript</span>
+                  <span>Import Existing Transcript</span>
                   <svg className={`w-4 h-4 text-gray-500 transition-transform ${showImport ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                     <path d="M19 9l-7 7-7-7" />
                   </svg>
                 </button>
                 {showImport && (
                   <div className="p-4 border-t border-gray-200 bg-white space-y-3">
-                    <p className="text-xs text-gray-500">Drop files on page or select below</p>
-                    {importError && <p className="text-xs text-red-600">{importError}</p>}
+                    <p className="text-sm text-gray-500">Drop files on page or select below</p>
+                    {importError && <p className="text-sm text-red-600">{importError}</p>}
                     <form className="space-y-2" onSubmit={handleImport}>
                       <div>
-                        <label className="text-xs text-gray-600">Transcript ({isCriminal ? 'HTML/DOCX (legacy)' : 'XML/DOCX (legacy)'})</label>
+                        <label className="text-sm text-gray-600">Transcript ({isCriminal ? 'HTML/DOCX (legacy)' : 'XML/DOCX (legacy)'})</label>
                         <input
                           type="file"
                           accept={isCriminal ? '.html,.htm,.docx' : '.xml,.docx'}
                           onChange={(e) => setImportTranscriptFile(e.target.files?.[0] ?? null)}
-                          className="mt-1 w-full text-xs file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
+                          className="mt-1 w-full text-sm file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
                         />
                       </div>
                       <div>
-                        <label className="text-xs text-gray-600">Media File</label>
+                        <label className="text-sm text-gray-600">Media File</label>
                         <input
                           type="file"
                           accept="audio/*,video/*"
@@ -1436,10 +1489,10 @@ export default function TranscriptEditor({
                             if (file) { setLocalMediaPreviewUrl(URL.createObjectURL(file)); setLocalMediaType(file.type) }
                             else { setLocalMediaPreviewUrl(null); setLocalMediaType(undefined) }
                           }}
-                          className="mt-1 w-full text-xs file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
+                          className="mt-1 w-full text-sm file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
                         />
                       </div>
-                      <button type="submit" className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50" disabled={importing || !importTranscriptFile || !importMediaFile}>
+                      <button type="submit" className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50" disabled={importing || !importTranscriptFile || !importMediaFile}>
                         {importing ? 'Importing…' : 'Import'}
                       </button>
                     </form>
@@ -1453,7 +1506,7 @@ export default function TranscriptEditor({
                   onClick={() => setShowDownloads(!showDownloads)}
                   className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
                 >
-                  <span>Export Downloads</span>
+                  <span>Download Exports</span>
                   <svg className={`w-4 h-4 text-gray-500 transition-transform ${showDownloads ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                     <path d="M19 9l-7 7-7-7" />
                   </svg>
@@ -1461,7 +1514,7 @@ export default function TranscriptEditor({
                 {showDownloads && (
                   <div className="p-4 border-t border-gray-200 bg-white space-y-2">
                     <button
-                      className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
+                      className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
                       onClick={() => pdfData && onDownload(pdfData, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')}
                       disabled={!pdfData}
                     >
@@ -1469,7 +1522,7 @@ export default function TranscriptEditor({
                     </button>
                     {appVariant === 'oncue' ? (
                       <button
-                        className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
+                        className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
                         onClick={() => xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')}
                         disabled={!xmlData}
                       >
@@ -1477,7 +1530,7 @@ export default function TranscriptEditor({
                       </button>
                     ) : (
                       <button
-                        className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50 disabled:opacity-40"
+                        className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
                         onClick={handleDownloadViewer}
                         disabled={!activeMediaKey}
                       >
@@ -1486,7 +1539,7 @@ export default function TranscriptEditor({
                     )}
                     {transcriptText && (
                       <button
-                        className="w-full py-2 rounded-lg border border-gray-200 text-xs font-medium hover:bg-gray-50"
+                        className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50"
                         onClick={() => onDownload(btoa(unescape(encodeURIComponent(transcriptText))), buildFilename('Transcript-Preview', '.txt'), 'text/plain')}
                       >
                         Download Text
@@ -1557,7 +1610,7 @@ export default function TranscriptEditor({
               </div>
 
               <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
-                <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-[11px] font-semibold uppercase tracking-wide text-primary-600">
+                <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-primary-600">
                   <div>Pg:Ln</div>
                   <div>Speaker</div>
                   <div>Utterance</div>
@@ -1574,14 +1627,23 @@ export default function TranscriptEditor({
                       const isSelected = selectedLineId === line.id
                       const isSearchMatch = searchMatches.includes(line.id)
                       const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === line.id
+                      const rowBackgroundClass = isSelected
+                        ? 'bg-primary-100 hover:bg-primary-100'
+                        : isCurrentSearchMatch
+                          ? 'bg-amber-300'
+                          : isSearchMatch
+                            ? 'bg-amber-100'
+                            : isActive
+                              ? 'bg-yellow-200'
+                              : 'bg-white hover:bg-primary-200'
                       const rowClasses = [
-                        'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm',
-                        isCurrentSearchMatch ? 'bg-amber-300' : isSearchMatch ? 'bg-amber-100' : isActive ? 'bg-yellow-200' : 'bg-white hover:bg-primary-200',
-                        isSelected ? 'ring-2 ring-primary-300' : '',
+                        'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
+                        rowBackgroundClass,
+                        isSelected ? 'ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : '',
                       ]
                       const timingInputClass = line.timestamp_error
-                        ? 'w-24 rounded border border-red-400 bg-red-50 px-2 py-1 text-xs text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400'
-                        : 'w-24 rounded border border-primary-200 px-2 py-1 text-xs text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400'
+                        ? 'w-28 rounded border border-red-400 bg-red-50 px-2 py-1.5 text-sm text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400'
+                        : 'w-28 rounded border border-primary-200 px-2 py-1.5 text-sm text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400'
                       return (
                         <div
                           key={line.id}
@@ -1591,7 +1653,7 @@ export default function TranscriptEditor({
                           onClick={() => setSelectedLineId(line.id)}
                           className={rowClasses.join(' ')}
                         >
-                          <div className="text-xs font-mono text-primary-500">
+                          <div className="text-sm font-mono text-primary-500">
                             {line.page ?? '—'}:{line.line ?? '—'}
                           </div>
                           <div
@@ -1601,7 +1663,7 @@ export default function TranscriptEditor({
                             {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
                               <input
                                 ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
-                                className="input text-xs uppercase"
+                                className="input text-sm uppercase"
                                 value={editingField.value}
                                 onChange={(event) =>
                                   setEditingField((prev) =>
@@ -1651,9 +1713,9 @@ export default function TranscriptEditor({
                               <span>{line.text || '—'}</span>
                             )}
                           </div>
-                          <div className="flex items-center justify-end gap-5 text-xs text-primary-600">
-                            <div className="flex flex-col items-end gap-1 text-[11px] text-primary-500">
-                              <span className="uppercase tracking-wide text-[10px] text-primary-400">Start</span>
+                          <div className="flex items-center justify-end gap-5 text-sm text-primary-600">
+                            <div className="flex flex-col items-end gap-1 text-xs text-primary-500">
+                              <span className="uppercase tracking-wide text-xs text-primary-400">Start</span>
                               <input
                                 type="number"
                                 step="0.01"
@@ -1666,8 +1728,8 @@ export default function TranscriptEditor({
                                 title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
                               />
                             </div>
-                            <div className="flex flex-col items-end gap-1 text-[11px] text-primary-500">
-                              <span className="uppercase tracking-wide text-[10px] text-primary-400">End</span>
+                            <div className="flex flex-col items-end gap-1 text-xs text-primary-500">
+                              <span className="uppercase tracking-wide text-xs text-primary-400">End</span>
                               <input
                                 type="number"
                                 step="0.01"
@@ -1687,7 +1749,7 @@ export default function TranscriptEditor({
                             </div>
                             <button
                               type="button"
-                              className="rounded border border-primary-300 px-3 py-1 text-xs font-medium text-primary-700 hover:border-primary-500 hover:bg-primary-100"
+                              className="rounded border border-primary-300 px-3 py-1.5 text-sm font-medium text-primary-700 hover:border-primary-500 hover:bg-primary-100"
                               onClick={() => playLine(line)}
                               disabled={!resolvedMediaUrl}
                             >

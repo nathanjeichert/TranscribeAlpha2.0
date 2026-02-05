@@ -20,6 +20,12 @@ interface FormData {
 
 type WizardStep = 'upload' | 'configure' | 'transcribe'
 
+const wizardSteps: Array<{ key: WizardStep; label: string }> = [
+  { key: 'upload', label: 'Upload File' },
+  { key: 'configure', label: 'Optional Details' },
+  { key: 'transcribe', label: 'Transcribe' },
+]
+
 export default function TranscribePage() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -204,48 +210,51 @@ export default function TranscribePage() {
 
   const canProceedToConfig = selectedFile !== null
   const canProceedToTranscribe = selectedFile !== null
+  const currentStepIndex = wizardSteps.findIndex((wizardStep) => wizardStep.key === step)
+
+  const canNavigateToStep = (targetStep: WizardStep) => {
+    if (targetStep === 'upload') return true
+    if (targetStep === 'configure') return canProceedToConfig
+    return Boolean(transcriptResult)
+  }
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-gray-900">New Transcript</h1>
-        <p className="text-gray-500 mt-1">Upload and transcribe your audio or video file</p>
+        <p className="text-gray-600 mt-1">Step 1 is required. Step 2 is optional metadata.</p>
       </div>
 
       {/* Progress Steps */}
       <div className="flex items-center mb-8">
-        {['upload', 'configure', 'transcribe'].map((s, i) => (
-          <div key={s} className="flex items-center">
+        {wizardSteps.map((wizardStep, i) => (
+          <div key={wizardStep.key} className="flex items-center">
             <button
               onClick={() => {
-                if (s === 'upload') setStep('upload')
-                else if (s === 'configure' && canProceedToConfig) setStep('configure')
-                else if (s === 'transcribe' && transcriptResult) setStep('transcribe')
+                if (canNavigateToStep(wizardStep.key)) {
+                  setStep(wizardStep.key)
+                }
               }}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                step === s
+                step === wizardStep.key
                   ? 'bg-primary-600 text-white'
-                  : (step === 'configure' && s === 'upload') || (step === 'transcribe' && (s === 'upload' || s === 'configure'))
+                  : currentStepIndex > i
                     ? 'text-primary-600 hover:bg-primary-50'
                     : 'text-gray-400'
               }`}
-              disabled={
-                (s === 'configure' && !canProceedToConfig) ||
-                (s === 'transcribe' && !transcriptResult)
-              }
+              disabled={!canNavigateToStep(wizardStep.key)}
             >
               <span className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
-                step === s ? 'bg-white text-primary-600' : 'bg-gray-200 text-gray-600'
+                step === wizardStep.key ? 'bg-white text-primary-600' : 'bg-gray-200 text-gray-600'
               }`}>
                 {i + 1}
               </span>
-              <span className="capitalize">{s}</span>
+              <span>{wizardStep.label}</span>
             </button>
             {i < 2 && (
               <div className={`w-12 h-0.5 mx-2 ${
-                (s === 'upload' && (step === 'configure' || step === 'transcribe')) ||
-                (s === 'configure' && step === 'transcribe')
+                currentStepIndex > i
                   ? 'bg-primary-600'
                   : 'bg-gray-200'
               }`} />
@@ -258,7 +267,8 @@ export default function TranscribePage() {
       {step === 'upload' && (
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Upload Media File</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Upload Media File (Required)</h2>
+            <p className="text-sm text-gray-600 mb-4">Choose audio or video to begin the transcript.</p>
             <label
               htmlFor="media-upload"
               onDrop={handleDrop}
@@ -329,7 +339,7 @@ export default function TranscribePage() {
         <div className="space-y-6">
           {/* Case Selection */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Assign to Case</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Assign to Case (Recommended)</h2>
             <p className="text-sm text-gray-500 mb-4">
               Assign this transcript to a case for permanent storage. Unassigned transcripts expire after 30 days.
             </p>
@@ -360,7 +370,7 @@ export default function TranscribePage() {
           {/* Case Information */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">Case Information</h2>
+              <h2 className="text-lg font-semibold text-gray-900">Optional Transcript Details</h2>
               <span className="text-sm text-gray-400">All fields optional</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -433,7 +443,7 @@ export default function TranscribePage() {
 
           {/* Transcription Settings */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcription Settings</h2>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcription Options</h2>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Transcription Model</label>
@@ -443,7 +453,7 @@ export default function TranscribePage() {
                   onChange={handleInputChange}
                   className="input-field"
                 >
-                  <option value="assemblyai">AssemblyAI</option>
+                  <option value="assemblyai">AssemblyAI (Recommended)</option>
                   <option value="gemini">Gemini 3.0 Pro</option>
                 </select>
               </div>
