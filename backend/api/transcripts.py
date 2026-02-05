@@ -329,8 +329,31 @@ async def transcribe(
                             temp_dir,
                             f"{os.path.splitext(os.path.basename(file.filename))[0]}.mp3",
                         )
-                        audio_path = convert_video_to_audio(input_path, output_audio) or input_path
-                        audio_mime = "audio/mpeg"
+                        converted_audio = convert_video_to_audio(input_path, output_audio)
+                        if converted_audio:
+                            audio_path = converted_audio
+                            audio_mime = "audio/mpeg"
+                        else:
+                            # Keep MIME aligned with the actual fallback input path.
+                            video_mime_map = {
+                                "mp4": "video/mp4",
+                                "mov": "video/quicktime",
+                                "avi": "video/x-msvideo",
+                                "mkv": "video/x-matroska",
+                            }
+                            guessed_video_mime = (
+                                file.content_type
+                                or video_mime_map.get(ext)
+                                or mimetypes.guess_type(file.filename)[0]
+                                or "video/mp4"
+                            )
+                            audio_path = input_path
+                            audio_mime = guessed_video_mime
+                            logger.warning(
+                                "FFmpeg conversion failed for %s; falling back to source media with MIME %s",
+                                file.filename,
+                                audio_mime,
+                            )
                     else:
                         mime_map = {
                             "mp3": "audio/mpeg",
