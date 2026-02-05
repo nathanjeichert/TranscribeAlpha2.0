@@ -44,7 +44,7 @@ export default function CaseDetailPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const caseId = searchParams.get('id') ?? ''
-  const { refreshCases, setActiveMediaKey } = useDashboard()
+  const { cases, refreshCases, setActiveMediaKey } = useDashboard()
 
   const [caseMeta, setCaseMeta] = useState<CaseMeta | null>(null)
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
@@ -68,8 +68,9 @@ export default function CaseDetailPage() {
   const [searching, setSearching] = useState(false)
   const [showSearchResults, setShowSearchResults] = useState(false)
 
-  // Remove transcript
-  const [removingTranscript, setRemovingTranscript] = useState<string | null>(null)
+  // Reassign transcripts (edit mode)
+  const [reassignTargets, setReassignTargets] = useState<Record<string, string>>({})
+  const [reassigningTranscript, setReassigningTranscript] = useState<string | null>(null)
   const [transcriptDeleteTarget, setTranscriptDeleteTarget] = useState<TranscriptItem | null>(null)
   const [deletingStoredTranscript, setDeletingStoredTranscript] = useState(false)
 
@@ -104,6 +105,13 @@ export default function CaseDetailPage() {
   useEffect(() => {
     loadCase()
   }, [loadCase])
+
+  useEffect(() => {
+    if (!isEditing) {
+      setReassignTargets({})
+      setReassigningTranscript(null)
+    }
+  }, [isEditing])
 
   const handleSaveEdit = async () => {
     if (!editName.trim() || !caseId) return
@@ -143,21 +151,48 @@ export default function CaseDetailPage() {
     }
   }
 
-  const handleRemoveTranscript = async (mediaKey: string) => {
+  const getReassignTarget = (mediaKey: string) => {
+    return reassignTargets[mediaKey] ?? 'uncategorized'
+  }
+
+  const handleReassignTranscript = async (mediaKey: string) => {
     if (!caseId) return
-    setRemovingTranscript(mediaKey)
+    const target = getReassignTarget(mediaKey)
+
+    if (!target || target === caseId) {
+      return
+    }
+
+    setReassigningTranscript(mediaKey)
+    setError('')
     try {
-      const response = await authenticatedFetch(
-        `/api/cases/${caseId}/transcripts/${encodeURIComponent(mediaKey)}`,
-        { method: 'DELETE' }
-      )
-      if (!response.ok) throw new Error('Failed to remove transcript')
+      if (target === 'uncategorized') {
+        const response = await authenticatedFetch(
+          `/api/cases/${caseId}/transcripts/${encodeURIComponent(mediaKey)}`,
+          { method: 'DELETE' }
+        )
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to move transcript to uncategorized')
+        }
+      } else {
+        const response = await authenticatedFetch(`/api/cases/${target}/transcripts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ media_key: mediaKey }),
+        })
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to reassign transcript')
+        }
+      }
+
       await loadCase()
-      refreshCases()
-    } catch (err) {
-      setError('Failed to remove transcript')
+      await refreshCases()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to reassign transcript')
     } finally {
-      setRemovingTranscript(null)
+      setReassigningTranscript(null)
     }
   }
 
@@ -414,6 +449,11 @@ export default function CaseDetailPage() {
             Add Transcript
           </Link>
         </div>
+        {isEditing && (
+          <div className="px-4 py-3 border-b border-gray-100 bg-primary-50 text-sm text-primary-800">
+            Reassign transcripts to another case or to uncategorized.
+          </div>
+        )}
 
         {transcripts.length === 0 ? (
           <div className="p-8 text-center">
@@ -435,13 +475,7 @@ export default function CaseDetailPage() {
                 key={transcript.media_key}
                 className="p-4 flex items-center justify-between hover:bg-gray-50"
               >
-                <button
-                  onClick={() => {
-                    setActiveMediaKey(transcript.media_key)
-                    router.push(routes.editor(transcript.media_key))
-                  }}
-                  className="flex items-center gap-4 flex-1 min-w-0 text-left"
-                >
+                <div className="flex items-center gap-4 flex-1 min-w-0">
                   <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center flex-shrink-0">
                     <svg className="w-5 h-5 text-primary-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                       <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -453,41 +487,50 @@ export default function CaseDetailPage() {
                       {transcript.line_count || 0} lines • {formatDuration(transcript.audio_duration)} • Updated {formatDate(transcript.updated_at)}
                     </p>
                   </div>
-                </button>
-                <div className="flex items-center gap-2">
+                </div>
+                <div className="flex items-center gap-3">
+                  {isEditing && (
+                    <>
+                      <select
+                        value={getReassignTarget(transcript.media_key)}
+                        onChange={(e) =>
+                          setReassignTargets((prev) => ({
+                            ...prev,
+                            [transcript.media_key]: e.target.value,
+                          }))
+                        }
+                        className="input-field h-9 min-w-[170px] text-sm"
+                      >
+                        <option value="uncategorized">Uncategorized</option>
+                        {cases
+                          .filter((caseItem) => caseItem.case_id !== caseId)
+                          .map((caseItem) => (
+                            <option key={caseItem.case_id} value={caseItem.case_id}>
+                              {caseItem.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        onClick={() => handleReassignTranscript(transcript.media_key)}
+                        disabled={reassigningTranscript === transcript.media_key}
+                        className="btn-outline text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {reassigningTranscript === transcript.media_key ? 'Applying...' : 'Apply'}
+                      </button>
+                    </>
+                  )}
                   <button
                     onClick={() => {
                       setActiveMediaKey(transcript.media_key)
-                      router.push(routes.clipCreator(transcript.media_key))
+                      router.push(routes.editor(transcript.media_key))
                     }}
-                    className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
-                    title="Create clips"
+                    className="btn-outline text-sm px-3 py-1"
                   >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => handleRemoveTranscript(transcript.media_key)}
-                    disabled={removingTranscript === transcript.media_key}
-                    className="p-2 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                    title="Remove from case"
-                  >
-                    {removingTranscript === transcript.media_key ? (
-                      <svg className="w-5 h-5 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                        <path d="M6 12h12" />
-                        <path d="M8 7h8a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V9a2 2 0 012-2z" />
-                      </svg>
-                    )}
+                    Open
                   </button>
                   <button
                     onClick={() => setTranscriptDeleteTarget(transcript)}
-                    disabled={deletingStoredTranscript || removingTranscript === transcript.media_key}
+                    disabled={deletingStoredTranscript}
                     className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     title="Delete transcript permanently"
                   >
@@ -516,16 +559,11 @@ export default function CaseDetailPage() {
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">Delete Transcript Permanently?</h3>
                   <p className="mt-2 text-sm text-gray-600">
-                    This will permanently remove <span className="font-medium text-gray-900">&quot;{transcriptDeleteTarget.title_label}&quot;</span>,
-                    including saved snapshots and linked clip media. This action cannot be undone.
+                    This will permanently remove <span className="font-medium text-gray-900">&quot;{transcriptDeleteTarget.title_label}&quot;</span>.
+                    This action cannot be undone.
                   </p>
                 </div>
               </div>
-            </div>
-            <div className="p-6 bg-gray-50 border-b border-gray-100">
-              <p className="text-sm text-gray-700">
-                If you only want to keep the transcript but remove it from this case, use <span className="font-medium">Remove from case</span> instead.
-              </p>
             </div>
             <div className="p-6 flex justify-end gap-3">
               <button

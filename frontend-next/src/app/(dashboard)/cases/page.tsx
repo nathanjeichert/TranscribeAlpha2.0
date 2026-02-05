@@ -30,6 +30,9 @@ export default function CasesPage() {
   const [error, setError] = useState('')
   const [uncategorizedDeleteTarget, setUncategorizedDeleteTarget] = useState<TranscriptListItem | null>(null)
   const [deletingUncategorizedTranscript, setDeletingUncategorizedTranscript] = useState(false)
+  const [assignModeEnabled, setAssignModeEnabled] = useState(false)
+  const [assignmentTargets, setAssignmentTargets] = useState<Record<string, string>>({})
+  const [assigningTranscript, setAssigningTranscript] = useState<string | null>(null)
 
   useEffect(() => {
     if (searchParams.get('tab') === 'uncategorized') {
@@ -57,6 +60,14 @@ export default function CasesPage() {
       loadUncategorized()
     }
   }, [activeTab, loadUncategorized])
+
+  useEffect(() => {
+    if (activeTab !== 'uncategorized') {
+      setAssignModeEnabled(false)
+      setAssignmentTargets({})
+      setAssigningTranscript(null)
+    }
+  }, [activeTab])
 
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
@@ -100,6 +111,39 @@ export default function CasesPage() {
       setError(err?.message || 'Failed to delete transcript')
     } finally {
       setDeletingUncategorizedTranscript(false)
+    }
+  }
+
+  const getAssignmentTarget = (mediaKey: string) => {
+    return assignmentTargets[mediaKey] ?? (cases[0]?.case_id || '')
+  }
+
+  const handleAssignToCase = async (mediaKey: string) => {
+    const targetCaseId = getAssignmentTarget(mediaKey)
+    if (!targetCaseId) {
+      setError('Create a case before assigning transcripts.')
+      return
+    }
+
+    setAssigningTranscript(mediaKey)
+    setError('')
+    try {
+      const response = await authenticatedFetch(`/api/cases/${targetCaseId}/transcripts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ media_key: mediaKey }),
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to assign transcript to case')
+      }
+
+      await loadUncategorized()
+      await refreshCases()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to assign transcript to case')
+    } finally {
+      setAssigningTranscript(null)
     }
   }
 
@@ -229,10 +273,18 @@ export default function CasesPage() {
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              <div className="p-4 bg-amber-50 border-b border-amber-100">
+              <div className="p-4 bg-amber-50 border-b border-amber-100 flex items-center justify-between gap-3">
                 <p className="text-sm text-amber-800">
-                  <strong>Note:</strong> Uncategorized transcripts expire after 30 days. Assign them to a case to keep them permanently.
+                  <strong>Note:</strong> Uncategorized transcripts expire after 30 days.
                 </p>
+                <button
+                  onClick={() => setAssignModeEnabled((prev) => !prev)}
+                  disabled={cases.length === 0}
+                  className="btn-outline text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={cases.length === 0 ? 'Create a case first' : 'Assign transcripts to a case'}
+                >
+                  {assignModeEnabled ? 'Done' : 'Assign to Case'}
+                </button>
               </div>
               {uncategorizedTranscripts.map((transcript) => {
                 const daysLeft = getDaysUntilExpiry(transcript.expires_at)
@@ -254,7 +306,34 @@ export default function CasesPage() {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
+                      {assignModeEnabled && (
+                        <>
+                          <select
+                            value={getAssignmentTarget(transcript.media_key)}
+                            onChange={(e) =>
+                              setAssignmentTargets((prev) => ({
+                                ...prev,
+                                [transcript.media_key]: e.target.value,
+                              }))
+                            }
+                            className="input-field h-9 min-w-[180px] text-sm"
+                          >
+                            {cases.map((caseItem) => (
+                              <option key={caseItem.case_id} value={caseItem.case_id}>
+                                {caseItem.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => handleAssignToCase(transcript.media_key)}
+                            disabled={assigningTranscript === transcript.media_key || cases.length === 0}
+                            className="btn-primary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {assigningTranscript === transcript.media_key ? 'Assigning...' : 'Assign'}
+                          </button>
+                        </>
+                      )}
                       {daysLeft !== null && (
                         <span className={`text-sm px-2 py-1 rounded ${
                           daysLeft <= 7 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
@@ -304,16 +383,11 @@ export default function CasesPage() {
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">Delete Transcript Permanently?</h3>
                   <p className="mt-2 text-sm text-gray-600">
-                    This will permanently remove <span className="font-medium text-gray-900">&quot;{uncategorizedDeleteTarget.title_label}&quot;</span>,
-                    including saved snapshots and linked clip media. This action cannot be undone.
+                    This will permanently remove <span className="font-medium text-gray-900">&quot;{uncategorizedDeleteTarget.title_label}&quot;</span>.
+                    This action cannot be undone.
                   </p>
                 </div>
               </div>
-            </div>
-            <div className="p-6 bg-gray-50 border-b border-gray-100">
-              <p className="text-sm text-gray-700">
-                To keep this transcript, add it to a case instead.
-              </p>
             </div>
             <div className="p-6 flex justify-end gap-3">
               <button
