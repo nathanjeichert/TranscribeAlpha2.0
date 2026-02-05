@@ -42,11 +42,13 @@ PDF_MARGIN_RIGHT = 1.0 * inch
 PDF_MARGIN_TOP = 0.75 * inch
 PDF_MARGIN_BOTTOM = 0.75 * inch
 PDF_LINE_NUMBER_GUTTER = 0.7 * inch
-PDF_LINE_HEIGHT = 24.0  # 12pt Courier at double spacing
+# Slightly above strict double-spacing so the 25-line block fills the page more evenly.
+PDF_LINE_HEIGHT = 25.0
 PDF_TEXT_FONT = "Courier"
 PDF_TEXT_FONT_BOLD = "Courier-Bold"
 PDF_TEXT_SIZE = 12
 PDF_LINE_NUMBER_SIZE = 10
+PDF_PAGE_NUMBER_SIZE = 10
 PDF_BORDER_INSET = 0.33 * inch
 PDF_BORDER_GAP = 4.0
 
@@ -183,13 +185,16 @@ def _draw_transcript_page(
     pdf_canvas: canvas.Canvas,
     page_entries: List[dict],
     lines_per_page: int,
+    page_number: int,
 ) -> None:
     _draw_double_page_border(pdf_canvas)
 
-    if not page_entries:
-        return
-
-    top_baseline = PDF_PAGE_HEIGHT - PDF_MARGIN_TOP - PDF_TEXT_SIZE
+    content_top = PDF_PAGE_HEIGHT - PDF_MARGIN_TOP
+    content_bottom = PDF_MARGIN_BOTTOM
+    available_height = content_top - content_bottom
+    line_block_height = ((max(lines_per_page, 1) - 1) * PDF_LINE_HEIGHT) + PDF_TEXT_SIZE
+    vertical_padding = max((available_height - line_block_height) / 2.0, 0.0)
+    top_baseline = content_top - vertical_padding - PDF_TEXT_SIZE
     number_right_x = PDF_MARGIN_LEFT - 6.0
     text_x = PDF_MARGIN_LEFT
 
@@ -214,6 +219,12 @@ def _draw_transcript_page(
         pdf_canvas.setFillColor(colors.black)
         pdf_canvas.setFont(PDF_TEXT_FONT, PDF_TEXT_SIZE)
         pdf_canvas.drawString(text_x, y, line_text)
+
+    # Keep transcript page numbers aligned with OnCue/HTML logical page numbering.
+    page_number_y = PDF_BORDER_INSET + (PDF_BORDER_GAP / 2.0) + 8.0
+    pdf_canvas.setFillColor(colors.black)
+    pdf_canvas.setFont(PDF_TEXT_FONT, PDF_PAGE_NUMBER_SIZE)
+    pdf_canvas.drawCentredString(PDF_PAGE_WIDTH / 2.0, page_number_y, str(page_number))
 
 
 def create_pdf(title_data: dict, line_entries: List[dict], lines_per_page: int = 25) -> bytes:
@@ -240,7 +251,7 @@ def create_pdf(title_data: dict, line_entries: List[dict], lines_per_page: int =
         pages[1] = []
 
     for page_number in sorted(pages):
-        _draw_transcript_page(pdf_canvas, pages[page_number], lines_per_page)
+        _draw_transcript_page(pdf_canvas, pages[page_number], lines_per_page, page_number)
         pdf_canvas.showPage()
 
     pdf_canvas.save()
