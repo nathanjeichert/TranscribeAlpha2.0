@@ -83,6 +83,7 @@ try:
         BUCKET_NAME,
         add_transcript_to_case,
         check_media_exists,
+        delete_transcript_for_user,
         list_all_transcripts,
         load_current_transcript,
         prune_snapshots,
@@ -97,6 +98,7 @@ except ImportError:
             BUCKET_NAME,
             add_transcript_to_case,
             check_media_exists,
+            delete_transcript_for_user,
             list_all_transcripts,
             load_current_transcript,
             prune_snapshots,
@@ -110,6 +112,7 @@ except ImportError:
         BUCKET_NAME = storage_module.BUCKET_NAME
         add_transcript_to_case = storage_module.add_transcript_to_case
         check_media_exists = storage_module.check_media_exists
+        delete_transcript_for_user = storage_module.delete_transcript_for_user
         list_all_transcripts = storage_module.list_all_transcripts
         load_current_transcript = storage_module.load_current_transcript
         prune_snapshots = storage_module.prune_snapshots
@@ -560,6 +563,30 @@ async def get_transcript_by_media_key(media_key: str, current_user: dict = Depen
     except Exception as e:
         logger.error("Failed to load transcript %s: %s", media_key, e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/api/transcripts/by-key/{media_key}")
+async def delete_transcript_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
+    """Permanently delete a transcript, snapshots, and linked media artifacts."""
+    try:
+        deleted = delete_transcript_for_user(current_user["user_id"], media_key)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+
+        return JSONResponse(
+            {
+                "message": "Transcript deleted successfully",
+                "media_key": media_key,
+            }
+        )
+
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied to this transcript")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete transcript %s: %s", media_key, e)
+        raise HTTPException(status_code=500, detail="Failed to delete transcript")
 
 
 @router.put("/api/transcripts/by-key/{media_key}")

@@ -999,6 +999,75 @@ def _delete_transcript(media_key: str) -> None:
         logger.error("Failed to delete transcript %s: %s", media_key, e)
 
 
+def _delete_blob_if_exists(blob_name: Optional[str]) -> None:
+    if not blob_name:
+        return
+    try:
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(str(blob_name))
+        if blob.exists():
+            blob.delete()
+            logger.info("Deleted blob %s", blob_name)
+    except Exception as e:
+        logger.warning("Failed to delete blob %s: %s", blob_name, e)
+
+
+def delete_transcript_for_user(user_id: str, media_key: str) -> bool:
+    """
+    Permanently delete a transcript owned by user_id.
+    Also removes case references and linked media/clip blobs when available.
+    """
+    transcript = load_current_transcript(media_key)
+    if not transcript:
+        return False
+
+    transcript_user_id = transcript.get("user_id")
+    if transcript_user_id and transcript_user_id != user_id:
+        raise PermissionError(f"Transcript {media_key} does not belong to user {user_id}")
+
+    case_id = transcript.get("case_id")
+    if case_id:
+        try:
+            remove_transcript_from_case(user_id, case_id, media_key)
+        except Exception as e:
+            logger.warning("Failed to detach transcript %s from case %s: %s", media_key, case_id, e)
+
+    # Defensive cleanup in case a transcript reference exists in multiple cases.
+    try:
+        for case_meta in list_user_cases(user_id):
+            candidate_case_id = case_meta.get("case_id")
+            if not candidate_case_id or candidate_case_id == case_id:
+                continue
+            entries = get_case_transcripts(user_id, candidate_case_id)
+            if any(entry.get("media_key") == media_key for entry in entries):
+                try:
+                    remove_transcript_from_case(user_id, candidate_case_id, media_key)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to remove transcript %s from case %s during delete: %s",
+                        media_key,
+                        candidate_case_id,
+                        e,
+                    )
+    except Exception as e:
+        logger.warning("Failed scanning cases for transcript %s references: %s", media_key, e)
+
+    media_blob_name = transcript.get("media_blob_name")
+    clip_blob_names = set()
+    for clip_entry in transcript.get("clips") or []:
+        if isinstance(clip_entry, dict):
+            clip_blob_name = clip_entry.get("media_blob_name")
+            if isinstance(clip_blob_name, str) and clip_blob_name.strip():
+                clip_blob_names.add(clip_blob_name.strip())
+
+    _delete_transcript(media_key)
+    _delete_blob_if_exists(media_blob_name)
+    for clip_blob_name in clip_blob_names:
+        _delete_blob_if_exists(clip_blob_name)
+
+    return True
+
+
 def list_uncategorized_transcripts(user_id: str) -> List[dict]:
     """List transcripts not in any case (with TTL info)."""
     try:

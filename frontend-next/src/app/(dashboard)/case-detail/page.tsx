@@ -70,6 +70,8 @@ export default function CaseDetailPage() {
 
   // Remove transcript
   const [removingTranscript, setRemovingTranscript] = useState<string | null>(null)
+  const [transcriptDeleteTarget, setTranscriptDeleteTarget] = useState<TranscriptItem | null>(null)
+  const [deletingStoredTranscript, setDeletingStoredTranscript] = useState(false)
 
   const loadCase = useCallback(async () => {
     if (!caseId) {
@@ -156,6 +158,28 @@ export default function CaseDetailPage() {
       setError('Failed to remove transcript')
     } finally {
       setRemovingTranscript(null)
+    }
+  }
+
+  const handleDeleteStoredTranscript = async () => {
+    if (!transcriptDeleteTarget) return
+    setDeletingStoredTranscript(true)
+    try {
+      const response = await authenticatedFetch(
+        `/api/transcripts/by-key/${encodeURIComponent(transcriptDeleteTarget.media_key)}`,
+        { method: 'DELETE' }
+      )
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to delete transcript')
+      }
+      setTranscriptDeleteTarget(null)
+      await loadCase()
+      refreshCases()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete transcript')
+    } finally {
+      setDeletingStoredTranscript(false)
     }
   }
 
@@ -446,7 +470,7 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => handleRemoveTranscript(transcript.media_key)}
                     disabled={removingTranscript === transcript.media_key}
-                    className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    className="p-2 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
                     title="Remove from case"
                   >
                     {removingTranscript === transcript.media_key ? (
@@ -456,9 +480,20 @@ export default function CaseDetailPage() {
                       </svg>
                     ) : (
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                        <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        <path d="M6 12h12" />
+                        <path d="M8 7h8a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V9a2 2 0 012-2z" />
                       </svg>
                     )}
+                  </button>
+                  <button
+                    onClick={() => setTranscriptDeleteTarget(transcript)}
+                    disabled={deletingStoredTranscript || removingTranscript === transcript.media_key}
+                    className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Delete transcript permanently"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
                   </button>
                 </div>
               </div>
@@ -466,6 +501,53 @@ export default function CaseDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Transcript Delete Modal */}
+      {transcriptDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-100 bg-white shadow-2xl">
+            <div className="p-6 border-b border-gray-100">
+              <div className="flex items-start gap-4">
+                <div className="h-10 w-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center flex-shrink-0">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M12 9v4m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4c-.77-1.33-2.69-1.33-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Delete Transcript Permanently?</h3>
+                  <p className="mt-2 text-sm text-gray-600">
+                    This will permanently remove <span className="font-medium text-gray-900">&quot;{transcriptDeleteTarget.title_label}&quot;</span>,
+                    including saved snapshots and linked clip media. This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="p-6 bg-gray-50 border-b border-gray-100">
+              <p className="text-sm text-gray-700">
+                If you only want to keep the transcript but remove it from this case, use <span className="font-medium">Remove from case</span> instead.
+              </p>
+            </div>
+            <div className="p-6 flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  if (deletingStoredTranscript) return
+                  setTranscriptDeleteTarget(null)
+                }}
+                className="btn-outline px-4 py-2"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteStoredTranscript}
+                disabled={deletingStoredTranscript}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors disabled:opacity-70"
+              >
+                {deletingStoredTranscript ? 'Deleting...' : 'Delete Transcript'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete Modal */}
       {showDeleteModal && (
