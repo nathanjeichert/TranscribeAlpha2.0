@@ -1078,6 +1078,7 @@ export default function TranscriptEditor({
         lines: data.lines ?? prev.lines,
         docx_base64: data.docx_base64 ?? prev.docx_base64,
         oncue_xml_base64: data.oncue_xml_base64 ?? prev.oncue_xml_base64,
+        viewer_html_base64: data.viewer_html_base64 ?? prev.viewer_html_base64,
       } : prev)
 
       // Notify parent of the update (skip SYNC EFFECT reset since we already set isDirty/history)
@@ -1088,6 +1089,7 @@ export default function TranscriptEditor({
           lines: data.lines ?? sessionMeta.lines,
           docx_base64: data.docx_base64 ?? sessionMeta.docx_base64,
           oncue_xml_base64: data.oncue_xml_base64 ?? sessionMeta.oncue_xml_base64,
+          viewer_html_base64: data.viewer_html_base64 ?? sessionMeta.viewer_html_base64,
         })
       }
 

@@ -1059,7 +1059,7 @@ async def import_transcript(
                     line_payloads,
                     title_data,
                     duration_seconds,
-                    DEFAULT_LINES_PER_PAGE,
+                    lines_per_page,
                     media_filename,
                     media_content_type,
                     oncue_xml=oncue_xml,
