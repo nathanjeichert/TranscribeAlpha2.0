@@ -1011,7 +1011,7 @@ async def import_transcript(
             "DATE": input_date or title_data.get("DATE", ""),
             "TIME": input_time or title_data.get("TIME", ""),
             "LOCATION": location or title_data.get("LOCATION", ""),
-            "FILE_NAME": title_data.get("FILE_NAME") or filename or "imported",
+            "FILE_NAME": title_data.get("FILE_NAME") or media_file.filename or filename or "imported",
         }
         title_data.update(overrides)
 
@@ -1051,7 +1051,7 @@ async def import_transcript(
             media_filename = resolve_media_filename(
                 title_data,
                 media_blob_name,
-                fallback=filename or "media.mp4",
+                fallback=media_file.filename or filename or "media.mp4",
             )
             transcript_data.update(
                 build_variant_exports(

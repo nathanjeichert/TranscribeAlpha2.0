@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -323,9 +324,11 @@ def resolve_media_filename(title_data: dict, media_blob_name: Optional[str] = No
         name = title_data.get("FILE_NAME")
         if isinstance(name, str) and name.strip():
             return name.strip()
+    if isinstance(fallback, str) and fallback.strip():
+        return os.path.basename(fallback.strip())
     if media_blob_name:
-        return str(media_blob_name)
-    return fallback
+        return os.path.basename(str(media_blob_name).strip())
+    return "media.mp4"
 
 
 def build_variant_exports(
