@@ -218,12 +218,9 @@ def transcribe_with_assemblyai(
             "and informal speech (gonna, wanna, gotta). Do not omit or normalize disfluencies."
         )
 
-        # Prefer Universal-3 Pro but include Universal-2 fallback for broader language/model availability.
         config_kwargs = {
-            "speech_models": ["universal-3-pro", "universal-2"],
-            "language_detection": True,
+            "speech_models": ["universal-3-pro"],
             "prompt": prompt,
-            "disfluencies": True,
             "format_text": True,
             "speaker_labels": True,
             "speakers_expected": len(speaker_name_list) if speaker_name_list else None,
@@ -236,18 +233,6 @@ def transcribe_with_assemblyai(
             logger.warning("AssemblyAI SDK does not support `temperature`; upgrade to assemblyai>=0.50.0")
 
         return aai.TranscriptionConfig(**config_kwargs)
-
-    def _build_legacy_config() -> "aai.TranscriptionConfig":
-        # Final fallback for API/runtime combinations that reject speech_models.
-        raw_config = aai.RawTranscriptionConfig(
-            language_model="slam_1",
-            acoustic_model="slam_1",
-        )
-        return aai.TranscriptionConfig(
-            speaker_labels=True,
-            speakers_expected=len(speaker_name_list) if speaker_name_list else None,
-            raw_transcription_config=raw_config,
-        )
 
     try:
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
@@ -263,17 +248,7 @@ def transcribe_with_assemblyai(
         # Check for errors
         if transcript.status == aai.TranscriptStatus.error:
             primary_error = str(transcript.error or "unknown error")
-            logger.warning(
-                "AssemblyAI primary model request failed, retrying legacy config. error=%s",
-                primary_error,
-            )
-            legacy_config = _build_legacy_config()
-            transcript = transcriber.transcribe(audio_path, config=legacy_config)
-            if transcript.status == aai.TranscriptStatus.error:
-                legacy_error = str(transcript.error or "unknown error")
-                raise RuntimeError(
-                    f"AssemblyAI transcription failed (primary={primary_error}; legacy={legacy_error})"
-                )
+            raise RuntimeError(f"AssemblyAI transcription failed (universal-3-pro): {primary_error}")
 
         logger.info("AssemblyAI transcription completed successfully")
         logger.info(
