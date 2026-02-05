@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import inspect
 import time
 import re
 import tempfile
@@ -226,15 +227,22 @@ def transcribe_with_assemblyai(
             "and informal speech (gonna, wanna, gotta). Do not omit or normalize disfluencies."
         )
 
-        config = aai.TranscriptionConfig(
-            speech_models=["universal-3-pro"],
-            prompt=prompt,
-            temperature=0.1,
-            disfluencies=True,
-            format_text=True,
-            speaker_labels=True,
-            speakers_expected=len(speaker_name_list) if speaker_name_list else None,
-        )
+        config_kwargs = {
+            "speech_models": ["universal-3-pro"],
+            "prompt": prompt,
+            "disfluencies": True,
+            "format_text": True,
+            "speaker_labels": True,
+            "speakers_expected": len(speaker_name_list) if speaker_name_list else None,
+        }
+
+        # `temperature` is supported in newer SDK versions.
+        if "temperature" in inspect.signature(aai.TranscriptionConfig).parameters:
+            config_kwargs["temperature"] = 0.1
+        else:
+            logger.warning("AssemblyAI SDK does not support `temperature`; upgrade to assemblyai>=0.50.0")
+
+        config = aai.TranscriptionConfig(**config_kwargs)
 
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
         logger.info(
