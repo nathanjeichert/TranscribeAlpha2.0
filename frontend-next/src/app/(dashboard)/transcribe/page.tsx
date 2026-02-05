@@ -14,6 +14,7 @@ interface FormData {
   input_time: string
   location: string
   speaker_names: string
+  speakers_expected: string
   transcription_model: 'assemblyai' | 'gemini'
   case_id: string
 }
@@ -29,7 +30,7 @@ const wizardSteps: Array<{ key: WizardStep; label: string }> = [
 export default function TranscribePage() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { cases, refreshCases, refreshRecentTranscripts, setActiveMediaKey } = useDashboard()
+  const { cases, refreshCases, refreshRecentTranscripts, setActiveMediaKey, appVariant } = useDashboard()
 
   const [step, setStep] = useState<WizardStep>('upload')
   const [formData, setFormData] = useState<FormData>({
@@ -40,6 +41,7 @@ export default function TranscribePage() {
     input_time: '',
     location: '',
     speaker_names: '',
+    speakers_expected: '',
     transcription_model: 'assemblyai',
     case_id: '',
   })
@@ -206,6 +208,36 @@ export default function TranscribePage() {
       setIsLoading(false)
       setLoadingStage('')
     }
+  }
+
+  const downloadBase64File = (base64Data: string, filename: string, mimeType: string) => {
+    const byteCharacters = atob(base64Data)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i += 1) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    const byteArray = new Uint8Array(byteNumbers)
+    const blob = new Blob([byteArray], { type: mimeType })
+    const objectUrl = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(objectUrl)
+  }
+
+  const buildDownloadFilename = (extension: '.pdf' | '.xml' | '.html') => {
+    const baseLabel = formData.case_name.trim() || selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript'
+    const sanitizedBase = baseLabel
+      .replace(/[^a-zA-Z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'transcript'
+    const dateSuffix = formData.input_date ? `-${formData.input_date}` : ''
+    return `${sanitizedBase}${dateSuffix}${extension}`
   }
 
   const canProceedToConfig = selectedFile !== null
@@ -471,6 +503,22 @@ export default function TranscribePage() {
                   Separate with commas. Leave blank for automatic detection.
                 </p>
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Number of Speakers (optional)</label>
+                <input
+                  type="number"
+                  name="speakers_expected"
+                  value={formData.speakers_expected}
+                  onChange={handleInputChange}
+                  className="input-field"
+                  min={1}
+                  step={1}
+                  placeholder="e.g., 2"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  If provided, this is passed as <code>speakers_expected</code> for AssemblyAI diarization.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -522,7 +570,54 @@ export default function TranscribePage() {
                 <p className="text-gray-500 mb-6">
                   Generated {transcriptResult.lines?.length || 0} transcript lines
                 </p>
-                <div className="flex justify-center gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 max-w-xl mx-auto">
+                  <button
+                    onClick={() => {
+                      const pdfData = transcriptResult.pdf_base64 ?? transcriptResult.docx_base64
+                      if (pdfData) {
+                        downloadBase64File(pdfData, buildDownloadFilename('.pdf'), 'application/pdf')
+                      }
+                    }}
+                    disabled={!transcriptResult.pdf_base64 && !transcriptResult.docx_base64}
+                    className="btn-primary px-5 py-3"
+                  >
+                    Download PDF
+                  </button>
+                  {appVariant === 'oncue' ? (
+                    <button
+                      onClick={() => {
+                        if (transcriptResult.oncue_xml_base64) {
+                          downloadBase64File(
+                            transcriptResult.oncue_xml_base64,
+                            buildDownloadFilename('.xml'),
+                            'application/xml',
+                          )
+                        }
+                      }}
+                      disabled={!transcriptResult.oncue_xml_base64}
+                      className="btn-primary px-5 py-3"
+                    >
+                      Download OnCue XML
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (transcriptResult.viewer_html_base64) {
+                          downloadBase64File(
+                            transcriptResult.viewer_html_base64,
+                            buildDownloadFilename('.html'),
+                            'text/html',
+                          )
+                        }
+                      }}
+                      disabled={!transcriptResult.viewer_html_base64}
+                      className="btn-primary px-5 py-3"
+                    >
+                      Download HTML Viewer
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-col sm:flex-row justify-center items-center gap-3">
                   <button
                     onClick={() => router.push(routes.editor(transcriptResult.media_key))}
                     className="btn-primary px-6 py-3"
@@ -541,6 +636,7 @@ export default function TranscribePage() {
                         input_time: '',
                         location: '',
                         speaker_names: '',
+                        speakers_expected: '',
                         transcription_model: 'assemblyai',
                         case_id: formData.case_id,
                       })

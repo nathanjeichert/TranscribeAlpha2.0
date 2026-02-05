@@ -183,7 +183,7 @@ def get_audio_mime_type(ext: str) -> Optional[str]:
 
 def transcribe_with_assemblyai(
     audio_path: str,
-    speaker_name_list: Optional[List[str]] = None,
+    speakers_expected: Optional[int] = None,
     include_timestamps: bool = True
 ) -> Optional[List[TranscriptTurn]]:
     """
@@ -191,15 +191,14 @@ def transcribe_with_assemblyai(
 
     Args:
         audio_path: Path to audio file (local file path)
-        speaker_name_list: Optional list of speaker names to map to AssemblyAI's labels
+        speakers_expected: Optional exact speaker count for diarization
         include_timestamps: Whether to include timestamps in output
 
     Returns:
         List of TranscriptTurn objects with word-level timing data, or None on failure
 
     Note:
-        AssemblyAI labels speakers as "A", "B", "C", etc. This function maps them to
-        provided speaker names or generates generic identifiers like "SPEAKER A".
+        Speaker labels are preserved exactly as returned by AssemblyAI diarization.
     """
     if not ASSEMBLYAI_AVAILABLE:
         logger.error("AssemblyAI SDK not available")
@@ -212,10 +211,9 @@ def transcribe_with_assemblyai(
     def _build_primary_config() -> "aai.TranscriptionConfig":
         # Configure transcription with speaker diarization
         prompt = (
-            "Produce a verbatim legal transcript. Include every word from each speaker, "
-            "including disfluencies and fillers (um, uh, er, ah, hmm, mhm, like, you know, I mean), "
+            "Produce a verbatim transcript. Include disfluencies and fillers (um, uh, er, ah, hmm, mhm, like, you know, I mean), "
             "repetitions (I I, the the), restarts (I was- I went), stutters (th-that, b-but), "
-            "and informal speech (gonna, wanna, gotta). Do not omit or normalize disfluencies."
+            "and informal speech (gonna, wanna, gotta)."
         )
 
         config_kwargs = {
@@ -223,8 +221,9 @@ def transcribe_with_assemblyai(
             "prompt": prompt,
             "format_text": True,
             "speaker_labels": True,
-            "speakers_expected": len(speaker_name_list) if speaker_name_list else None,
         }
+        if speakers_expected is not None:
+            config_kwargs["speakers_expected"] = speakers_expected
 
         # `temperature` is supported in newer SDK versions.
         if "temperature" in inspect.signature(aai.TranscriptionConfig).parameters:
@@ -238,7 +237,7 @@ def transcribe_with_assemblyai(
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
         logger.info(
             "Speaker diarization enabled, expected speakers: %s",
-            len(speaker_name_list) if speaker_name_list else "auto-detect",
+            speakers_expected if speakers_expected is not None else "auto-detect",
         )
 
         transcriber = aai.Transcriber()
@@ -260,20 +259,10 @@ def transcribe_with_assemblyai(
         turns: List[TranscriptTurn] = []
 
         for utterance in transcript.utterances or []:
-            # Map AssemblyAI speaker labels (A, B, C...) to provided names
-            speaker_label = utterance.speaker  # e.g., "A", "B", "C"
-
-            if speaker_name_list and speaker_label:
-                try:
-                    speaker_idx = ord(speaker_label) - ord("A")
-                    if 0 <= speaker_idx < len(speaker_name_list):
-                        speaker_name = speaker_name_list[speaker_idx]
-                    else:
-                        speaker_name = f"SPEAKER {speaker_label}"
-                except (TypeError, ValueError):
-                    speaker_name = f"SPEAKER {speaker_label}"
-            else:
-                speaker_name = f"SPEAKER {speaker_label}" if speaker_label else "SPEAKER 1"
+            speaker_label = getattr(utterance, "speaker", None)
+            speaker_name = str(speaker_label).strip() if speaker_label is not None else ""
+            if not speaker_name:
+                speaker_name = "UNKNOWN"
 
             # Convert timestamp from milliseconds to [MM:SS] format for consistency
             timestamp_str = None
@@ -288,6 +277,10 @@ def transcribe_with_assemblyai(
             word_timestamps: List[WordTimestamp] = []
             if hasattr(utterance, "words") and utterance.words:
                 for word in utterance.words:
+                    word_speaker_raw = getattr(word, "speaker", None)
+                    word_speaker = str(word_speaker_raw).strip() if word_speaker_raw is not None else speaker_name
+                    if not word_speaker:
+                        word_speaker = speaker_name
                     word_timestamps.append(
                         WordTimestamp(
                             text=word.text,
@@ -296,7 +289,7 @@ def transcribe_with_assemblyai(
                             confidence=float(word.confidence)
                             if hasattr(word, "confidence") and word.confidence is not None
                             else None,
-                            speaker=speaker_name,
+                            speaker=word_speaker,
                         )
                     )
 
@@ -353,7 +346,7 @@ def get_media_duration(file_path: str) -> Optional[float]:
 def process_transcription(
     file_bytes: Optional[bytes],
     filename: str,
-    speaker_names: Optional[List[str]],
+    speakers_expected: Optional[int],
     title_data: dict,
     input_path: Optional[str] = None,
 ):
@@ -432,7 +425,7 @@ def process_transcription(
         if not ASSEMBLYAI_API_KEY:
             raise RuntimeError("ASSEMBLYAI_API_KEY environment variable not set")
 
-        turns = transcribe_with_assemblyai(audio_path, speaker_names)
+        turns = transcribe_with_assemblyai(audio_path, speakers_expected=speakers_expected)
 
         if not turns:
             raise RuntimeError("AssemblyAI transcription failed: no utterances returned")

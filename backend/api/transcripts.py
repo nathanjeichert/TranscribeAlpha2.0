@@ -214,6 +214,7 @@ async def transcribe(
     input_time: str = Form(""),
     location: str = Form(""),
     speaker_names: Optional[str] = Form(None),
+    speakers_expected: Optional[int] = Form(None),
     transcription_model: str = Form("assemblyai"),
     case_id: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
@@ -267,6 +268,9 @@ async def transcribe(
             else:
                 speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
 
+        if speakers_expected is not None and speakers_expected <= 0:
+            raise HTTPException(status_code=400, detail="speakers_expected must be a positive integer")
+
         # Generate stable MEDIA_ID for this transcript
         media_key = uuid.uuid4().hex
         title_data = {
@@ -306,7 +310,7 @@ async def transcribe(
                 turns, duration_seconds = process_transcription(
                     None,
                     file.filename,
-                    speaker_list,
+                    speakers_expected,
                     title_data,
                     input_path=temp_upload_path,
                 )
