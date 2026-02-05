@@ -25,7 +25,6 @@ export default function EditorPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string>('')
   const [mediaAvailable, setMediaAvailable] = useState(true)
-  const [checkingMedia, setCheckingMedia] = useState(false)
   const [showReimportModal, setShowReimportModal] = useState(false)
 
   // Get media_key from URL or context
@@ -55,6 +54,9 @@ export default function EditorPage() {
       if (data.media_blob_name) {
         setMediaUrl(`/api/media/${data.media_blob_name}`)
         setMediaContentType(data.media_content_type ?? undefined)
+      } else {
+        setMediaUrl('')
+        setMediaContentType(undefined)
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to load transcript')
@@ -65,18 +67,19 @@ export default function EditorPage() {
 
   // Check media availability
   const checkMediaStatus = useCallback(async (key: string) => {
-    setCheckingMedia(true)
     try {
       const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}/media-status`)
-      if (response.ok) {
-        const data = await response.json()
-        setMediaAvailable(data.media_available ?? data.available ?? true)
+      if (!response.ok) {
+        if (response.status === 404) {
+          setMediaAvailable(false)
+        }
+        return
       }
+      const data = await response.json()
+      setMediaAvailable(data.media_available ?? data.available ?? true)
     } catch {
       // Assume available if check fails
       setMediaAvailable(true)
-    } finally {
-      setCheckingMedia(false)
     }
   }, [])
 
@@ -220,6 +223,7 @@ export default function EditorPage() {
         buildFilename={generateFilename}
         onSessionChange={handleSessionChange}
         onSaveComplete={handleSaveComplete}
+        onRequestMediaImport={() => setShowReimportModal(true)}
       />
 
       {/* Reimport Modal */}

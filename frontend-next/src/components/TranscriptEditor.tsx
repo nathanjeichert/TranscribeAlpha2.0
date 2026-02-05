@@ -72,6 +72,7 @@ interface TranscriptEditorProps {
   buildFilename: (baseName: string, extension: string) => string
   onSessionChange: (session: EditorSessionResponse) => void
   onSaveComplete: (result: EditorSaveResponse) => void
+  onRequestMediaImport?: () => void
   onOpenHistory?: () => void
   onGeminiRefine?: () => void
   isGeminiBusy?: boolean
@@ -151,6 +152,7 @@ export default function TranscriptEditor({
   buildFilename,
   onSessionChange,
   onSaveComplete,
+  onRequestMediaImport,
   onOpenHistory,
   onGeminiRefine,
   isGeminiBusy,
@@ -182,13 +184,6 @@ export default function TranscriptEditor({
   // Skip resetting isDirty/history in SYNC EFFECT when we've just done a local update (e.g., resync)
   const skipSyncEffectReset = useRef(false)
 
-  const [importTranscriptFile, setImportTranscriptFile] = useState<File | null>(null)
-  const [importMediaFile, setImportMediaFile] = useState<File | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [importError, setImportError] = useState<string | null>(null)
-  const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const [localMediaPreviewUrl, setLocalMediaPreviewUrl] = useState<string | null>(null)
-  const [localMediaType, setLocalMediaType] = useState<string | undefined>(undefined)
   const [renameFrom, setRenameFrom] = useState('')
   const [renameTo, setRenameTo] = useState('')
   const [renameFeedback, setRenameFeedback] = useState<string | null>(null)
@@ -202,7 +197,6 @@ export default function TranscriptEditor({
   // Collapsible panel states
   const [showSettings, setShowSettings] = useState(false)
   const [showTools, setShowTools] = useState(false)
-  const [showImport, setShowImport] = useState(false)
   const [showDownloads, setShowDownloads] = useState(false)
 
   // Refs for auto-save to avoid resetting timer on every edit
@@ -215,13 +209,12 @@ export default function TranscriptEditor({
   const [resyncError, setResyncError] = useState<string | null>(null)
 
   const baseMediaUrl = useMemo(() => {
-    if (localMediaPreviewUrl) return localMediaPreviewUrl
     if (mediaUrl) return mediaUrl
     if (sessionMeta?.media_blob_name) {
       return `/api/media/${sessionMeta.media_blob_name}`
     }
     return undefined
-  }, [localMediaPreviewUrl, mediaUrl, sessionMeta])
+  }, [mediaUrl, sessionMeta])
 
   useEffect(() => {
     let isActive = true
@@ -242,8 +235,8 @@ export default function TranscriptEditor({
   }, [baseMediaUrl])
 
   const effectiveMediaType = useMemo(
-    () => localMediaType ?? mediaType ?? sessionMeta?.media_content_type ?? undefined,
-    [localMediaType, mediaType, sessionMeta],
+    () => mediaType ?? sessionMeta?.media_content_type ?? undefined,
+    [mediaType, sessionMeta],
   )
 
   const isVideo = useMemo(
@@ -252,7 +245,7 @@ export default function TranscriptEditor({
   )
 
   const handleMediaError = useCallback(async () => {
-    if (!baseMediaUrl || localMediaPreviewUrl) return
+    if (!baseMediaUrl) return
     const currentPlayer = isVideo ? videoRef.current : audioRef.current
     const resumeTime = currentPlayer?.currentTime ?? 0
     const wasPaused = currentPlayer?.paused ?? true
@@ -266,7 +259,7 @@ export default function TranscriptEditor({
         nextPlayer.play().catch(() => {})
       }
     }, 0)
-  }, [baseMediaUrl, isVideo, localMediaPreviewUrl])
+  }, [baseMediaUrl, isVideo])
 
   // Keep refs in sync with state for auto-save interval
   useEffect(() => { linesRef.current = lines }, [lines])
@@ -520,14 +513,6 @@ export default function TranscriptEditor({
     },
     [resolvedMediaUrl, isVideo],
   )
-
-  useEffect(() => {
-    return () => {
-      if (localMediaPreviewUrl) {
-        URL.revokeObjectURL(localMediaPreviewUrl)
-      }
-    }
-  }, [localMediaPreviewUrl])
 
   // beforeunload handler for cross-page persistence
   useEffect(() => {
@@ -976,68 +961,6 @@ export default function TranscriptEditor({
     onDownload(htmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
   }, [activeMediaKey, buildFilename, handleSave, isCriminal, isDirty, onDownload, regenerateViewerHtml, sessionMeta, viewerHtmlBase64])
 
-  const handleImport = useCallback(
-    async (event: React.FormEvent) => {
-      event.preventDefault()
-      if (!importTranscriptFile) {
-        setImportError(
-          isCriminal
-            ? 'Select a transcript file (HTML or DOCX (legacy)) to import.'
-            : 'Select a transcript file (XML or DOCX (legacy)) to import.',
-        )
-        return
-      }
-      if (!importMediaFile) {
-        setImportError('Media file is required for import.')
-        return
-      }
-      setImporting(true)
-      setImportError(null)
-      try {
-        const formData = new FormData()
-        formData.append('transcript_file', importTranscriptFile)
-        formData.append('media_file', importMediaFile)
-
-        const response = await authenticatedFetch('/api/transcripts/import', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to import transcript')
-        }
-        const data: EditorSessionResponse = await response.json()
-        setSessionMeta(data)
-        setLines(data.lines || [])
-        setHistory([])
-        setFuture([])
-        setIsDirty(false)
-        setActiveLineId(null)
-        setSelectedLineId(null)
-        setEditingField(null)
-        activeLineMarker.current = null
-        const importedMediaKey = data.media_key ?? data.title_data?.MEDIA_ID ?? data.media_blob_name ?? null
-        if (importedMediaKey) {
-          setActiveMediaKey(importedMediaKey)
-        }
-        onSessionChange(data)
-        setImportTranscriptFile(null)
-        setImportMediaFile(null)
-        // Also reset local media preview since we now use the imported session's media
-        if (localMediaPreviewUrl) {
-          URL.revokeObjectURL(localMediaPreviewUrl)
-        }
-        setLocalMediaPreviewUrl(null)
-        setLocalMediaType(undefined)
-      } catch (err: any) {
-        setImportError(err.message || 'Failed to import transcript')
-      } finally {
-        setImporting(false)
-      }
-    },
-    [importTranscriptFile, importMediaFile, isCriminal, localMediaPreviewUrl, onSessionChange],
-  )
-
   const handleResync = useCallback(async () => {
     if (!activeMediaKey) {
       setResyncError('No active transcript to re-sync.')
@@ -1115,43 +1038,6 @@ export default function TranscriptEditor({
   const expiresLabel = sessionMeta?.expires_at ? new Date(sessionMeta.expires_at).toLocaleString() : '—'
   const updatedLabel = sessionMeta?.updated_at ? new Date(sessionMeta.updated_at).toLocaleString() : '—'
 
-  // Handle page-level drag and drop for transcript/media import
-  const handlePageDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDraggingOver(true)
-  }, [])
-
-  const handlePageDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    // Only set to false if we're leaving the main container
-    if (e.currentTarget === e.target) {
-      setIsDraggingOver(false)
-    }
-  }, [])
-
-  const handlePageDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDraggingOver(false)
-    const files = Array.from(e.dataTransfer.files)
-    for (const file of files) {
-      const ext = file.name.toLowerCase().split('.').pop()
-      if (ext === 'xml' || ext === 'docx' || (isCriminal && (ext === 'html' || ext === 'htm'))) {
-        setImportTranscriptFile(file)
-      } else if (file.type.startsWith('audio/') || file.type.startsWith('video/')) {
-        setImportMediaFile(file)
-        if (localMediaPreviewUrl) {
-          URL.revokeObjectURL(localMediaPreviewUrl)
-        }
-        const url = URL.createObjectURL(file)
-        setLocalMediaPreviewUrl(url)
-        setLocalMediaType(file.type)
-      }
-    }
-  }, [isCriminal, localMediaPreviewUrl])
-
   const isTypingInField = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return false
     const tag = target.tagName
@@ -1206,23 +1092,7 @@ export default function TranscriptEditor({
   }, [handleSave, isDirty, isTypingInField, isVideo, saving, sessionMeta])
 
   return (
-    <div
-      className="space-y-6 relative"
-      onDragOver={handlePageDragOver}
-      onDragLeave={handlePageDragLeave}
-      onDrop={handlePageDrop}
-    >
-      {/* Page-level drop overlay */}
-      {isDraggingOver && (
-        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-primary-900/60 backdrop-blur-sm pointer-events-none">
-          <div className="rounded-2xl border-4 border-dashed border-white bg-primary-800/80 px-12 py-10 text-center shadow-2xl">
-            <p className="text-2xl font-bold text-white">Drop files to import</p>
-            <p className="mt-2 text-sm text-primary-200">
-              Transcript ({isCriminal ? 'HTML or DOCX (legacy)' : 'XML or DOCX (legacy)'}) + Media file
-            </p>
-          </div>
-        </div>
-      )}
+    <div className="space-y-6 relative">
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
         {/* Clean Header Toolbar */}
         <div className="flex items-center justify-between gap-4 p-4 border-b border-gray-200">
@@ -1388,11 +1258,21 @@ export default function TranscriptEditor({
                   )}
                 </div>
               ) : (
-                <div className="rounded-xl border-2 border-dashed border-gray-300 p-6 text-center text-sm text-gray-500">
+                <div className="rounded-xl border-2 border-dashed border-gray-300 p-8 text-center">
                   <svg className="w-8 h-8 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                     <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                   </svg>
-                  No media loaded
+                  <p className="text-sm font-medium text-gray-700">No media loaded</p>
+                  <p className="mt-1 text-sm text-gray-500">Import the source audio/video to enable playback, timing fixes, and clip creation.</p>
+                  {onRequestMediaImport && (
+                    <button
+                      type="button"
+                      onClick={onRequestMediaImport}
+                      className="mt-4 inline-flex items-center justify-center rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700"
+                    >
+                      Import Media File
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -1446,54 +1326,6 @@ export default function TranscriptEditor({
                       />
                       <button type="submit" className="w-full py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700" disabled={!lines.length}>
                         Rename All
-                      </button>
-                    </form>
-                  </div>
-                )}
-              </div>
-
-              {/* Collapsible: Import */}
-              <div className="rounded-xl border border-gray-200 overflow-hidden">
-                <button
-                  onClick={() => setShowImport(!showImport)}
-                  className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
-                >
-                  <span>Import Existing Transcript</span>
-                  <svg className={`w-4 h-4 text-gray-500 transition-transform ${showImport ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showImport && (
-                  <div className="p-4 border-t border-gray-200 bg-white space-y-3">
-                    <p className="text-sm text-gray-500">Drop files on page or select below</p>
-                    {importError && <p className="text-sm text-red-600">{importError}</p>}
-                    <form className="space-y-2" onSubmit={handleImport}>
-                      <div>
-                        <label className="text-sm text-gray-600">Transcript ({isCriminal ? 'HTML/DOCX (legacy)' : 'XML/DOCX (legacy)'})</label>
-                        <input
-                          type="file"
-                          accept={isCriminal ? '.html,.htm,.docx' : '.xml,.docx'}
-                          onChange={(e) => setImportTranscriptFile(e.target.files?.[0] ?? null)}
-                          className="mt-1 w-full text-sm file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-sm text-gray-600">Media File</label>
-                        <input
-                          type="file"
-                          accept="audio/*,video/*"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0] ?? null
-                            setImportMediaFile(file)
-                            if (localMediaPreviewUrl) URL.revokeObjectURL(localMediaPreviewUrl)
-                            if (file) { setLocalMediaPreviewUrl(URL.createObjectURL(file)); setLocalMediaType(file.type) }
-                            else { setLocalMediaPreviewUrl(null); setLocalMediaType(undefined) }
-                          }}
-                          className="mt-1 w-full text-sm file:mr-2 file:rounded file:border-0 file:bg-gray-100 file:px-2 file:py-1 file:text-gray-700"
-                        />
-                      </div>
-                      <button type="submit" className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50" disabled={importing || !importTranscriptFile || !importMediaFile}>
-                        {importing ? 'Importing…' : 'Import'}
                       </button>
                     </form>
                   </div>

@@ -47,6 +47,9 @@ export default function ClipCreatorPage() {
       if (data.media_blob_name) {
         setMediaUrl(`/api/media/${data.media_blob_name}`)
         setMediaType(data.media_content_type ?? undefined)
+      } else {
+        setMediaUrl('')
+        setMediaType(undefined)
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to load transcript')
@@ -58,10 +61,14 @@ export default function ClipCreatorPage() {
   const checkMediaStatus = useCallback(async (key: string) => {
     try {
       const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}/media-status`)
-      if (response.ok) {
-        const data = await response.json()
-        setMediaAvailable(data.media_available ?? data.available ?? true)
+      if (!response.ok) {
+        if (response.status === 404) {
+          setMediaAvailable(false)
+        }
+        return
       }
+      const data = await response.json()
+      setMediaAvailable(data.media_available ?? data.available ?? true)
     } catch {
       setMediaAvailable(true)
     }
