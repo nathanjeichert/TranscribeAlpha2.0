@@ -158,14 +158,27 @@ async def serve_media_file(file_id: str, request: Request):
         }
 
         if range_header and file_size:
-            range_match = re.match(r"bytes=(\d*)-(\d*)", range_header)
+            range_match = re.match(r"^bytes=(\d*)-(\d*)$", range_header.strip())
             if range_match:
-                if range_match.group(1):
-                    start = int(range_match.group(1))
-                if range_match.group(2):
-                    end = int(range_match.group(2))
+                start_str = range_match.group(1)
+                end_str = range_match.group(2)
+
+                if start_str:
+                    start = int(start_str)
+                    end = int(end_str) if end_str else file_size - 1
+                elif end_str:
+                    suffix_size = int(end_str)
+                    if suffix_size <= 0:
+                        raise HTTPException(status_code=416, detail="Invalid range header")
+                    start = max(file_size - suffix_size, 0)
+                    end = file_size - 1
+                else:
+                    raise HTTPException(status_code=416, detail="Invalid range header")
+
                 if end is None or end >= file_size:
                     end = file_size - 1
+                if start >= file_size:
+                    raise HTTPException(status_code=416, detail="Invalid range header")
                 if start > end:
                     raise HTTPException(status_code=416, detail="Invalid range header")
 
