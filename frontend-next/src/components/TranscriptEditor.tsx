@@ -1150,7 +1150,7 @@ export default function TranscriptEditor({
                 className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium"
                 onClick={onOpenHistory}
               >
-                History
+                Edit History
               </button>
             )}
             <button

@@ -14,6 +14,14 @@ type TranscriptData = EditorSessionResponse & {
   transcript_text?: string | null
 }
 
+interface SnapshotListItem {
+  snapshot_id: string
+  created_at?: string
+  is_manual_save?: boolean
+  line_count?: number
+  title_label?: string
+}
+
 export default function EditorPage() {
   const searchParams = useSearchParams()
   const { activeMediaKey, setActiveMediaKey, refreshRecentTranscripts, appVariant } = useDashboard()
@@ -26,6 +34,12 @@ export default function EditorPage() {
   const [error, setError] = useState<string>('')
   const [mediaAvailable, setMediaAvailable] = useState(true)
   const [showReimportModal, setShowReimportModal] = useState(false)
+  const [showHistoryModal, setShowHistoryModal] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+  const [historySnapshots, setHistorySnapshots] = useState<SnapshotListItem[]>([])
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
+  const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false)
 
   // Get media_key from URL or context
   useEffect(() => {
@@ -116,6 +130,68 @@ export default function EditorPage() {
     }
     setShowReimportModal(false)
   }, [mediaKey, loadTranscript])
+
+  const openHistoryModal = useCallback(async () => {
+    if (!mediaKey) return
+
+    setShowHistoryModal(true)
+    setHistoryLoading(true)
+    setHistoryError('')
+    setSelectedSnapshotId(null)
+
+    try {
+      const response = await authenticatedFetch(
+        `/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/history`,
+      )
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to load edit history')
+      }
+
+      const data = await response.json()
+      const snapshots: SnapshotListItem[] = (data.snapshots || [])
+        .sort((a: SnapshotListItem, b: SnapshotListItem) => {
+          const aTime = a.created_at ? new Date(a.created_at).getTime() : 0
+          const bTime = b.created_at ? new Date(b.created_at).getTime() : 0
+          return bTime - aTime
+        })
+        .slice(0, 10)
+      setHistorySnapshots(snapshots)
+    } catch (err: any) {
+      setHistoryError(err?.message || 'Failed to load edit history')
+      setHistorySnapshots([])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [mediaKey])
+
+  const handleLoadSnapshot = useCallback(async () => {
+    if (!mediaKey || !selectedSnapshotId) return
+
+    setIsLoadingSnapshot(true)
+    setHistoryError('')
+
+    try {
+      const response = await authenticatedFetch(
+        `/api/transcripts/by-key/${encodeURIComponent(mediaKey)}/restore/${selectedSnapshotId}`,
+        { method: 'POST' },
+      )
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to load snapshot')
+      }
+
+      const data: TranscriptData = await response.json()
+      handleSessionChange(data)
+      refreshRecentTranscripts()
+      setShowHistoryModal(false)
+      setSelectedSnapshotId(null)
+    } catch (err: any) {
+      setHistoryError(err?.message || 'Failed to load snapshot')
+    } finally {
+      setIsLoadingSnapshot(false)
+    }
+  }, [handleSessionChange, mediaKey, refreshRecentTranscripts, selectedSnapshotId])
 
   const downloadFile = (base64Data: string, filename: string, mimeType: string) => {
     const byteCharacters = atob(base64Data)
@@ -224,6 +300,7 @@ export default function EditorPage() {
         onSessionChange={handleSessionChange}
         onSaveComplete={handleSaveComplete}
         onRequestMediaImport={() => setShowReimportModal(true)}
+        onOpenHistory={openHistoryModal}
       />
 
       {/* Reimport Modal */}
@@ -233,6 +310,88 @@ export default function EditorPage() {
           onClose={() => setShowReimportModal(false)}
           onSuccess={handleMediaReimported}
         />
+      )}
+
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-3xl rounded-lg bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-primary-900">Edit History</h3>
+                <p className="text-sm text-primary-600">
+                  Showing the ten most recent snapshots for this transcript.
+                </p>
+              </div>
+              <button
+                className="rounded border border-primary-300 px-3 py-1 text-sm text-primary-700 hover:bg-primary-100"
+                onClick={() => setShowHistoryModal(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            {historyError && (
+              <div className="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {historyError}
+              </div>
+            )}
+
+            <div className="mt-4 max-h-[60vh] overflow-y-auto rounded border border-primary-100">
+              {historyLoading ? (
+                <div className="p-4 text-sm text-primary-600">Loading snapshots...</div>
+              ) : historySnapshots.length === 0 ? (
+                <div className="p-4 text-sm text-primary-700">
+                  No saved snapshots yet for this transcript.
+                </div>
+              ) : (
+                <ul>
+                  {historySnapshots.map((snapshot) => {
+                    const isSelected = selectedSnapshotId === snapshot.snapshot_id
+                    const itemClasses = [
+                      'w-full border-b border-primary-100 px-4 py-3 text-left transition-colors',
+                      isSelected ? 'bg-primary-100 hover:bg-primary-100 ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : 'hover:bg-primary-50',
+                    ]
+                    return (
+                      <li key={snapshot.snapshot_id}>
+                        <button
+                          type="button"
+                          className={itemClasses.join(' ')}
+                          onClick={() => setSelectedSnapshotId(snapshot.snapshot_id)}
+                        >
+                          <div className="font-semibold text-primary-900">
+                            {snapshot.title_label || transcriptData?.title_data?.CASE_NAME || mediaKey}
+                          </div>
+                          <div className="text-xs text-primary-600">
+                            {snapshot.created_at ? new Date(snapshot.created_at).toLocaleString() : 'Unknown time'}
+                          </div>
+                          <div className="text-xs text-primary-500">
+                            {snapshot.is_manual_save ? 'Manual save' : 'Autosave'} - {snapshot.line_count ?? 0} lines
+                          </div>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+
+            <div className="mt-4 flex justify-end gap-3">
+              <button
+                className="rounded border border-primary-300 px-4 py-2 text-sm text-primary-700 hover:bg-primary-100"
+                onClick={() => setShowHistoryModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 bg-primary-600 hover:bg-primary-700"
+                onClick={handleLoadSnapshot}
+                disabled={!selectedSnapshotId || historyLoading || isLoadingSnapshot}
+              >
+                {isLoadingSnapshot ? 'Loading...' : 'Load Snapshot'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
