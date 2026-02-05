@@ -209,7 +209,7 @@ def transcribe_with_assemblyai(
         logger.error("ASSEMBLYAI_API_KEY not configured")
         return None
 
-    try:
+    def _build_primary_config() -> "aai.TranscriptionConfig":
         # Configure transcription with speaker diarization
         prompt = (
             "Produce a verbatim legal transcript. Include every word from each speaker, "
@@ -218,8 +218,10 @@ def transcribe_with_assemblyai(
             "and informal speech (gonna, wanna, gotta). Do not omit or normalize disfluencies."
         )
 
+        # Prefer Universal-3 Pro but include Universal-2 fallback for broader language/model availability.
         config_kwargs = {
-            "speech_models": ["universal-3-pro"],
+            "speech_models": ["universal-3-pro", "universal-2"],
+            "language_detection": True,
             "prompt": prompt,
             "disfluencies": True,
             "format_text": True,
@@ -233,22 +235,45 @@ def transcribe_with_assemblyai(
         else:
             logger.warning("AssemblyAI SDK does not support `temperature`; upgrade to assemblyai>=0.50.0")
 
-        config = aai.TranscriptionConfig(**config_kwargs)
+        return aai.TranscriptionConfig(**config_kwargs)
 
+    def _build_legacy_config() -> "aai.TranscriptionConfig":
+        # Final fallback for API/runtime combinations that reject speech_models.
+        raw_config = aai.RawTranscriptionConfig(
+            language_model="slam_1",
+            acoustic_model="slam_1",
+        )
+        return aai.TranscriptionConfig(
+            speaker_labels=True,
+            speakers_expected=len(speaker_name_list) if speaker_name_list else None,
+            raw_transcription_config=raw_config,
+        )
+
+    try:
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
         logger.info(
             "Speaker diarization enabled, expected speakers: %s",
             len(speaker_name_list) if speaker_name_list else "auto-detect",
         )
 
-        # Transcribe audio file
         transcriber = aai.Transcriber()
+        config = _build_primary_config()
         transcript = transcriber.transcribe(audio_path, config=config)
 
         # Check for errors
         if transcript.status == aai.TranscriptStatus.error:
-            logger.error("AssemblyAI transcription failed: %s", transcript.error)
-            return None
+            primary_error = str(transcript.error or "unknown error")
+            logger.warning(
+                "AssemblyAI primary model request failed, retrying legacy config. error=%s",
+                primary_error,
+            )
+            legacy_config = _build_legacy_config()
+            transcript = transcriber.transcribe(audio_path, config=legacy_config)
+            if transcript.status == aai.TranscriptStatus.error:
+                legacy_error = str(transcript.error or "unknown error")
+                raise RuntimeError(
+                    f"AssemblyAI transcription failed (primary={primary_error}; legacy={legacy_error})"
+                )
 
         logger.info("AssemblyAI transcription completed successfully")
         logger.info(
@@ -319,7 +344,7 @@ def transcribe_with_assemblyai(
         import traceback
 
         logger.error(traceback.format_exc())
-        return None
+        raise RuntimeError(f"AssemblyAI transcription error: {e}") from e
 
 
 def get_media_duration(file_path: str) -> Optional[float]:
@@ -372,14 +397,18 @@ def process_transcription(
         if ext in SUPPORTED_VIDEO_TYPES:
             output_audio_filename = f"{os.path.splitext(os.path.basename(filename))[0]}.mp3"
             output_path = os.path.join(temp_dir, output_audio_filename)
-            audio_path = convert_video_to_audio(source_path, output_path)
-            ext = "mp3"
+            converted_audio_path = convert_video_to_audio(source_path, output_path)
+            if converted_audio_path:
+                audio_path = converted_audio_path
+                ext = "mp3"
+            else:
+                # Fallback to source media if conversion fails; AssemblyAI accepts many video containers directly.
+                logger.warning("Video conversion failed for %s; using source media for transcription", filename)
+                audio_path = source_path
         elif ext in SUPPORTED_AUDIO_TYPES:
             audio_path = source_path
         else:
             raise ValueError("Unsupported file type")
-
-        mime_type = get_audio_mime_type(ext)
 
         # ------------------------------------------------------------------
         # Retrieve media duration – prefer direct ffprobe for robustness
@@ -400,10 +429,14 @@ def process_transcription(
                         time.sleep(1)
                     else:
                         raise e
-            if audio_segment is None:
-                raise RuntimeError("Failed to load audio file after multiple attempts")
+            if audio_segment is not None:
+                duration_seconds = len(audio_segment) / 1000.0
+            else:
+                duration_seconds = None
 
-            duration_seconds = len(audio_segment) / 1000.0
+        if duration_seconds is None:
+            logger.warning("Unable to determine media duration for %s; defaulting to 0s", filename)
+            duration_seconds = 0.0
 
         # ------------------------------------------------------------------
         # Format and store duration for title data
@@ -427,6 +460,6 @@ def process_transcription(
         turns = transcribe_with_assemblyai(audio_path, speaker_names)
 
         if not turns:
-            raise RuntimeError("AssemblyAI transcription failed")
+            raise RuntimeError("AssemblyAI transcription failed: no utterances returned")
 
         return turns, duration_seconds
