@@ -44,6 +44,7 @@ interface DashboardContextValue {
 
   // App variant
   appVariant: 'oncue' | 'criminal'
+  variantResolved: boolean
 }
 
 const DashboardContext = createContext<DashboardContextValue | null>(null)
@@ -174,6 +175,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         activeMediaKey,
         setActiveMediaKey,
         appVariant,
+        variantResolved,
       }}
     >
       {children}

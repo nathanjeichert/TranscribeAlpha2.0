@@ -10,7 +10,7 @@ import { confirmQueueNavigation, isQueueNavigationGuardActive } from '@/utils/na
 const SIDEBAR_COLLAPSED_KEY = 'dashboard_sidebar_collapsed'
 
 function WorkspaceGate({ children }: { children: React.ReactNode }) {
-  const { appVariant } = useDashboard()
+  const { appVariant, variantResolved } = useDashboard()
   const [ready, setReady] = useState(false)
   const [checking, setChecking] = useState(true)
   const [showSetup, setShowSetup] = useState(false)
@@ -24,6 +24,9 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
   }, [appVariant])
 
   const checkWorkspace = useCallback(async () => {
+    // Don't make any decisions until we know the real variant
+    if (!variantResolved) return
+
     if (appVariant !== 'criminal') {
       setReady(true)
       setChecking(false)
@@ -41,11 +44,26 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
     }
     setShowSetup(true)
     setChecking(false)
-  }, [appVariant])
+  }, [appVariant, variantResolved])
 
   useEffect(() => {
     checkWorkspace()
   }, [checkWorkspace])
+
+  if (!variantResolved || (appVariant !== 'criminal' && !variantResolved)) {
+    // Still loading config — show spinner
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="w-12 h-12 mx-auto mb-4 relative">
+            <div className="absolute inset-0 border-4 border-primary-200 rounded-full" />
+            <div className="absolute inset-0 border-4 border-primary-600 rounded-full border-t-transparent animate-spin" />
+          </div>
+          <p className="text-gray-500">Loading...</p>
+        </div>
+      </div>
+    )
+  }
 
   if (appVariant !== 'criminal') return <>{children}</>
 
