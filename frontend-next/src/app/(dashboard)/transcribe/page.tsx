@@ -75,7 +75,7 @@ const wizardSteps: Array<{ key: WizardStep; label: string }> = [
   { key: 'transcribe', label: 'Results' },
 ]
 
-const MAX_BATCH_FILES = 10
+const MAX_BATCH_FILES = 50
 const RESULTS_PREVIEW_LIMIT = 10
 const CASE_USE_BATCH = '__batch__'
 const CASE_UNCATEGORIZED = '__uncategorized__'
