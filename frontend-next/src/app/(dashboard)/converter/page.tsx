@@ -3,6 +3,7 @@
 import JSZip from 'jszip'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
+import { authenticatedFetch } from '@/utils/auth'
 import {
   FFmpegCanceledError,
   cancelActiveFFmpegJob,
@@ -258,12 +259,62 @@ export default function ConverterPage() {
             continue
           }
 
-          const converted = await convertToPlayable(item.file, (ratio) => {
+          let converted: File | null = null
+
+          try {
+            converted = await convertToPlayable(item.file, (ratio) => {
+              updateItem(item.id, {
+                status: 'converting',
+                progress: ratio,
+              })
+            })
+          } catch (clientError) {
+            if (clientError instanceof FFmpegCanceledError || stopRequestedRef.current) {
+              updateItem(item.id, {
+                status: 'failed',
+                error: 'Conversion canceled.',
+              })
+              break
+            }
+
+            // Client-side conversion failed — fall back to server-side ffmpeg
             updateItem(item.id, {
               status: 'converting',
-              progress: ratio,
+              progress: 0.1,
+              error: '',
             })
-          })
+
+            const formData = new FormData()
+            formData.append('file', item.file)
+            try {
+              const resp = await authenticatedFetch('/api/convert', {
+                method: 'POST',
+                body: formData,
+              })
+              if (!resp.ok) {
+                const detail = await resp.text().catch(() => resp.statusText)
+                throw new Error(`Server conversion failed: ${detail}`)
+              }
+              const blob = await resp.blob()
+              const origName = item.file.name
+              const dot = origName.lastIndexOf('.')
+              const base = dot !== -1 ? origName.slice(0, dot) : origName
+              const isVideo = (item.file.type || '').startsWith('video/')
+              const ext = isVideo ? '.mp4' : '.wav'
+              converted = new File([blob], `${base}_converted${ext}`, {
+                type: isVideo ? 'video/mp4' : 'audio/wav',
+              })
+            } catch (serverError) {
+              const message = serverError instanceof Error ? serverError.message : 'Conversion failed.'
+              updateItem(item.id, {
+                status: 'failed',
+                error: message,
+              })
+              continue
+            }
+          }
+
+          if (!converted) continue
 
           try {
             await writeConvertedToCache(item.file, converted)
@@ -277,14 +328,6 @@ export default function ConverterPage() {
             progress: 1,
           })
         } catch (error) {
-          if (error instanceof FFmpegCanceledError || stopRequestedRef.current) {
-            updateItem(item.id, {
-              status: 'failed',
-              error: 'Conversion canceled.',
-            })
-            break
-          }
-
           const message = error instanceof Error ? error.message : 'Conversion failed.'
           updateItem(item.id, {
             status: 'failed',

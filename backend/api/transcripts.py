@@ -230,6 +230,75 @@ async def get_viewer_template_endpoint(current_user: dict = Depends(get_current_
     return Response(content=template_html, media_type="text/html")
 
 
+@router.post("/api/convert")
+async def convert_media(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Convert a proprietary audio/video file to a browser-playable format using server-side ffmpeg.
+
+    Accepts any file that ffmpeg can decode (including G.729 WAV) and returns
+    a PCM WAV (audio) or MP4 (video) suitable for browser playback.
+    """
+    import shutil
+    import subprocess
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        raise HTTPException(status_code=500, detail="ffmpeg is not installed on the server")
+
+    content_type = file.content_type or ""
+    is_video = content_type.startswith("video/")
+    out_ext = ".mp4" if is_video else ".wav"
+    out_mime = "video/mp4" if is_video else "audio/wav"
+
+    with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file.filename or "input")[1] or ".wav", delete=False) as tmp_in:
+        tmp_in_path = tmp_in.name
+        chunk = await file.read(64 * 1024 * 1024)  # 64 MB max
+        tmp_in.write(chunk)
+        remainder = await file.read(1)
+        if remainder:
+            os.unlink(tmp_in_path)
+            raise HTTPException(status_code=413, detail="File too large (max 64 MB)")
+
+    tmp_out_path = tmp_in_path + out_ext
+    try:
+        if is_video:
+            cmd = [ffmpeg_path, "-y", "-i", tmp_in_path, "-c:v", "libx264", "-preset", "fast",
+                   "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", tmp_out_path]
+        else:
+            cmd = [ffmpeg_path, "-y", "-i", tmp_in_path, "-acodec", "pcm_s16le", tmp_out_path]
+
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf-8", errors="replace")[-500:]
+            raise HTTPException(status_code=422, detail=f"ffmpeg conversion failed: {stderr_text}")
+
+        out_size = os.path.getsize(tmp_out_path)
+        if out_size == 0:
+            raise HTTPException(status_code=422, detail="ffmpeg produced an empty output file")
+
+        orig_name = file.filename or "converted"
+        dot = orig_name.rfind(".")
+        base = orig_name[:dot] if dot != -1 else orig_name
+        out_filename = f"{base}_converted{out_ext}"
+
+        with open(tmp_out_path, "rb") as f:
+            out_bytes = f.read()
+
+        return Response(
+            content=out_bytes,
+            media_type=out_mime,
+            headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
+        )
+    finally:
+        for p in (tmp_in_path, tmp_out_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
 @router.post("/api/format-pdf")
 async def format_pdf_clip_excerpt(
     payload: dict = Body(...),

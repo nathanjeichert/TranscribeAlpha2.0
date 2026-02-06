@@ -667,11 +667,14 @@ export default function TranscribePage() {
           } satisfies RequestFailure
         }
 
-        const message = error instanceof Error ? error.message : 'Media conversion failed.'
-        throw {
-          message,
-          retryable: false,
-        } satisfies RequestFailure
+        // Client-side conversion failed (e.g. G.729 not in WASM build).
+        // Fall back to sending the original file — the server has full
+        // ffmpeg and can handle the conversion before transcription.
+        updateQueueItem(item.id, {
+          status: 'transcribing',
+          stageText: `Browser conversion unavailable for ${codecLabel}. Sending original to server...`,
+        })
+        return item.file
       }
     },
     [appVariant, updateQueueItem],
