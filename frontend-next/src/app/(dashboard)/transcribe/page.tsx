@@ -7,7 +7,11 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { authenticatedFetch, getAuthHeaders } from '@/utils/auth'
 import { useDashboard } from '@/context/DashboardContext'
 import { routes } from '@/utils/routes'
-import { guardedPush, setQueueNavigationGuardActive } from '@/utils/navigationGuard'
+import {
+  confirmQueueNavigation,
+  guardedPush,
+  setQueueNavigationGuardActive,
+} from '@/utils/navigationGuard'
 
 interface FormData {
   case_name: string
@@ -134,6 +138,7 @@ export default function TranscribePage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const queueRef = useRef<QueueItem[]>([])
   const stopAfterCurrentRef = useRef(false)
+  const skipNextPopstateRef = useRef(false)
 
   useEffect(() => {
     queueRef.current = queue
@@ -158,6 +163,30 @@ export default function TranscribePage() {
     }
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
+  }, [isProcessing])
+
+  useEffect(() => {
+    if (!isProcessing) return
+
+    const handlePopstate = () => {
+      if (skipNextPopstateRef.current) {
+        skipNextPopstateRef.current = false
+        return
+      }
+
+      if (confirmQueueNavigation()) {
+        return
+      }
+
+      skipNextPopstateRef.current = true
+      window.history.go(1)
+    }
+
+    window.addEventListener('popstate', handlePopstate)
+    return () => {
+      window.removeEventListener('popstate', handlePopstate)
+      skipNextPopstateRef.current = false
+    }
   }, [isProcessing])
 
   useEffect(() => {
