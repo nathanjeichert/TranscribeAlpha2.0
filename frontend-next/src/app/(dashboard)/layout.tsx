@@ -10,7 +10,7 @@ import { confirmQueueNavigation, isQueueNavigationGuardActive } from '@/utils/na
 const SIDEBAR_COLLAPSED_KEY = 'dashboard_sidebar_collapsed'
 
 function WorkspaceGate({ children }: { children: React.ReactNode }) {
-  const { appVariant, variantResolved } = useDashboard()
+  const { appVariant, variantResolved, refreshCases, refreshRecentTranscripts } = useDashboard()
   const [ready, setReady] = useState(false)
   const [checking, setChecking] = useState(true)
   const [showSetup, setShowSetup] = useState(false)
@@ -39,12 +39,13 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
       if (handle) {
         setReady(true)
         setChecking(false)
+        void Promise.allSettled([refreshCases(), refreshRecentTranscripts()])
         return
       }
     }
     setShowSetup(true)
     setChecking(false)
-  }, [appVariant, variantResolved])
+  }, [appVariant, refreshCases, refreshRecentTranscripts, variantResolved])
 
   useEffect(() => {
     checkWorkspace()
@@ -87,6 +88,7 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
         onComplete={() => {
           setReady(true)
           setShowSetup(false)
+          void Promise.allSettled([refreshCases(), refreshRecentTranscripts()])
         }}
       />
     )
