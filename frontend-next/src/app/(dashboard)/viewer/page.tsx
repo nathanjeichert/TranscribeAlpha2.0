@@ -12,6 +12,7 @@ import {
   listCaseClips,
   listCaseSequences,
   saveClip,
+  saveTranscript,
   saveSequence,
   type ClipRecord,
   type ClipSequenceEntry,
@@ -64,6 +65,10 @@ type SequenceState =
   | { phase: 'finished'; sequenceId: string }
 
 const SEARCH_TOLERANCE = 0.05
+const PROGRAMMATIC_SCROLL_RESET_MS = 700
+const PAGE_RENDER_WINDOW = 2
+const PAGE_LINE_HEIGHT_ESTIMATE_PX = 34
+const PAGE_MIN_PLACEHOLDER_HEIGHT_PX = 180
 
 const formatClock = (seconds: number) => {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -223,6 +228,7 @@ export default function ViewerPage() {
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchCursor, setSearchCursor] = useState(0)
+  const [viewportPageIndex, setViewportPageIndex] = useState(0)
 
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -243,6 +249,7 @@ export default function ViewerPage() {
 
   const [newSequenceName, setNewSequenceName] = useState('')
   const [selectedSequenceId, setSelectedSequenceId] = useState<string | null>(null)
+  const [sequenceNameDrafts, setSequenceNameDrafts] = useState<Record<string, string>>({})
   const [sequenceError, setSequenceError] = useState('')
 
   const [presentationMode, setPresentationMode] = useState(false)
@@ -256,7 +263,9 @@ export default function ViewerPage() {
   const viewerShellRef = useRef<HTMLDivElement>(null)
   const transcriptScrollRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const exportMenuRef = useRef<HTMLDivElement>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
   const blobUrlRef = useRef<string | null>(null)
   const programmaticScrollRef = useRef(false)
@@ -290,6 +299,16 @@ export default function ViewerPage() {
       .map(([page, lines]) => ({ page, lines }))
   }, [transcript])
 
+  const linePageIndexMap = useMemo(() => {
+    const map = new Map<string, number>()
+    groupedPages.forEach((pageBlock, pageIndex) => {
+      pageBlock.lines.forEach((line) => {
+        map.set(line.id, pageIndex)
+      })
+    })
+    return map
+  }, [groupedPages])
+
   const searchMatches = useMemo(() => {
     if (!transcript || !searchQuery.trim()) return [] as string[]
     const lower = searchQuery.toLowerCase()
@@ -301,6 +320,8 @@ export default function ViewerPage() {
       })
       .map((line) => line.id)
   }, [transcript, searchQuery])
+
+  const searchMatchSet = useMemo(() => new Set(searchMatches), [searchMatches])
 
   const visibleClips = useMemo(() => {
     const sorted = [...clips].sort((a, b) => {
@@ -329,6 +350,26 @@ export default function ViewerPage() {
     ? searchMatches[((searchCursor % searchMatches.length) + searchMatches.length) % searchMatches.length]
     : null
 
+  const renderedPageIndexes = useMemo(() => {
+    const indexes = new Set<number>()
+    if (!groupedPages.length) return indexes
+
+    const start = Math.max(0, viewportPageIndex - PAGE_RENDER_WINDOW)
+    const end = Math.min(groupedPages.length - 1, viewportPageIndex + PAGE_RENDER_WINDOW)
+    for (let idx = start; idx <= end; idx += 1) {
+      indexes.add(idx)
+    }
+
+    const focusLineIds = [activeLineId, selectedLineId, currentSearchLineId]
+    focusLineIds.forEach((lineId) => {
+      if (!lineId) return
+      const pageIndex = linePageIndexMap.get(lineId)
+      if (typeof pageIndex === 'number') indexes.add(pageIndex)
+    })
+
+    return indexes
+  }, [activeLineId, currentSearchLineId, groupedPages.length, linePageIndexMap, selectedLineId, viewportPageIndex])
+
   const getPlayerElement = useCallback((): HTMLMediaElement | null => {
     return isVideo ? videoRef.current : audioRef.current
   }, [isVideo])
@@ -349,6 +390,8 @@ export default function ViewerPage() {
   }, [])
 
   const loadMediaForTranscript = useCallback(async (record: ViewerTranscript) => {
+    if (appVariant !== 'criminal') return
+
     revokeMediaUrl()
     setMediaLoading(true)
 
@@ -363,9 +406,15 @@ export default function ViewerPage() {
       setMediaAvailable(false)
     }
     setMediaLoading(false)
-  }, [revokeMediaUrl])
+  }, [appVariant, revokeMediaUrl])
 
   const loadCaseArtifacts = useCallback(async (caseId: string) => {
+    if (appVariant !== 'criminal') {
+      setClips([])
+      setSequences([])
+      return
+    }
+
     setClipsLoading(true)
     try {
       const [caseClips, caseSequences] = await Promise.all([
@@ -377,9 +426,14 @@ export default function ViewerPage() {
     } finally {
       setClipsLoading(false)
     }
-  }, [])
+  }, [appVariant])
 
   const loadTranscriptByKey = useCallback(async (mediaKey: string, silent = false) => {
+    if (appVariant !== 'criminal') {
+      if (!silent) setIsLoading(false)
+      return null
+    }
+
     if (!silent) {
       setIsLoading(true)
       setError('')
@@ -413,7 +467,7 @@ export default function ViewerPage() {
     } finally {
       if (!silent) setIsLoading(false)
     }
-  }, [loadMediaForTranscript, setActiveMediaKey])
+  }, [appVariant, loadMediaForTranscript, setActiveMediaKey])
 
   useEffect(() => {
     if (queryMediaKey) {
@@ -426,22 +480,50 @@ export default function ViewerPage() {
   }, [queryMediaKey, activeMediaKey])
 
   useEffect(() => {
+    if (appVariant !== 'criminal') {
+      setIsLoading(false)
+      return
+    }
+
     if (!currentMediaKey) {
       setIsLoading(false)
       return
     }
 
     loadTranscriptByKey(currentMediaKey)
-  }, [currentMediaKey, loadTranscriptByKey])
+  }, [appVariant, currentMediaKey, loadTranscriptByKey])
 
   useEffect(() => {
+    if (appVariant !== 'criminal') {
+      setClips([])
+      setSequences([])
+      return
+    }
+
     if (!effectiveCaseId) {
       setClips([])
       setSequences([])
       return
     }
     loadCaseArtifacts(effectiveCaseId)
-  }, [effectiveCaseId, loadCaseArtifacts])
+  }, [appVariant, effectiveCaseId, loadCaseArtifacts])
+
+  useEffect(() => {
+    setSequenceNameDrafts((prev) => {
+      const next: Record<string, string> = {}
+      sequences.forEach((sequence) => {
+        next[sequence.sequence_id] = prev[sequence.sequence_id] ?? sequence.name
+      })
+      return next
+    })
+  }, [sequences])
+
+  useEffect(() => {
+    setViewportPageIndex((prev) => {
+      if (!groupedPages.length) return 0
+      return Math.min(prev, groupedPages.length - 1)
+    })
+  }, [groupedPages.length])
 
   useEffect(() => {
     return () => {
@@ -463,6 +545,11 @@ export default function ViewerPage() {
       if (value >= line.start && value < line.end) return line
       if (value < line.start) high = mid - 1
       else low = mid + 1
+    }
+
+    for (let index = Math.min(high, transcript.lines.length - 1); index >= 0; index -= 1) {
+      const line = transcript.lines[index]
+      if (value + SEARCH_TOLERANCE >= line.end) return line
     }
 
     return null
@@ -491,7 +578,7 @@ export default function ViewerPage() {
     setShowReturnToCurrent(false)
     window.setTimeout(() => {
       programmaticScrollRef.current = false
-    }, 250)
+    }, PROGRAMMATIC_SCROLL_RESET_MS)
   }, [activeLineId])
 
   useEffect(() => {
@@ -503,7 +590,7 @@ export default function ViewerPage() {
     target.scrollIntoView({ behavior: 'smooth', block: 'center' })
     window.setTimeout(() => {
       programmaticScrollRef.current = false
-    }, 250)
+    }, PROGRAMMATIC_SCROLL_RESET_MS)
   }, [activeLineId, autoFollow])
 
   useEffect(() => {
@@ -521,6 +608,48 @@ export default function ViewerPage() {
     container.addEventListener('scroll', onScroll)
     return () => container.removeEventListener('scroll', onScroll)
   }, [autoFollow])
+
+  useEffect(() => {
+    const container = transcriptScrollRef.current
+    if (!container || !groupedPages.length) return
+
+    let rafId: number | null = null
+    const updateViewportPage = () => {
+      rafId = null
+      const viewportCenter = container.scrollTop + (container.clientHeight / 2)
+      let closestPageIndex = 0
+      let closestDistance = Number.POSITIVE_INFINITY
+
+      groupedPages.forEach((pageBlock, pageIndex) => {
+        const pageNode = pageRefs.current[pageBlock.page]
+        if (!pageNode) return
+        const pageCenter = pageNode.offsetTop + (pageNode.offsetHeight / 2)
+        const distance = Math.abs(pageCenter - viewportCenter)
+        if (distance < closestDistance) {
+          closestDistance = distance
+          closestPageIndex = pageIndex
+        }
+      })
+
+      setViewportPageIndex((prev) => (prev === closestPageIndex ? prev : closestPageIndex))
+    }
+
+    const requestUpdate = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(updateViewportPage)
+    }
+
+    requestUpdate()
+    container.addEventListener('scroll', requestUpdate, { passive: true })
+    window.addEventListener('resize', requestUpdate)
+    return () => {
+      container.removeEventListener('scroll', requestUpdate)
+      window.removeEventListener('resize', requestUpdate)
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+      }
+    }
+  }, [groupedPages])
 
   const enterPresentationMode = useCallback(async () => {
     const target = viewerShellRef.current
@@ -613,8 +742,25 @@ export default function ViewerPage() {
   }, [enterPresentationMode, exitPresentationMode, getPlayerElement, presentationMode])
 
   useEffect(() => {
+    if (!exportMenuOpen) return
+
+    const onDocumentPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (exportMenuRef.current && !exportMenuRef.current.contains(target)) {
+        setExportMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', onDocumentPointerDown)
+    return () => document.removeEventListener('mousedown', onDocumentPointerDown)
+  }, [exportMenuOpen])
+
+  useEffect(() => {
     const onFullscreenChange = () => {
       if (!document.fullscreenElement && presentationMode) {
+        sequenceAbortRef.current = true
+        stopClipPlaybackLoop()
         setPresentationMode(false)
         setTitleCard(null)
         setSequenceState({ phase: 'idle' })
@@ -622,7 +768,7 @@ export default function ViewerPage() {
     }
     document.addEventListener('fullscreenchange', onFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
-  }, [presentationMode])
+  }, [presentationMode, stopClipPlaybackLoop])
 
   const handleTimeUpdate = useCallback(() => {
     const player = getPlayerElement()
@@ -645,17 +791,25 @@ export default function ViewerPage() {
     setSearchCursor((prev) => {
       const next = (prev + direction + searchMatches.length) % searchMatches.length
       const lineId = searchMatches[next]
-      const target = lineRefs.current[lineId]
-      if (target) {
-        programmaticScrollRef.current = true
-        target.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        window.setTimeout(() => {
-          programmaticScrollRef.current = false
-        }, 250)
+      const targetPageIndex = linePageIndexMap.get(lineId)
+      if (typeof targetPageIndex === 'number') {
+        setViewportPageIndex(targetPageIndex)
       }
+
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const target = lineRefs.current[lineId]
+          if (!target) return
+          programmaticScrollRef.current = true
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          window.setTimeout(() => {
+            programmaticScrollRef.current = false
+          }, PROGRAMMATIC_SCROLL_RESET_MS)
+        })
+      })
       return next
     })
-  }, [searchMatches])
+  }, [linePageIndexMap, searchMatches])
 
   useEffect(() => {
     setSearchCursor(0)
@@ -667,9 +821,21 @@ export default function ViewerPage() {
     const result = await promptRelinkMedia(expected)
     if (!result) return
 
-    const handleId = transcript.media_handle_id || transcript.media_key
-    await storeMediaHandle(handleId, result.handle)
-    await loadMediaForTranscript(transcript)
+    await storeMediaHandle(result.handleId, result.handle)
+
+    const nextTranscript: ViewerTranscript = {
+      ...transcript,
+      media_handle_id: result.handleId,
+    }
+
+    const caseId = transcript.case_id && String(transcript.case_id).trim()
+      ? String(transcript.case_id)
+      : undefined
+
+    await saveTranscript(transcript.media_key, nextTranscript, caseId)
+    transcriptCacheRef.current[transcript.media_key] = nextTranscript
+    setTranscript(nextTranscript)
+    await loadMediaForTranscript(nextTranscript)
   }, [loadMediaForTranscript, transcript])
 
   const nearestLineFromTime = useCallback((value: number): ViewerLine | null => {
@@ -774,6 +940,7 @@ export default function ViewerPage() {
   }, [])
 
   const saveEditedClip = useCallback(async () => {
+    setClipError('')
     if (!effectiveCaseId || !editingClipId) return
     const existing = clips.find((clip) => clip.clip_id === editingClipId)
     if (!existing) return
@@ -799,6 +966,7 @@ export default function ViewerPage() {
   }, [clips, editClipEnd, editClipName, editClipStart, editingClipId, effectiveCaseId, loadCaseArtifacts])
 
   const removeClip = useCallback(async (clip: ClipRecord) => {
+    setClipError('')
     if (!effectiveCaseId) return
     if (!window.confirm(`Delete clip "${clip.name}"?`)) return
     await deleteClip(effectiveCaseId, clip.clip_id)
@@ -835,6 +1003,12 @@ export default function ViewerPage() {
           finish()
           return
         }
+
+        if (player.paused) {
+          finish()
+          return
+        }
+
         clipRafRef.current = requestAnimationFrame(tick)
       }
 
@@ -843,6 +1017,7 @@ export default function ViewerPage() {
   }, [getPlayerElement, stopClipPlaybackLoop])
 
   const playClip = useCallback(async (clip: ClipRecord) => {
+    setClipError('')
     if (!currentMediaKey || !effectiveCaseId) return
 
     if (clip.source_media_key !== currentMediaKey) {
@@ -857,6 +1032,7 @@ export default function ViewerPage() {
   }, [currentMediaKey, effectiveCaseId, playRange, router])
 
   const reorderVisibleClips = useCallback(async (sourceClipId: string, targetClipId: string) => {
+    setClipError('')
     const list = [...visibleClips]
     const fromIdx = list.findIndex((clip) => clip.clip_id === sourceClipId)
     const toIdx = list.findIndex((clip) => clip.clip_id === targetClipId)
@@ -916,6 +1092,17 @@ export default function ViewerPage() {
     await saveSequence(effectiveCaseId, updated)
     await loadCaseArtifacts(effectiveCaseId)
   }, [effectiveCaseId, loadCaseArtifacts])
+
+  const commitSequenceRename = useCallback(async (sequence: ClipSequenceRecord) => {
+    const draftName = sequenceNameDrafts[sequence.sequence_id] ?? sequence.name
+    const trimmed = draftName.trim()
+    if (!trimmed) {
+      setSequenceNameDrafts((prev) => ({ ...prev, [sequence.sequence_id]: sequence.name }))
+      return
+    }
+    if (trimmed === sequence.name) return
+    await renameSequence(sequence, trimmed)
+  }, [renameSequence, sequenceNameDrafts])
 
   const addClipToSequence = useCallback(async (sequence: ClipSequenceRecord, clipId: string) => {
     if (!effectiveCaseId) return
@@ -978,12 +1165,32 @@ export default function ViewerPage() {
 
     if (player.readyState >= 2) return
 
-    await new Promise<void>((resolve) => {
-      const onReady = () => {
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
         player.removeEventListener('canplay', onReady)
+        player.removeEventListener('error', onError)
+        player.removeEventListener('abort', onAbort)
+      }
+
+      const onReady = () => {
+        cleanup()
         resolve()
       }
+
+      const onError = () => {
+        cleanup()
+        const error = player.error
+        reject(new Error(`Media failed to load before playback (code ${error?.code ?? 'unknown'}).`))
+      }
+
+      const onAbort = () => {
+        cleanup()
+        reject(new Error('Media loading was aborted before playback could start.'))
+      }
+
       player.addEventListener('canplay', onReady)
+      player.addEventListener('error', onError)
+      player.addEventListener('abort', onAbort)
     })
   }, [getPlayerElement])
 
@@ -997,50 +1204,55 @@ export default function ViewerPage() {
     sequenceAbortRef.current = false
     await enterPresentationMode()
 
-    const orderedEntries = [...sequence.entries].sort((a, b) => a.order - b.order)
+    try {
+      const orderedEntries = [...sequence.entries].sort((a, b) => a.order - b.order)
 
-    for (let clipIndex = 0; clipIndex < orderedEntries.length; clipIndex += 1) {
-      if (sequenceAbortRef.current) break
-      const entry = orderedEntries[clipIndex]
-      const clip = clips.find((item) => item.clip_id === entry.clip_id)
-      if (!clip) continue
+      for (let clipIndex = 0; clipIndex < orderedEntries.length; clipIndex += 1) {
+        if (sequenceAbortRef.current) break
+        const entry = orderedEntries[clipIndex]
+        const clip = clips.find((item) => item.clip_id === entry.clip_id)
+        if (!clip) continue
 
-      setSequenceState({ phase: 'title-card', sequenceId: sequence.sequence_id, clipIndex })
-      setTitleCard({
-        visible: true,
-        title: clip.name,
-        meta: `${formatRange(clip.start_time, clip.end_time)} • ${clip.source_media_key}`,
-      })
+        setSequenceState({ phase: 'title-card', sequenceId: sequence.sequence_id, clipIndex })
+        setTitleCard({
+          visible: true,
+          title: clip.name,
+          meta: `${formatRange(clip.start_time, clip.end_time)} • ${clip.source_media_key}`,
+        })
 
-      await sleep(3000)
-      if (sequenceAbortRef.current) break
+        await sleep(3000)
+        if (sequenceAbortRef.current) break
 
+        setTitleCard(null)
+        setSequenceState({ phase: 'transitioning', sequenceId: sequence.sequence_id, clipIndex })
+
+        const loaded = await loadTranscriptByKey(clip.source_media_key, true)
+        if (!loaded) continue
+
+        await waitForCanPlay()
+        setSequenceState({ phase: 'playing', sequenceId: sequence.sequence_id, clipIndex })
+
+        await playRange(clip.start_time, clip.end_time, clip.clip_id)
+        await sleep(1200)
+      }
+
+      if (!sequenceAbortRef.current) {
+        setSequenceState({ phase: 'finished', sequenceId: sequence.sequence_id })
+        setTitleCard({
+          visible: true,
+          title: 'End of Presentation',
+          meta: sequence.name,
+        })
+        await sleep(2000)
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Sequence presentation failed'
+      setSequenceError(message)
+      sequenceAbortRef.current = true
+    } finally {
       setTitleCard(null)
-      setSequenceState({ phase: 'transitioning', sequenceId: sequence.sequence_id, clipIndex })
-
-      const loaded = await loadTranscriptByKey(clip.source_media_key, true)
-      if (!loaded) continue
-
-      await waitForCanPlay()
-      setSequenceState({ phase: 'playing', sequenceId: sequence.sequence_id, clipIndex })
-
-      await playRange(clip.start_time, clip.end_time, clip.clip_id)
-
-      await sleep(1200)
+      await exitPresentationMode()
     }
-
-    if (!sequenceAbortRef.current) {
-      setSequenceState({ phase: 'finished', sequenceId: sequence.sequence_id })
-      setTitleCard({
-        visible: true,
-        title: 'End of Presentation',
-        meta: sequence.name,
-      })
-      await sleep(2000)
-    }
-
-    setTitleCard(null)
-    await exitPresentationMode()
   }, [clips, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, waitForCanPlay])
 
   const excerptLinesForClip = useCallback((record: ViewerTranscript, clip: ClipRecord) => {
@@ -1088,6 +1300,7 @@ export default function ViewerPage() {
 
   const exportClipPdf = useCallback(async (clip: ClipRecord) => {
     if (!transcript) return
+    setClipError('')
     setExporting(true)
     try {
       const record = clip.source_media_key === transcript.media_key
@@ -1198,10 +1411,13 @@ export default function ViewerPage() {
 
       let html = template.replace('__TRANSCRIPT_JSON__', transcriptJson)
       const mediaTag = `<script id="media-data" type="application/octet-stream">${mediaBase64}</script>`
-      html = html.replace(
-        '<script id="media-data" type="application/octet-stream"></script>',
-        mediaTag,
-      )
+      const mediaPlaceholder = '<script id="media-data" type="application/octet-stream"></script>'
+      const htmlWithMedia = html.replace(mediaPlaceholder, mediaTag)
+      if (htmlWithMedia === html) {
+        console.warn('Standalone viewer template is missing media placeholder script tag.')
+        throw new Error('Standalone viewer template missing media placeholder; embedded media export failed.')
+      }
+      html = htmlWithMedia
 
       const blob = new Blob([html], { type: 'text/html' })
       const baseName = sanitizeFilename(transcript.title_data?.FILE_NAME || transcript.media_filename || transcript.media_key)
@@ -1299,7 +1515,7 @@ export default function ViewerPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="relative">
+              <div ref={exportMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setExportMenuOpen((open) => !open)}
@@ -1665,10 +1881,18 @@ export default function ViewerPage() {
                           <div className="mt-2 space-y-2 border-t border-gray-200 pt-2">
                             <input
                               className="input-field h-8 w-full text-xs"
-                              defaultValue={sequence.name}
-                              onBlur={(event) => {
-                                if (event.target.value.trim() && event.target.value.trim() !== sequence.name) {
-                                  void renameSequence(sequence, event.target.value)
+                              value={sequenceNameDrafts[sequence.sequence_id] ?? sequence.name}
+                              onChange={(event) => {
+                                const nextName = event.target.value
+                                setSequenceNameDrafts((prev) => ({ ...prev, [sequence.sequence_id]: nextName }))
+                              }}
+                              onBlur={() => {
+                                void commitSequenceRename(sequence)
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  event.currentTarget.blur()
                                 }
                               }}
                             />
@@ -1753,13 +1977,15 @@ export default function ViewerPage() {
             </div>
           )}
 
-          <div className={`p-4 ${presentationMode ? 'pb-2' : ''}`}>
-            {isVideo ? (
-              <video ref={videoRef} {...playerSharedProps} className="w-full rounded-xl border border-black/20 bg-black" />
-            ) : (
-              <audio ref={audioRef} {...playerSharedProps} className="w-full rounded-xl border border-black/20 bg-black" />
-            )}
-          </div>
+          {presentationMode && (
+            <div className="p-4 pb-2">
+              {isVideo ? (
+                <video ref={videoRef} {...playerSharedProps} className="w-full rounded-xl border border-black/20 bg-black" />
+              ) : (
+                <audio ref={audioRef} {...playerSharedProps} className="w-full rounded-xl border border-black/20 bg-black" />
+              )}
+            </div>
+          )}
 
           <div className="px-4 pb-3">
             <div className={`rounded-xl border px-3 py-2 ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-200 bg-white'}`}>
@@ -1782,6 +2008,12 @@ export default function ViewerPage() {
                   className={`h-9 flex-1 rounded border px-3 text-sm ${presentationMode ? 'border-slate-700 bg-slate-800 text-white placeholder:text-slate-400' : 'border-gray-300 bg-white text-gray-900 placeholder:text-gray-500'}`}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      goToSearchResult(event.shiftKey ? -1 : 1)
+                    }
+                  }}
                   placeholder="Search transcript"
                 />
                 <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(-1)} disabled={!searchMatches.length}>
@@ -1816,54 +2048,78 @@ export default function ViewerPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {groupedPages.map((pageBlock) => (
-                  <div key={pageBlock.page} className={`rounded-xl border ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-200 bg-white'}`}>
-                    <div className={`border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide ${presentationMode ? 'border-slate-700 text-slate-300' : 'border-gray-100 text-gray-500'}`}>
-                      Page {pageBlock.page}
-                    </div>
-                    <div className="divide-y divide-dashed divide-gray-100 px-3">
-                      {pageBlock.lines.map((line) => {
-                        const active = activeLineId === line.id
-                        const selected = selectedLineId === line.id
-                        const match = searchMatches.includes(line.id)
-                        const currentMatch = currentSearchLineId === line.id
+                {groupedPages.map((pageBlock, pageIndex) => {
+                  const shouldRenderPage = renderedPageIndexes.has(pageIndex)
+                  const placeholderHeight = Math.max(
+                    PAGE_MIN_PLACEHOLDER_HEIGHT_PX,
+                    pageBlock.lines.length * PAGE_LINE_HEIGHT_ESTIMATE_PX,
+                  )
 
-                        const lineClasses = [
-                          'group grid cursor-pointer grid-cols-[56px_1fr] gap-2 py-2 text-sm transition-colors',
-                          presentationMode ? 'text-slate-100 hover:bg-slate-800/60' : 'text-gray-900 hover:bg-gray-50',
-                          active ? (presentationMode ? 'bg-amber-300/20' : 'bg-amber-100') : '',
-                          selected ? 'ring-1 ring-primary-400' : '',
-                          match ? (presentationMode ? 'bg-amber-200/15' : 'bg-amber-50') : '',
-                          currentMatch ? (presentationMode ? 'outline outline-1 outline-amber-300' : 'outline outline-1 outline-amber-400') : '',
-                        ]
+                  return (
+                    <div
+                      key={pageBlock.page}
+                      ref={(node) => {
+                        pageRefs.current[pageBlock.page] = node
+                      }}
+                      className={`rounded-xl border ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-200 bg-white'}`}
+                    >
+                      <div className={`border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide ${presentationMode ? 'border-slate-700 text-slate-300' : 'border-gray-100 text-gray-500'}`}>
+                        Page {pageBlock.page}
+                      </div>
 
-                        return (
-                          <div
-                            key={line.id}
-                            ref={(node) => {
-                              lineRefs.current[line.id] = node
-                            }}
-                            className={lineClasses.join(' ')}
-                            onClick={() => {
-                              setSelectedLineId(line.id)
-                              seekToLine(line, true)
-                            }}
-                          >
-                            <div className={`text-right text-xs ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                              {line.line || '-'}
-                            </div>
-                            <div>
-                              <span className={`mr-2 font-semibold ${presentationMode ? 'text-slate-300' : 'text-gray-700'}`}>
-                                {line.speaker ? `${line.speaker}:` : ''}
-                              </span>
-                              <span>{line.rendered_text || line.text}</span>
-                            </div>
-                          </div>
-                        )
-                      })}
+                      {shouldRenderPage ? (
+                        <div className="divide-y divide-dashed divide-gray-100 px-3">
+                          {pageBlock.lines.map((line) => {
+                            const active = activeLineId === line.id
+                            const selected = selectedLineId === line.id
+                            const match = searchMatchSet.has(line.id)
+                            const currentMatch = currentSearchLineId === line.id
+
+                            const lineClasses = [
+                              'group grid cursor-pointer grid-cols-[56px_1fr] gap-2 py-2 text-sm transition-colors',
+                              presentationMode ? 'text-slate-100 hover:bg-slate-800/60' : 'text-gray-900 hover:bg-gray-50',
+                              active ? (presentationMode ? 'bg-amber-300/20' : 'bg-amber-100') : '',
+                              selected ? 'ring-1 ring-primary-400' : '',
+                              match ? (presentationMode ? 'bg-amber-200/15' : 'bg-amber-50') : '',
+                              currentMatch ? (presentationMode ? 'outline outline-1 outline-amber-300' : 'outline outline-1 outline-amber-400') : '',
+                            ]
+
+                            return (
+                              <div
+                                key={line.id}
+                                ref={(node) => {
+                                  lineRefs.current[line.id] = node
+                                }}
+                                className={lineClasses.join(' ')}
+                                onClick={() => {
+                                  setSelectedLineId(line.id)
+                                  seekToLine(line, true)
+                                }}
+                              >
+                                <div className={`text-right text-xs ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                                  {line.line || '-'}
+                                </div>
+                                <div>
+                                  <span className={`mr-2 font-semibold ${presentationMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                                    {line.speaker ? `${line.speaker}:` : ''}
+                                  </span>
+                                  <span>{line.rendered_text || line.text}</span>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div
+                          className={`px-3 py-4 text-xs ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}
+                          style={{ minHeight: `${placeholderHeight}px` }}
+                        >
+                          Scroll to load page content...
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
