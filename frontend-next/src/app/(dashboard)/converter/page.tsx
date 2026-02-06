@@ -3,7 +3,6 @@
 import JSZip from 'jszip'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
-import { authenticatedFetch } from '@/utils/auth'
 import {
   FFmpegCanceledError,
   cancelActiveFFmpegJob,
@@ -276,42 +275,12 @@ export default function ConverterPage() {
               })
               break
             }
-
-            // Client-side conversion failed — fall back to server-side ffmpeg
+            const message = clientError instanceof Error ? clientError.message : 'In-browser conversion failed.'
             updateItem(item.id, {
-              status: 'converting',
-              progress: 0.1,
-              error: '',
+              status: 'failed',
+              error: message,
             })
-
-            const formData = new FormData()
-            formData.append('file', item.file)
-            try {
-              const resp = await authenticatedFetch('/api/convert', {
-                method: 'POST',
-                body: formData,
-              })
-              if (!resp.ok) {
-                const detail = await resp.text().catch(() => resp.statusText)
-                throw new Error(`Server conversion failed: ${detail}`)
-              }
-              const blob = await resp.blob()
-              const origName = item.file.name
-              const dot = origName.lastIndexOf('.')
-              const base = dot !== -1 ? origName.slice(0, dot) : origName
-              const isVideo = (item.file.type || '').startsWith('video/')
-              const ext = isVideo ? '.mp4' : '.wav'
-              converted = new File([blob], `${base}_converted${ext}`, {
-                type: isVideo ? 'video/mp4' : 'audio/wav',
-              })
-            } catch (serverError) {
-              const message = serverError instanceof Error ? serverError.message : 'Conversion failed.'
-              updateItem(item.id, {
-                status: 'failed',
-                error: message,
-              })
-              continue
-            }
+            continue
           }
 
           if (!converted) continue

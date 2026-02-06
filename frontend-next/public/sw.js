@@ -5,6 +5,13 @@ const FFMPEG_CORE_FILES = new Set([
   '/ffmpeg-core.worker.js',
 ])
 
+function putInCache(request, response) {
+  return caches
+    .open(CACHE_NAME)
+    .then((cache) => cache.put(request, response))
+    .catch(() => undefined)
+}
+
 self.addEventListener('install', (event) => {
   self.skipWaiting()
 })
@@ -32,9 +39,7 @@ self.addEventListener('fetch', (event) => {
           const response = await fetch(event.request)
           if (response.ok) {
             const clone = response.clone()
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, clone)
-            })
+            void putInCache(event.request, clone)
           }
           return response
         } catch {
@@ -75,9 +80,7 @@ self.addEventListener('fetch', (event) => {
           const response = await fetch(event.request)
           if (response.ok) {
             const clone = response.clone()
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, clone)
-            })
+            void putInCache(event.request, clone)
           }
           return response
         } catch {

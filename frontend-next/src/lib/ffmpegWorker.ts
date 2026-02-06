@@ -347,6 +347,58 @@ function conversionArgs(file: File, inputName: string, outputName: string): stri
   ]
 }
 
+function isLikelyG729Codec(codecInfo: CodecInfo | null): boolean {
+  if (!codecInfo) return false
+  if (codecInfo.formatCode === 0x2222) return true
+  const label = (codecInfo.codecName || '').toLowerCase()
+  return label.includes('g.729') || label.includes('g729')
+}
+
+type ConversionAttempt = {
+  label: string
+  args: string[]
+}
+
+function buildConversionAttempts(
+  file: File,
+  inputName: string,
+  outputName: string,
+  codecInfo: CodecInfo | null,
+): ConversionAttempt[] {
+  const attempts: ConversionAttempt[] = [
+    {
+      label: 'default',
+      args: conversionArgs(file, inputName, outputName),
+    },
+  ]
+
+  if (!isLikelyVideoFile(file) && isLikelyG729Codec(codecInfo)) {
+    attempts.push({
+      label: 'force-g729-decoder',
+      args: [
+        '-f', 'wav',
+        '-c:a', 'g729',
+        '-i', inputName,
+        '-acodec', 'pcm_s16le',
+        outputName,
+      ],
+    })
+    attempts.push({
+      label: 'force-g729-decoder-mono',
+      args: [
+        '-f', 'wav',
+        '-ac', '1',
+        '-c:a', 'g729',
+        '-i', inputName,
+        '-acodec', 'pcm_s16le',
+        outputName,
+      ],
+    })
+  }
+
+  return attempts
+}
+
 export async function getFFmpeg(): Promise<FFmpeg> {
   if (ffmpegInstance?.loaded) return ffmpegInstance
   if (!ffmpegInstance) {
@@ -435,29 +487,61 @@ export async function convertToPlayable(
 ): Promise<File> {
   return runSerial(async () => {
     terminatedByUser = false
+    const sourceFile = await maybeRepairWav(file)
     const ffmpeg = await getFFmpeg()
-    const inputExt = getFileExtension(file.name) || (isLikelyVideoFile(file) ? 'mp4' : 'wav')
-    const outputExt = getConvertedExtension(file)
+    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
+    const outputExt = getConvertedExtension(sourceFile)
     const inputName = `input.${inputExt}`
     const outputName = `output.${outputExt}`
-    const sourceFile = await maybeRepairWav(file)
+    const sourceCodec = isLikelyWavFile(sourceFile) ? await parseWavHeader(sourceFile) : null
 
     activeProgressCallback = onProgress ?? null
 
     try {
       await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
-      const exitCode = await ffmpeg.exec(conversionArgs(file, inputName, outputName))
-      if (exitCode !== 0) {
-        throw new Error('FFmpeg conversion failed')
+
+      let lastError: Error | null = null
+      const attempts = buildConversionAttempts(sourceFile, inputName, outputName, sourceCodec)
+
+      for (const attempt of attempts) {
+        await removeVirtualFile(ffmpeg, outputName)
+        try {
+          const exitCode = await ffmpeg.exec(attempt.args)
+          if (exitCode !== 0) {
+            throw new Error(`FFmpeg conversion failed (${attempt.label})`)
+          }
+
+          const outputData = await ffmpeg.readFile(outputName)
+          const bytes = toUint8Array(outputData)
+          if (bytes.byteLength === 0) {
+            throw new Error(`FFmpeg conversion produced an empty output file (${attempt.label})`)
+          }
+
+          return new File([toBlobBuffer(bytes)], getConvertedFilename(file), {
+            type: getConvertedMimeType(file),
+          })
+        } catch (attemptError) {
+          if (terminatedByUser) {
+            terminatedByUser = false
+            throw new FFmpegCanceledError()
+          }
+          lastError = normalizeError(attemptError)
+        }
       }
-      const outputData = await ffmpeg.readFile(outputName)
-      const bytes = toUint8Array(outputData)
-      if (bytes.byteLength === 0) {
-        throw new Error('FFmpeg conversion produced an empty output file')
+
+      if (lastError) {
+        if (isOutOfMemoryError(lastError)) {
+          throw new Error('File too large for in-browser conversion. Consider desktop FFmpeg.')
+        }
+        if (isLikelyG729Codec(sourceCodec)) {
+          throw new Error(
+            'This G.729 file could not be decoded in-browser by the current FFmpeg build. ' +
+            'Convert locally with desktop FFmpeg and re-import.',
+          )
+        }
+        throw lastError
       }
-      return new File([toBlobBuffer(bytes)], getConvertedFilename(file), {
-        type: getConvertedMimeType(file),
-      })
+      throw new Error('FFmpeg conversion failed')
     } catch (error) {
       if (terminatedByUser) {
         terminatedByUser = false
