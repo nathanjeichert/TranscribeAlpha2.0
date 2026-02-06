@@ -37,7 +37,6 @@ interface FormData {
 }
 
 type WizardStep = 'upload' | 'configure' | 'transcribe'
-type TranscribeMode = 'single' | 'bulk'
 type QueueItemStatus = 'queued' | 'uploading' | 'transcribing' | 'building' | 'done' | 'failed' | 'canceled'
 
 interface TranscriptResponse {
@@ -122,7 +121,6 @@ export default function TranscribePage() {
   const searchParams = useSearchParams()
   const { cases, refreshCases, refreshRecentTranscripts, setActiveMediaKey, appVariant } = useDashboard()
 
-  const [mode, setMode] = useState<TranscribeMode>('single')
   const [step, setStep] = useState<WizardStep>('upload')
   const [formData, setFormData] = useState<FormData>({
     case_name: '',
@@ -280,23 +278,6 @@ export default function TranscribePage() {
     }
   }, [])
 
-  const handleModeChange = (nextMode: TranscribeMode) => {
-    if (isProcessing || mode === nextMode) return
-
-    setMode(nextMode)
-    setPageError('')
-    setPageNotice('')
-
-    if (nextMode === 'single' && queue.length > 1) {
-      setQueue((prev) => {
-        const keep = prev[0]
-        return keep ? [{ ...keep, status: 'queued', stageText: 'Queued', error: '', result: null }] : []
-      })
-      setShowAllResults(false)
-      setPageNotice('Switched to single mode. Keeping only the first selected file.')
-    }
-  }
-
   const addFilesToQueue = useCallback(
     (incoming: File[]) => {
       if (!incoming.length) return
@@ -304,12 +285,6 @@ export default function TranscribePage() {
       setPageError('')
       setPageNotice('')
       setShowAllResults(false)
-
-      if (mode === 'single') {
-        const nextItem = createQueueItem(incoming[0])
-        setQueue([nextItem])
-        return
-      }
 
       const current = queueRef.current
       const currentHasProcessed = current.some((item) => item.status !== 'queued')
@@ -348,7 +323,7 @@ export default function TranscribePage() {
         setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
       }
     },
-    [createQueueItem, mode],
+    [createQueueItem],
   )
 
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -376,7 +351,7 @@ export default function TranscribePage() {
     if (appVariant !== 'criminal') return
     try {
       const handles: FileSystemFileHandle[] = await (window as any).showOpenFilePicker({
-        multiple: mode === 'bulk',
+        multiple: true,
         types: [
           {
             description: 'Audio/Video files',
@@ -392,13 +367,6 @@ export default function TranscribePage() {
       setPageError('')
       setPageNotice('')
       setShowAllResults(false)
-
-      if (mode === 'single') {
-        const file = await handles[0].getFile()
-        const item = createQueueItem(file, handles[0])
-        setQueue([item])
-        return
-      }
 
       const current = queueRef.current
       const currentHasProcessed = current.some((item) => item.status !== 'queued')
@@ -427,7 +395,7 @@ export default function TranscribePage() {
     } catch {
       // User cancelled the file picker
     }
-  }, [appVariant, createQueueItem, mode])
+  }, [appVariant, createQueueItem])
 
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
@@ -995,6 +963,8 @@ export default function TranscribePage() {
   )
 
   const hasQueue = queue.length > 0
+  const isBatchSelection = queue.length > 1
+  const singleQueueItem = queue[0] ?? null
   const hasProcessed = isProcessing || processedItems.length > 0
   const canProceedToConfig = hasQueue
   const canProceedToTranscribe = queuedCount > 0
@@ -1039,32 +1009,10 @@ export default function TranscribePage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">New Transcript</h1>
           <p className="text-gray-600 mt-1">
-            {mode === 'single'
-              ? 'Upload one file, configure options, and transcribe.'
-              : `Upload up to ${MAX_BATCH_FILES} files and process them in a managed queue.`}
+            {isBatchSelection
+              ? `Upload up to ${MAX_BATCH_FILES} files and process them in a managed queue.`
+              : 'Upload one file to transcribe, or add more files to run as a batch.'}
           </p>
-        </div>
-        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
-          <button
-            type="button"
-            onClick={() => handleModeChange('single')}
-            disabled={isProcessing}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${
-              mode === 'single' ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            Single
-          </button>
-          <button
-            type="button"
-            onClick={() => handleModeChange('bulk')}
-            disabled={isProcessing}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${
-              mode === 'bulk' ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            Bulk
-          </button>
         </div>
       </div>
 
@@ -1118,12 +1066,12 @@ export default function TranscribePage() {
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">
-              Upload {mode === 'single' ? 'Media File' : 'Media Files'}
+              Upload Media {isBatchSelection ? 'Files' : 'File'}
             </h2>
             <p className="text-sm text-gray-600 mb-4">
-              {mode === 'single'
-                ? 'Choose one audio/video file.'
-                : `Choose up to ${MAX_BATCH_FILES} files. Drag the grip handle in the queue to reorder.`}
+              {isBatchSelection
+                ? `Choose up to ${MAX_BATCH_FILES} files. Drag the grip handle in the queue to reorder.`
+                : `Choose one or more audio/video files. Select multiple files to run a batch (up to ${MAX_BATCH_FILES}).`}
             </p>
 
             <label
@@ -1137,7 +1085,7 @@ export default function TranscribePage() {
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileInputChange}
-                multiple={mode === 'bulk'}
+                multiple
                 accept="audio/*,video/*,.mp4,.avi,.mov,.mkv,.wav,.mp3,.m4a,.flac,.ogg"
                 className="sr-only"
               />
@@ -1148,7 +1096,7 @@ export default function TranscribePage() {
                   </svg>
                 </div>
                 <div className="font-medium text-gray-900">
-                  {mode === 'single' ? 'Drop file here or click to browse' : 'Drop files here or click to browse'}
+                  {isBatchSelection ? 'Drop files here or click to browse' : 'Drop file(s) here or click to browse'}
                 </div>
                 <div className="text-sm text-gray-500">Supports MP4, MOV, AVI, WAV, MP3, FLAC and more</div>
               </div>
@@ -1260,7 +1208,9 @@ export default function TranscribePage() {
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">Assign to Case (Recommended)</h2>
             <p className="text-sm text-gray-500 mb-4">
-              Batch default case assignment. Each file can optionally override this below.
+              {isBatchSelection
+                ? 'Batch default case assignment. Each file can optionally override this below.'
+                : 'Case assignment for this transcript.'}
             </p>
             <div className="flex gap-3">
               <select
@@ -1284,8 +1234,8 @@ export default function TranscribePage() {
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">Batch Metadata Defaults</h2>
-              <span className="text-sm text-gray-400">Applied to all files in this run</span>
+              <h2 className="text-lg font-semibold text-gray-900">{isBatchSelection ? 'Batch Metadata Defaults' : 'Transcript Metadata'}</h2>
+              <span className="text-sm text-gray-400">{isBatchSelection ? 'Applied to all files in this run' : 'Applied to this transcript'}</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -1359,8 +1309,12 @@ export default function TranscribePage() {
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="p-4 border-b border-gray-100">
-              <h2 className="text-lg font-semibold text-gray-900">Per-File Overrides</h2>
-              <p className="text-sm text-gray-500 mt-1">Set optional speaker hints and case override per file.</p>
+              <h2 className="text-lg font-semibold text-gray-900">{isBatchSelection ? 'Per-File Overrides' : 'Transcript Options'}</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                {isBatchSelection
+                  ? 'Set optional speaker hints and case override per file.'
+                  : 'Set optional speaker hints for this transcript.'}
+              </p>
             </div>
             <div className="divide-y divide-gray-100">
               {queue.map((item, index) => (
@@ -1377,29 +1331,31 @@ export default function TranscribePage() {
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
-                        Case Assignment
-                      </label>
-                      <select
-                        value={item.case_target}
-                        onChange={(event) => setFileCaseTarget(item.id, event.target.value)}
-                        disabled={isProcessing}
-                        className="input-field text-sm"
-                      >
-                        <option value={CASE_USE_BATCH}>Use batch setting</option>
-                        <option value={CASE_UNCATEGORIZED}>No case (uncategorized)</option>
-                        {cases.map((c) => (
-                          <option key={c.case_id} value={c.case_id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-gray-500 mt-1">Current: {renderCaseTargetLabel(item)}</p>
-                    </div>
+                  <div className={`grid grid-cols-1 ${isBatchSelection ? 'lg:grid-cols-3' : 'lg:grid-cols-2'} gap-3`}>
+                    {isBatchSelection && (
+                      <div>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                          Case Assignment
+                        </label>
+                        <select
+                          value={item.case_target}
+                          onChange={(event) => setFileCaseTarget(item.id, event.target.value)}
+                          disabled={isProcessing}
+                          className="input-field text-sm"
+                        >
+                          <option value={CASE_USE_BATCH}>Use batch setting</option>
+                          <option value={CASE_UNCATEGORIZED}>No case (uncategorized)</option>
+                          {cases.map((c) => (
+                            <option key={c.case_id} value={c.case_id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">Current: {renderCaseTargetLabel(item)}</p>
+                      </div>
+                    )}
 
-                    <div className="lg:col-span-2">
+                    <div className={isBatchSelection ? 'lg:col-span-2' : ''}>
                       <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
                         Speaker Names (Optional)
                       </label>
@@ -1444,7 +1400,7 @@ export default function TranscribePage() {
               disabled={!canProceedToTranscribe || isProcessing}
               className="btn-primary px-8 py-3"
             >
-              {mode === 'single' ? 'Start Transcription' : 'Start Queue'}
+              {isBatchSelection ? 'Start Queue' : 'Start Transcription'}
             </button>
           </div>
         </div>
@@ -1453,73 +1409,133 @@ export default function TranscribePage() {
       {step === 'transcribe' && (
         <div className="space-y-6">
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-900 text-sm">
-            Keep this tab open while processing. If you leave or close the tab, queued work stops.
+            {isBatchSelection
+              ? 'Keep this tab open while processing. If you leave or close the tab, queued work stops.'
+              : 'Keep this tab open while processing. If you leave or close the tab, transcription stops.'}
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">Queue Progress</h2>
-                <p className="text-sm text-gray-500">
-                  {doneCount} complete, {failedCount} failed, {canceledCount} canceled, {queuedCount} queued
-                </p>
+          {isBatchSelection ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Queue Progress</h2>
+                  <p className="text-sm text-gray-500">
+                    {doneCount} complete, {failedCount} failed, {canceledCount} canceled, {queuedCount} queued
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {isProcessing ? (
+                    <>
+                      <span className="text-sm text-primary-700 font-medium">
+                        {stopAfterCurrent ? 'Stopping after current file...' : `${inProgressCount || 1} file in progress`}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleStopQueue}
+                        disabled={stopAfterCurrent}
+                        className="btn-outline px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Stop Queue
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {queuedCount > 0 && (
+                        <button type="button" onClick={handleStartQueued} className="btn-primary px-3 py-2 text-sm">
+                          Resume Queue
+                        </button>
+                      )}
+                      {(failedCount > 0 || canceledCount > 0) && (
+                        <button type="button" onClick={handleRetryFailures} className="btn-outline px-3 py-2 text-sm">
+                          Retry Failed/Canceled
+                        </button>
+                      )}
+                      <button type="button" onClick={resetForNewBatch} className="btn-outline px-3 py-2 text-sm">
+                        New Batch
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                {isProcessing ? (
-                  <>
-                    <span className="text-sm text-primary-700 font-medium">
-                      {stopAfterCurrent ? 'Stopping after current file...' : `${inProgressCount || 1} file in progress`}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleStopQueue}
-                      disabled={stopAfterCurrent}
-                      className="btn-outline px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Stop Queue
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {queuedCount > 0 && (
-                      <button type="button" onClick={handleStartQueued} className="btn-primary px-3 py-2 text-sm">
-                        Resume Queue
-                      </button>
-                    )}
-                    {(failedCount > 0 || canceledCount > 0) && (
-                      <button type="button" onClick={handleRetryFailures} className="btn-outline px-3 py-2 text-sm">
-                        Retry Failed/Canceled
-                      </button>
-                    )}
-                    <button type="button" onClick={resetForNewBatch} className="btn-outline px-3 py-2 text-sm">
-                      New Batch
-                    </button>
-                  </>
-                )}
+
+              <div className="divide-y divide-gray-100">
+                {queue.map((item, index) => (
+                  <div key={item.id} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-medium text-gray-900 truncate">
+                          {index + 1}. {item.file.name}
+                        </p>
+                        <p className="text-sm text-gray-500">{item.stageText}</p>
+                        {item.error && <p className="text-sm text-red-600 mt-1">{item.error}</p>}
+                      </div>
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(item.status)}`}>
+                        {statusLabel(item.status)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-
-            <div className="divide-y divide-gray-100">
-              {queue.map((item, index) => (
-                <div key={item.id} className="p-4">
+          ) : (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Transcription Status</h2>
+                  <p className="text-sm text-gray-500">{singleQueueItem?.file.name ?? 'No file selected'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {isProcessing ? (
+                    <>
+                      <span className="text-sm text-primary-700 font-medium">
+                        {stopAfterCurrent ? 'Stopping after current file...' : 'Processing...'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleStopQueue}
+                        disabled={stopAfterCurrent}
+                        className="btn-outline px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Stop
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {queuedCount > 0 && (
+                        <button type="button" onClick={handleStartQueued} className="btn-primary px-3 py-2 text-sm">
+                          Start Transcription
+                        </button>
+                      )}
+                      {(failedCount > 0 || canceledCount > 0) && (
+                        <button type="button" onClick={handleRetryFailures} className="btn-outline px-3 py-2 text-sm">
+                          Retry
+                        </button>
+                      )}
+                      <button type="button" onClick={resetForNewBatch} className="btn-outline px-3 py-2 text-sm">
+                        New Transcript
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              {singleQueueItem && (
+                <div className="p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="font-medium text-gray-900 truncate">
-                        {index + 1}. {item.file.name}
-                      </p>
-                      <p className="text-sm text-gray-500">{item.stageText}</p>
-                      {item.error && <p className="text-sm text-red-600 mt-1">{item.error}</p>}
+                      <p className="font-medium text-gray-900 truncate">{singleQueueItem.file.name}</p>
+                      <p className="text-sm text-gray-500">{singleQueueItem.stageText}</p>
+                      {singleQueueItem.error && <p className="text-sm text-red-600 mt-1">{singleQueueItem.error}</p>}
                     </div>
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(item.status)}`}>
-                      {statusLabel(item.status)}
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(singleQueueItem.status)}`}>
+                      {statusLabel(singleQueueItem.status)}
                     </span>
                   </div>
                 </div>
-              ))}
+              )}
             </div>
-          </div>
+          )}
 
-          {doneCount > 0 && (
+          {doneCount > 0 && isBatchSelection && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
               <h3 className="font-semibold text-gray-900 mb-3">Batch Downloads</h3>
               <div className="flex flex-wrap gap-3">
@@ -1653,7 +1669,7 @@ export default function TranscribePage() {
 
           {!isProcessing && processedItems.length === 0 && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8 text-center text-gray-500">
-              Queue has not started yet.
+              {isBatchSelection ? 'Queue has not started yet.' : 'Transcription has not started yet.'}
             </div>
           )}
 
