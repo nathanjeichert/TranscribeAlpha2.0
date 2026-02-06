@@ -39,6 +39,7 @@ export interface ClipSummary {
 export interface EditorSessionResponse {
   session_id?: string | null
   media_key?: string | null
+  media_handle_id?: string | null
   media_blob_name?: string | null
   media_content_type?: string | null
   title_data: Record<string, string>
@@ -1086,13 +1087,19 @@ export default function TranscriptEditor({
 
       if (isCriminal) {
         // Criminal: upload media file + transcript as multipart to /api/resync-local
-        const mediaFile = await getMediaFile(activeMediaKey)
+        const mediaSourceId = sessionMeta?.media_handle_id || activeMediaKey
+        const mediaFile = await getMediaFile(mediaSourceId)
         if (!mediaFile) {
           throw new Error('Media file not available. Please relink the media file first.')
         }
+        const transcriptPayload = {
+          ...(sessionMeta ?? {}),
+          media_key: activeMediaKey,
+          lines,
+        }
         const formData = new FormData()
         formData.append('media_file', mediaFile)
-        formData.append('transcript_data', JSON.stringify(sessionMeta))
+        formData.append('transcript_data', JSON.stringify(transcriptPayload))
         const response = await authenticatedFetch('/api/resync-local', {
           method: 'POST',
           body: formData,

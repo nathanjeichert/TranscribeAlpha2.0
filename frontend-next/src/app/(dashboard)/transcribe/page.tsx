@@ -17,7 +17,7 @@ import {
   saveTranscript as localSaveTranscript,
   type TranscriptData,
 } from '@/lib/storage'
-import { storeMediaHandle } from '@/lib/mediaHandles'
+import { storeMediaBlob, storeMediaHandle } from '@/lib/mediaHandles'
 import {
   FFmpegCanceledError,
   convertToPlayable,
@@ -716,26 +716,48 @@ export default function TranscribePage() {
               : { ...freshItem, file: fileForUpload }
             const data = await transcribeOneItem(uploadItem)
 
-            // Criminal variant: save transcript to local workspace
+            // Criminal variant: save transcript + playable media source to local workspace.
             if (appVariant === 'criminal' && data.media_key) {
               const effectiveCaseId = getEffectiveCaseId(freshItem)
               const titleData = { ...(data.title_data || {}) }
+              const usedConvertedUpload = uploadItem.file !== freshItem.file
+              const shouldPersistBlobFallback = !freshItem.fileHandle || usedConvertedUpload
+              const mediaFilename = freshItem.originalFileName || freshItem.file.name
+              const mediaContentType = uploadItem.file.type || freshItem.file.type || 'application/octet-stream'
               if (freshItem.originalFileName) {
                 titleData.FILE_NAME = freshItem.originalFileName
               }
               const transcriptToSave = {
                 ...(data as unknown as Record<string, unknown>),
                 title_data: titleData,
-                media_filename: freshItem.originalFileName || freshItem.file.name,
+                media_filename: mediaFilename,
+                media_content_type: mediaContentType,
+                media_handle_id: data.media_key,
               } as TranscriptData
               await localSaveTranscript(
                 data.media_key,
                 transcriptToSave,
                 effectiveCaseId || undefined,
               )
-              // Store the file handle if the user used showOpenFilePicker
-              if (freshItem.fileHandle) {
-                await storeMediaHandle(data.media_key, freshItem.fileHandle)
+
+              try {
+                // Store file handle when available (picker flow), and persist a blob fallback
+                // when there is no handle or when we had to upload a converted playable file.
+                if (freshItem.fileHandle) {
+                  await storeMediaHandle(data.media_key, freshItem.fileHandle)
+                }
+                if (shouldPersistBlobFallback) {
+                  await storeMediaBlob(
+                    data.media_key,
+                    uploadItem.file,
+                    uploadItem.file.name || mediaFilename,
+                    mediaContentType,
+                  )
+                }
+              } catch {
+                setPageNotice(
+                  'Transcript saved, but media auto-linking was incomplete. You may need to relink the media in Editor/Viewer.',
+                )
               }
             }
 

@@ -8,8 +8,8 @@ import { authenticatedFetch } from '@/utils/auth'
 import TranscriptEditor, { EditorSessionResponse, EditorSaveResponse } from '@/components/TranscriptEditor'
 import MediaMissingBanner from '@/components/MediaMissingBanner'
 import { routes } from '@/utils/routes'
-import { getTranscript as localGetTranscript } from '@/lib/storage'
-import { getMediaHandle, getMediaObjectURL, promptRelinkMedia, storeMediaHandle } from '@/lib/mediaHandles'
+import { getTranscript as localGetTranscript, saveTranscript as localSaveTranscript } from '@/lib/storage'
+import { getMediaObjectURL, promptRelinkMedia } from '@/lib/mediaHandles'
 
 type TranscriptData = EditorSessionResponse & {
   transcript?: string | null
@@ -76,17 +76,18 @@ export default function EditorPage() {
         if (!data) throw new Error('Transcript not found')
         setTranscriptData(data as unknown as TranscriptData)
         setMediaFilename((data as Record<string, unknown>).media_filename as string || '')
+        setMediaContentType((data as Record<string, unknown>).media_content_type as string || undefined)
 
         // Try to get media from IndexedDB handle
         if (blobUrlRef.current) {
           URL.revokeObjectURL(blobUrlRef.current)
           blobUrlRef.current = null
         }
-        const url = await getMediaObjectURL(key)
+        const mediaSourceId = ((data as Record<string, unknown>).media_handle_id as string) || key
+        const url = await getMediaObjectURL(mediaSourceId)
         if (url) {
           blobUrlRef.current = url
           setMediaUrl(url)
-          setMediaContentType((data as Record<string, unknown>).media_content_type as string || undefined)
           setMediaAvailable(true)
         } else {
           setMediaUrl('')
@@ -174,22 +175,47 @@ export default function EditorPage() {
 
   const handleRelinkMedia = useCallback(async () => {
     if (!mediaKey) return
-    const result = await promptRelinkMedia(mediaFilename || 'media file')
-    if (result) {
-      await storeMediaHandle(mediaKey, result.handle)
+    try {
+      const result = await promptRelinkMedia(mediaFilename || 'media file')
+      if (!result) return
+
+      const relinkedFile = await result.handle.getFile()
+      const nextMediaSourceId = result.handleId
+      const existing = await localGetTranscript(mediaKey)
+      if (existing) {
+        const existingRecord = existing as Record<string, unknown>
+        const caseId = typeof existingRecord.case_id === 'string' && existingRecord.case_id
+          ? existingRecord.case_id
+          : undefined
+        const updated = {
+          ...existingRecord,
+          media_handle_id: nextMediaSourceId,
+          media_filename: relinkedFile.name || (existingRecord.media_filename as string | undefined),
+          media_content_type: relinkedFile.type || (existingRecord.media_content_type as string | undefined),
+        } as Record<string, unknown>
+        await localSaveTranscript(mediaKey, updated, caseId)
+        setTranscriptData(updated as unknown as TranscriptData)
+        refreshRecentTranscripts()
+      }
+
+      setMediaFilename(relinkedFile.name || mediaFilename)
+      setMediaContentType(relinkedFile.type || mediaContentType)
+
       // Refresh media URL
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current)
         blobUrlRef.current = null
       }
-      const url = await getMediaObjectURL(mediaKey)
+      const url = await getMediaObjectURL(nextMediaSourceId)
       if (url) {
         blobUrlRef.current = url
         setMediaUrl(url)
         setMediaAvailable(true)
       }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to relink media')
     }
-  }, [mediaKey, mediaFilename])
+  }, [mediaContentType, mediaFilename, mediaKey, refreshRecentTranscripts])
 
   const openHistoryModal = useCallback(async () => {
     if (!mediaKey) return

@@ -1,5 +1,5 @@
 const DB_NAME = 'transcribealpha'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
@@ -16,6 +16,9 @@ export function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('media-handles')) {
         db.createObjectStore('media-handles')
+      }
+      if (!db.objectStoreNames.contains('media-blobs')) {
+        db.createObjectStore('media-blobs')
       }
     }
 
