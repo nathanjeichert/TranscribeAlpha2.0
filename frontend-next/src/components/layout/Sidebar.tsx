@@ -135,15 +135,16 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
         />
 
         <NavItem
-          href={routes.clipCreator()}
-          active={isActive(routes.clipCreator())}
+          href={routes.viewer()}
+          active={isActive(routes.viewer())}
           collapsed={collapsed}
           icon={
             <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
-              <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+              <circle cx="12" cy="12" r="3" />
             </svg>
           }
-          label="Clip Creator"
+          label="Viewer"
         />
 
         <NavItem
@@ -156,6 +157,19 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </svg>
           }
           label="Cases"
+        />
+
+        <NavItem
+          href={routes.converter()}
+          active={isActive(routes.converter())}
+          collapsed={collapsed}
+          icon={
+            <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
+              <path d="M4 4v6h6M20 20v-6h-6" />
+              <path d="M20 10a8 8 0 00-14.8-4M4 14a8 8 0 0014.8 4" />
+            </svg>
+          }
+          label="Converter"
         />
 
         {!collapsed && (

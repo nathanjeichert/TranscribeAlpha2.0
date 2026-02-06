@@ -828,12 +828,14 @@
   <input type="file" class="hidden" id="loadMediaFile" accept="audio/*,video/*">
 
   <script id="transcript-data" type="application/json">__TRANSCRIPT_JSON__</script>
+  <script id="media-data" type="application/octet-stream"></script>
   <script>
 (function() {
   'use strict';
 
   // Parse payload
   const dataEl = document.getElementById('transcript-data');
+  const mediaDataEl = document.getElementById('media-data');
   let payload = {};
   try {
     const raw = dataEl ? dataEl.textContent : '{}';
@@ -981,6 +983,30 @@
   }
 
   function setupVideo() {
+    const embeddedMedia = mediaDataEl && mediaDataEl.textContent
+      ? mediaDataEl.textContent.replace(/\s+/g, '')
+      : '';
+    if (embeddedMedia) {
+      try {
+        const binary = atob(embeddedMedia);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: mediaMeta.content_type || 'video/mp4' });
+        const url = URL.createObjectURL(blob);
+        if (localMediaUrl) {
+          URL.revokeObjectURL(localMediaUrl);
+        }
+        localMediaUrl = url;
+        setVideoSources([url], mediaMeta.content_type);
+        updateMediaLabel(titleData.FILE_NAME || mediaMeta.filename || 'Embedded media');
+        return;
+      } catch (err) {
+        console.warn('Unable to decode embedded media, falling back to path sources.', err);
+      }
+    }
+
     if (!mediaPath) {
       updateMediaLabel('');
       return;

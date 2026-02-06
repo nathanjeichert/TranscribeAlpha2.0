@@ -587,11 +587,20 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => {
                       setActiveMediaKey(transcript.media_key)
+                      guardedPush(router, routes.viewer(transcript.media_key, caseId))
+                    }}
+                    className="btn-primary text-sm px-3 py-1"
+                  >
+                    View
+                  </button>
+                  <button
+                    onClick={() => {
+                      setActiveMediaKey(transcript.media_key)
                       guardedPush(router, routes.editor(transcript.media_key))
                     }}
                     className="btn-outline text-sm px-3 py-1"
                   >
-                    Open
+                    Edit
                   </button>
                   <button
                     onClick={() => setTranscriptDeleteTarget(transcript)}

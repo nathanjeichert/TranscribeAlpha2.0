@@ -28,3 +28,6 @@ refactor-instructions/
 
 # Dependencies
 node_modules/
+
+# ffmpeg.wasm core (generated from node_modules)
+frontend-next/public/ffmpeg-core.*

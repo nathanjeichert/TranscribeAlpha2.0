@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 import anyio
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 try:
     from ..access_control import _user_owns_media_key
@@ -150,6 +150,24 @@ except ImportError:
         parse_docx_to_turns = word_legacy_module.parse_docx_to_turns
 
 try:
+    from ..transcript_formatting import create_pdf
+except ImportError:
+    try:
+        from transcript_formatting import create_pdf
+    except ImportError:
+        import transcript_formatting as transcript_formatting_module
+        create_pdf = transcript_formatting_module.create_pdf
+
+try:
+    from ..viewer import get_viewer_template
+except ImportError:
+    try:
+        from viewer import get_viewer_template
+    except ImportError:
+        import viewer as viewer_module
+        get_viewer_template = viewer_module.get_viewer_template
+
+try:
     from ..transcript_utils import (
         build_session_artifacts,
         build_snapshot_payload,
@@ -202,6 +220,98 @@ async def get_app_config():
             "import_viewer_html": APP_VARIANT == "criminal",
         }
     })
+
+
+@router.get("/api/viewer-template")
+async def get_viewer_template_endpoint(current_user: dict = Depends(get_current_user)):
+    if APP_VARIANT != "criminal":
+        raise HTTPException(status_code=400, detail="Viewer template is only available for criminal variant")
+    template_html = get_viewer_template()
+    return Response(content=template_html, media_type="text/html")
+
+
+@router.post("/api/format-pdf")
+async def format_pdf_clip_excerpt(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    title_data = payload.get("title_data")
+    line_entries = payload.get("line_entries")
+    lines_per_page = payload.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+
+    if not isinstance(title_data, dict):
+        raise HTTPException(status_code=400, detail="title_data must be an object")
+    if not isinstance(line_entries, list) or not line_entries:
+        raise HTTPException(status_code=400, detail="line_entries must be a non-empty array")
+
+    try:
+        page_size = int(lines_per_page)
+        if page_size <= 0:
+            page_size = DEFAULT_LINES_PER_PAGE
+    except (TypeError, ValueError):
+        page_size = DEFAULT_LINES_PER_PAGE
+
+    normalized_entries: List[dict] = []
+    for idx, raw_entry in enumerate(line_entries):
+        if not isinstance(raw_entry, dict):
+            continue
+
+        def _as_int(value, fallback):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        def _as_float(value, fallback):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        speaker = str(raw_entry.get("speaker") or "").strip()
+        text = str(raw_entry.get("text") or "")
+        rendered_text = str(raw_entry.get("rendered_text") or "")
+        if not rendered_text:
+            if speaker:
+                rendered_text = f"          {speaker}:   {text}"
+            else:
+                rendered_text = text
+
+        page = _as_int(raw_entry.get("page"), (idx // page_size) + 1)
+        line = _as_int(raw_entry.get("line"), (idx % page_size) + 1)
+        pgln = _as_int(raw_entry.get("pgln"), (page * 100) + line)
+        start = _as_float(raw_entry.get("start"), 0.0)
+        end = _as_float(raw_entry.get("end"), start)
+
+        normalized_entries.append(
+            {
+                "id": str(raw_entry.get("id") or f"line-{idx}"),
+                "speaker": speaker,
+                "text": text,
+                "rendered_text": rendered_text,
+                "start": start,
+                "end": end,
+                "page": page,
+                "line": line,
+                "pgln": pgln,
+                "is_continuation": bool(raw_entry.get("is_continuation", False)),
+            }
+        )
+
+    if not normalized_entries:
+        raise HTTPException(status_code=400, detail="No valid line_entries to format")
+
+    try:
+        pdf_bytes = create_pdf(title_data, normalized_entries, lines_per_page=page_size)
+    except Exception as exc:
+        logger.error("Failed to format PDF clip excerpt: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to generate PDF") from exc
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=clip-excerpt.pdf"},
+    )
 
 
 @router.post("/api/transcribe")

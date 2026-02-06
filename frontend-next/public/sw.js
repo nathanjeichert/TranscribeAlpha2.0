@@ -1,4 +1,9 @@
-const CACHE_NAME = 'ta-shell-v1'
+const CACHE_NAME = 'ta-shell-v2'
+const FFMPEG_CORE_FILES = new Set([
+  '/ffmpeg-core.js',
+  '/ffmpeg-core.wasm',
+  '/ffmpeg-core.worker.js',
+])
 
 self.addEventListener('install', (event) => {
   self.skipWaiting()
@@ -19,6 +24,27 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
+
+  if (FFMPEG_CORE_FILES.has(url.pathname)) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        const networkFetch = fetch(event.request)
+          .then((response) => {
+            if (response.ok) {
+              const clone = response.clone()
+              caches.open(CACHE_NAME).then((cache) => {
+                cache.put(event.request, clone)
+              })
+            }
+            return response
+          })
+          .catch(() => cached)
+
+        return cached || networkFetch
+      })
+    )
+    return
+  }
 
   // Network-first for API calls
   if (url.pathname.startsWith('/api/')) {

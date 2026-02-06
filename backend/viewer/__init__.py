@@ -17,6 +17,11 @@ def _load_template() -> str:
     return _TEMPLATE_CACHE
 
 
+def get_viewer_template() -> str:
+    """Return the raw standalone viewer template HTML."""
+    return _load_template()
+
+
 def render_viewer_html(payload: Dict[str, Any]) -> str:
     """Render the standalone HTML viewer with embedded transcript payload."""
     import re

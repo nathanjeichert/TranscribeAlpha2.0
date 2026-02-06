@@ -17,14 +17,18 @@ export const routes = {
     if (!mediaKey) return base
     return `${base}?key=${encodeURIComponent(mediaKey)}`
   },
-  clipCreator: (mediaKey?: string) => {
-    const base = withTrailingSlash('/clip-creator')
-    if (!mediaKey) return base
-    return `${base}?key=${encodeURIComponent(mediaKey)}`
+  viewer: (mediaKey?: string, caseId?: string) => {
+    const base = withTrailingSlash('/viewer')
+    const params = new URLSearchParams()
+    if (mediaKey) params.set('key', mediaKey)
+    if (caseId) params.set('case', caseId)
+    const query = params.toString()
+    return query ? `${base}?${query}` : base
   },
   cases: () => withTrailingSlash('/cases'),
   casesTab: (tab: string) => `${withTrailingSlash('/cases')}?tab=${encodeURIComponent(tab)}`,
   caseDetailBase: () => withTrailingSlash('/case-detail'),
   caseDetail: (caseId: string) => `${withTrailingSlash('/case-detail')}?id=${encodeURIComponent(caseId)}`,
   settings: () => withTrailingSlash('/settings'),
+  converter: () => withTrailingSlash('/converter'),
 }

@@ -18,6 +18,13 @@ import {
   type TranscriptData,
 } from '@/lib/storage'
 import { storeMediaHandle } from '@/lib/mediaHandles'
+import {
+  FFmpegCanceledError,
+  convertToPlayable,
+  detectCodec,
+  readConvertedFromCache,
+  writeConvertedToCache,
+} from '@/lib/ffmpegWorker'
 
 interface FormData {
   case_name: string
@@ -46,6 +53,7 @@ interface TranscriptResponse {
 interface QueueItem {
   id: string
   file: File
+  originalFileName: string
   fileHandle?: FileSystemFileHandle | null
   status: QueueItemStatus
   stageText: string
@@ -259,6 +267,7 @@ export default function TranscribePage() {
     return {
       id: buildQueueId(),
       file,
+      originalFileName: file.name,
       fileHandle: fileHandle ?? null,
       status: 'queued',
       stageText: 'Queued',
@@ -607,6 +616,67 @@ export default function TranscribePage() {
     [buildRequestFormData, updateQueueItem],
   )
 
+  const prepareUploadFile = useCallback(
+    async (item: QueueItem): Promise<File> => {
+      if (appVariant !== 'criminal') return item.file
+
+      updateQueueItem(item.id, {
+        status: 'transcribing',
+        stageText: 'Inspecting media format...',
+        error: '',
+      })
+
+      const codecInfo = await detectCodec(item.file)
+      if (!codecInfo.needsConversion) {
+        return item.file
+      }
+
+      const codecLabel = codecInfo.codecName || 'unsupported codec'
+      updateQueueItem(item.id, {
+        status: 'transcribing',
+        stageText: `Converting format (${codecLabel})...`,
+      })
+
+      const cached = await readConvertedFromCache(item.file)
+      if (cached) {
+        updateQueueItem(item.id, {
+          status: 'transcribing',
+          stageText: `Using cached converted media (${codecLabel}).`,
+        })
+        return cached
+      }
+
+      try {
+        const converted = await convertToPlayable(item.file, (ratio) => {
+          updateQueueItem(item.id, {
+            status: 'transcribing',
+            stageText: `Converting format (${codecLabel})... ${Math.round(ratio * 100)}%`,
+          })
+        })
+        await writeConvertedToCache(item.file, converted)
+        updateQueueItem(item.id, {
+          status: 'transcribing',
+          stageText: 'Conversion complete. Preparing upload...',
+        })
+        return converted
+      } catch (error) {
+        if (error instanceof FFmpegCanceledError) {
+          throw {
+            message: 'Media conversion canceled.',
+            retryable: false,
+          } satisfies RequestFailure
+        }
+
+        const message = error instanceof Error ? error.message : 'Media conversion failed.'
+        throw {
+          message,
+          retryable: false,
+        } satisfies RequestFailure
+      }
+    },
+    [appVariant, updateQueueItem],
+  )
+
   const runQueue = useCallback(
     async (targetStatuses: QueueItemStatus[]) => {
       if (isProcessing) return
@@ -669,14 +739,23 @@ export default function TranscribePage() {
           })
 
           try {
-            const data = await transcribeOneItem(freshItem)
+            const fileForUpload = await prepareUploadFile(freshItem)
+            const uploadItem: QueueItem = fileForUpload === freshItem.file
+              ? freshItem
+              : { ...freshItem, file: fileForUpload }
+            const data = await transcribeOneItem(uploadItem)
 
             // Criminal variant: save transcript to local workspace
             if (appVariant === 'criminal' && data.media_key) {
               const effectiveCaseId = getEffectiveCaseId(freshItem)
+              const titleData = { ...(data.title_data || {}) }
+              if (freshItem.originalFileName) {
+                titleData.FILE_NAME = freshItem.originalFileName
+              }
               const transcriptToSave = {
                 ...(data as unknown as Record<string, unknown>),
-                media_filename: freshItem.file.name,
+                title_data: titleData,
+                media_filename: freshItem.originalFileName || freshItem.file.name,
               } as TranscriptData
               await localSaveTranscript(
                 data.media_key,
@@ -769,6 +848,7 @@ export default function TranscribePage() {
       refreshCases,
       refreshRecentTranscripts,
       setActiveMediaKey,
+      prepareUploadFile,
       transcribeOneItem,
       updateQueueItem,
     ],

@@ -168,17 +168,18 @@ export default function DashboardHome() {
         </Link>
 
         <Link
-          href={routes.clipCreator()}
+          href={routes.viewer()}
           className="bg-white rounded-xl p-5 border border-gray-100 hover:border-primary-200 hover:shadow-md transition-all flex items-center gap-4"
         >
           <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
             <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+              <circle cx="12" cy="12" r="3" />
             </svg>
           </div>
           <div>
-            <p className="font-semibold text-gray-900">Clip Creator</p>
-            <p className="text-sm text-gray-500">Extract video clips</p>
+            <p className="font-semibold text-gray-900">Viewer</p>
+            <p className="text-sm text-gray-500">Play, present, and clip</p>
           </div>
         </Link>
       </div>

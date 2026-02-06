@@ -622,3 +622,175 @@ export async function clearWorkspace(): Promise<void> {
   })
   workspaceHandle = null
 }
+
+// ─── Clip and Sequence Operations ──────────────────────────────────
+
+export interface ClipRecord {
+  clip_id: string
+  name: string
+  source_media_key: string
+  start_time: number
+  end_time: number
+  start_pgln?: number | null
+  end_pgln?: number | null
+  start_page?: number | null
+  start_line?: number | null
+  end_page?: number | null
+  end_line?: number | null
+  created_at: string
+  updated_at?: string
+  order?: number
+}
+
+export interface ClipSequenceEntry {
+  clip_id: string
+  source_media_key: string
+  order: number
+}
+
+export interface ClipSequenceRecord {
+  sequence_id: string
+  name: string
+  created_at: string
+  updated_at: string
+  order?: number
+  entries: ClipSequenceEntry[]
+}
+
+function sortByOrderThenCreatedAt<T extends { order?: number; created_at?: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aOrder = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER
+    const bOrder = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER
+    if (aOrder !== bOrder) return aOrder - bOrder
+    return (a.created_at || '').localeCompare(b.created_at || '')
+  })
+}
+
+function normalizeSequenceEntries(entries: ClipSequenceEntry[]): ClipSequenceEntry[] {
+  return [...entries]
+    .sort((a, b) => a.order - b.order)
+    .map((entry, index) => ({
+      clip_id: entry.clip_id,
+      source_media_key: entry.source_media_key,
+      order: Number.isFinite(entry.order) ? entry.order : index,
+    }))
+}
+
+export async function listCaseClips(caseId: string): Promise<ClipRecord[]> {
+  const files = await listDirectory(`cases/${caseId}/clips`)
+  const clips: ClipRecord[] = []
+
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+    const clip = await readJSON<ClipRecord>(`cases/${caseId}/clips/${file}`)
+    if (clip) clips.push(clip)
+  }
+
+  return sortByOrderThenCreatedAt(clips)
+}
+
+export async function listTranscriptClips(caseId: string, mediaKey: string): Promise<ClipRecord[]> {
+  const allClips = await listCaseClips(caseId)
+  return allClips.filter((clip) => clip.source_media_key === mediaKey)
+}
+
+export async function getClip(caseId: string, clipId: string): Promise<ClipRecord | null> {
+  return readJSON<ClipRecord>(`cases/${caseId}/clips/${clipId}.json`)
+}
+
+export async function saveClip(caseId: string, clip: ClipRecord): Promise<void> {
+  const now = new Date().toISOString()
+  const record: ClipRecord = {
+    ...clip,
+    clip_id: clip.clip_id,
+    created_at: clip.created_at || now,
+    updated_at: now,
+  }
+  await writeJSON(`cases/${caseId}/clips/${record.clip_id}.json`, record)
+}
+
+export async function deleteClip(caseId: string, clipId: string): Promise<void> {
+  await deleteFile(`cases/${caseId}/clips/${clipId}.json`)
+}
+
+export async function listCaseSequences(caseId: string): Promise<ClipSequenceRecord[]> {
+  const files = await listDirectory(`cases/${caseId}/sequences`)
+  const sequences: ClipSequenceRecord[] = []
+
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+    const sequence = await readJSON<ClipSequenceRecord>(`cases/${caseId}/sequences/${file}`)
+    if (sequence) {
+      sequences.push({
+        ...sequence,
+        entries: normalizeSequenceEntries(sequence.entries || []),
+      })
+    }
+  }
+
+  return sortByOrderThenCreatedAt(sequences)
+}
+
+export async function getSequence(caseId: string, sequenceId: string): Promise<ClipSequenceRecord | null> {
+  const sequence = await readJSON<ClipSequenceRecord>(`cases/${caseId}/sequences/${sequenceId}.json`)
+  if (!sequence) return null
+  return {
+    ...sequence,
+    entries: normalizeSequenceEntries(sequence.entries || []),
+  }
+}
+
+export async function saveSequence(caseId: string, sequence: ClipSequenceRecord): Promise<void> {
+  const now = new Date().toISOString()
+  const record: ClipSequenceRecord = {
+    ...sequence,
+    sequence_id: sequence.sequence_id,
+    created_at: sequence.created_at || now,
+    updated_at: now,
+    entries: normalizeSequenceEntries(sequence.entries || []),
+  }
+  await writeJSON(`cases/${caseId}/sequences/${record.sequence_id}.json`, record)
+}
+
+export async function deleteSequence(caseId: string, sequenceId: string): Promise<void> {
+  await deleteFile(`cases/${caseId}/sequences/${sequenceId}.json`)
+}
+
+// ─── Binary File Operations ────────────────────────────────────────
+
+export async function writeBinaryFile(
+  path: string,
+  data: ArrayBuffer | Uint8Array | Blob,
+): Promise<void> {
+  const root = getWorkspaceHandle()
+  const parts = path.split('/')
+  const filename = parts.pop()!
+  const dir = await navigateToDir(root, parts, true)
+  const fileHandle = await dir.getFileHandle(filename, { create: true })
+  const writable = await fileHandle.createWritable()
+  let payload: ArrayBuffer | Blob
+  if (data instanceof Uint8Array) {
+    // Ensure the payload is ArrayBuffer-backed for File System Access typings.
+    const copy = new Uint8Array(data.byteLength)
+    copy.set(data)
+    payload = copy.buffer
+  } else {
+    payload = data
+  }
+  await writable.write(payload)
+  await writable.close()
+}
+
+export async function readBinaryFile(path: string): Promise<ArrayBuffer | null> {
+  try {
+    const root = getWorkspaceHandle()
+    const parts = path.split('/')
+    const filename = parts.pop()!
+    const dir = await navigateToDir(root, parts)
+    const fileHandle = await dir.getFileHandle(filename)
+    const file = await fileHandle.getFile()
+    return await file.arrayBuffer()
+  } catch {
+    return null
+  }
+}
