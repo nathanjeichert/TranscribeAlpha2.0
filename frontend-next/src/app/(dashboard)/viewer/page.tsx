@@ -69,6 +69,7 @@ type ToolsTab = 'clips' | 'sequences'
 
 const SEARCH_TOLERANCE = 0.05
 const PROGRAMMATIC_SCROLL_RESET_MS = 700
+const PRESENTATION_UI_IDLE_MS = 1400
 const SPEAKER_LINE_PATTERN = /^(\s*)([A-Z][A-Z0-9 .,'"&/()-]*:)(\s*)(.*)$/
 
 const formatClock = (seconds: number) => {
@@ -331,7 +332,7 @@ export default function ViewerPage() {
   const [sequenceState, setSequenceState] = useState<SequenceState>({ phase: 'idle' })
 
   const [activeClipPlaybackId, setActiveClipPlaybackId] = useState<string | null>(null)
-  const [presentationHovering, setPresentationHovering] = useState(false)
+  const [presentationUiVisible, setPresentationUiVisible] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -344,6 +345,7 @@ export default function ViewerPage() {
   const blobUrlRef = useRef<string | null>(null)
   const programmaticScrollRef = useRef(false)
   const clipRafRef = useRef<number | null>(null)
+  const presentationUiTimerRef = useRef<number | null>(null)
   const sequenceAbortRef = useRef(false)
   const transcriptCacheRef = useRef<Record<string, ViewerTranscript>>({})
   const templateCacheRef = useRef<string | null>(null)
@@ -588,19 +590,38 @@ export default function ViewerPage() {
     })
   }, [sequences])
 
+  const clearPresentationUiTimer = useCallback(() => {
+    if (presentationUiTimerRef.current) {
+      window.clearTimeout(presentationUiTimerRef.current)
+      presentationUiTimerRef.current = null
+    }
+  }, [])
+
+  const revealPresentationUi = useCallback(() => {
+    if (!presentationMode) return
+    setPresentationUiVisible(true)
+    clearPresentationUiTimer()
+    presentationUiTimerRef.current = window.setTimeout(() => {
+      setPresentationUiVisible(false)
+      presentationUiTimerRef.current = null
+    }, PRESENTATION_UI_IDLE_MS)
+  }, [clearPresentationUiTimer, presentationMode])
+
   useEffect(() => {
     if (!presentationMode) {
-      setPresentationHovering(false)
+      setPresentationUiVisible(false)
+      clearPresentationUiTimer()
     }
-  }, [presentationMode])
+  }, [clearPresentationUiTimer, presentationMode])
 
   useEffect(() => {
     return () => {
       revokeMediaUrl()
       stopClipPlaybackLoop()
+      clearPresentationUiTimer()
       sequenceAbortRef.current = true
     }
-  }, [revokeMediaUrl, stopClipPlaybackLoop])
+  }, [clearPresentationUiTimer, revokeMediaUrl, stopClipPlaybackLoop])
 
   const findLineAtTime = useCallback((value: number): ViewerLine | null => {
     if (!transcript || !transcript.lines.length) return null
@@ -681,7 +702,12 @@ export default function ViewerPage() {
   const enterPresentationMode = useCallback(async () => {
     const target = viewerShellRef.current
     setPresentationMode(true)
-    setPresentationHovering(true)
+    setPresentationUiVisible(true)
+    clearPresentationUiTimer()
+    presentationUiTimerRef.current = window.setTimeout(() => {
+      setPresentationUiVisible(false)
+      presentationUiTimerRef.current = null
+    }, PRESENTATION_UI_IDLE_MS)
 
     if (target && !document.fullscreenElement) {
       try {
@@ -690,7 +716,7 @@ export default function ViewerPage() {
         // Ignore fullscreen errors; presentation still toggles layout mode.
       }
     }
-  }, [])
+  }, [clearPresentationUiTimer])
 
   const exitPresentationMode = useCallback(async () => {
     sequenceAbortRef.current = true
@@ -698,7 +724,8 @@ export default function ViewerPage() {
     setTitleCard(null)
     setSequenceState({ phase: 'idle' })
     setPresentationMode(false)
-    setPresentationHovering(false)
+    setPresentationUiVisible(false)
+    clearPresentationUiTimer()
 
     if (document.fullscreenElement) {
       try {
@@ -707,7 +734,7 @@ export default function ViewerPage() {
         // Ignore exit fullscreen errors.
       }
     }
-  }, [stopClipPlaybackLoop])
+  }, [clearPresentationUiTimer, stopClipPlaybackLoop])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -797,14 +824,15 @@ export default function ViewerPage() {
         sequenceAbortRef.current = true
         stopClipPlaybackLoop()
         setPresentationMode(false)
-        setPresentationHovering(false)
+        setPresentationUiVisible(false)
+        clearPresentationUiTimer()
         setTitleCard(null)
         setSequenceState({ phase: 'idle' })
       }
     }
     document.addEventListener('fullscreenchange', onFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
-  }, [presentationMode, stopClipPlaybackLoop])
+  }, [clearPresentationUiTimer, presentationMode, stopClipPlaybackLoop])
 
   const handleTimeUpdate = useCallback(() => {
     const player = getPlayerElement()
@@ -1498,7 +1526,7 @@ export default function ViewerPage() {
     )
   }
 
-  const presentationControlsVisible = !presentationMode || presentationHovering
+  const presentationControlsVisible = !presentationMode || presentationUiVisible
 
   const playerSharedProps = {
     controls: presentationControlsVisible,
@@ -1521,7 +1549,7 @@ export default function ViewerPage() {
       )}
 
       {mediaLoading && (
-        <div className="absolute right-3 top-3 rounded bg-black/70 px-2 py-1 text-xs text-white">
+        <div className="absolute right-3 top-3 rounded border border-stone-300 bg-white/95 px-2 py-1 text-xs text-stone-700">
           Loading media...
         </div>
       )}
@@ -1529,12 +1557,12 @@ export default function ViewerPage() {
   )
 
   return (
-    <div ref={viewerShellRef} className={`h-full ${presentationMode ? 'bg-slate-950 text-white' : 'bg-gray-50 text-gray-900'}`}>
+    <div ref={viewerShellRef} className="h-full bg-stone-100 text-stone-900">
       {titleCard?.visible && (
-        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div className="rounded-xl border border-white/20 bg-black/60 px-8 py-6 text-center text-white shadow-2xl">
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/45">
+          <div className="rounded-xl border border-stone-300 bg-stone-50/95 px-8 py-6 text-center text-stone-900 shadow-2xl">
             <div className="text-2xl font-semibold">{titleCard.title}</div>
-            <div className="mt-2 text-sm text-slate-200">{titleCard.meta}</div>
+            <div className="mt-2 text-sm text-stone-700">{titleCard.meta}</div>
           </div>
         </div>
       )}
@@ -1567,23 +1595,23 @@ export default function ViewerPage() {
               </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center rounded-lg border border-gray-200 bg-white p-0.5">
-                <button
-                  type="button"
-                  className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
-                  onClick={() => setViewerMode('document')}
-                >
-                  Doc
-                </button>
-                <button
-                  type="button"
-                  className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
-                  onClick={() => setViewerMode('caption')}
-                >
-                  Caption
-                </button>
-              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center rounded-lg border border-gray-200 bg-white p-0.5">
+                  <button
+                    type="button"
+                    className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
+                    onClick={() => setViewerMode('document')}
+                  >
+                    Doc
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
+                    onClick={() => setViewerMode('caption')}
+                  >
+                    Caption
+                  </button>
+                </div>
 
               <button
                 type="button"
@@ -1653,31 +1681,36 @@ export default function ViewerPage() {
         <div className={`grid h-full min-h-0 ${toolsVisible ? 'grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1'}`}>
           <div className={`grid h-full min-h-0 ${isDocumentMode ? 'grid-cols-1 xl:grid-cols-[minmax(340px,44%)_minmax(0,1fr)]' : 'grid-cols-1'}`}>
             <section
-              className={`relative flex min-h-0 flex-col ${presentationMode ? 'bg-slate-950' : 'bg-slate-900'}`}
-              onMouseEnter={() => {
-                if (presentationMode) setPresentationHovering(true)
+              className="relative flex min-h-0 flex-col bg-stone-100"
+              onMouseMove={() => {
+                if (presentationMode) revealPresentationUi()
               }}
               onMouseLeave={() => {
-                if (presentationMode) setPresentationHovering(false)
+                if (presentationMode) {
+                  clearPresentationUiTimer()
+                  setPresentationUiVisible(false)
+                }
               }}
             >
               {presentationMode && (
                 <div
+                  onMouseEnter={revealPresentationUi}
+                  onMouseMove={revealPresentationUi}
                   className={`absolute right-4 top-4 z-30 flex items-center gap-2 transition-opacity duration-200 ${
                     presentationControlsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
                   }`}
                 >
-                  <div className="flex items-center rounded border border-white/25 bg-black/50 p-0.5">
+                  <div className="flex items-center rounded border border-stone-300 bg-white/95 p-0.5 shadow-sm">
                     <button
                       type="button"
-                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-white text-slate-900' : 'text-slate-200 hover:bg-white/20'}`}
+                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
                       onClick={() => setViewerMode('document')}
                     >
                       Doc
                     </button>
                     <button
                       type="button"
-                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-white text-slate-900' : 'text-slate-200 hover:bg-white/20'}`}
+                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
                       onClick={() => setViewerMode('caption')}
                     >
                       Caption
@@ -1685,7 +1718,7 @@ export default function ViewerPage() {
                   </div>
                   <button
                     type="button"
-                    className="rounded border border-white/30 bg-black/40 px-3 py-1.5 text-sm text-white hover:bg-black/60"
+                    className="rounded border border-stone-300 bg-white/95 px-3 py-1.5 text-sm text-stone-800 shadow-sm hover:bg-stone-100"
                     onClick={() => void exitPresentationMode()}
                   >
                     Exit
@@ -1694,12 +1727,12 @@ export default function ViewerPage() {
               )}
 
               {!presentationMode && (
-                <div className="border-b border-slate-700 bg-slate-900 px-4 py-3">
+                <div className="border-b border-stone-300 bg-white px-4 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm font-medium text-slate-100">
+                    <div className="text-sm font-medium text-stone-900">
                       {transcript?.title_data?.CASE_NAME || transcript?.title_data?.FILE_NAME || transcript?.media_key}
                     </div>
-                    <div className="text-xs text-slate-300">
+                    <div className="text-xs text-stone-600">
                       {formatClock(currentTime)} / {formatClock(duration || transcript?.audio_duration || 0)}
                     </div>
                   </div>
@@ -1709,7 +1742,7 @@ export default function ViewerPage() {
               <div className="min-h-0 flex-1 p-3">
                 {viewerMode === 'caption' ? (
                   <div className="flex h-full min-h-0 flex-col gap-3">
-                    <div className={`relative min-h-0 flex-[3] rounded-xl border ${presentationMode ? 'border-slate-700 bg-black' : 'border-black/30 bg-black'}`}>
+                    <div className="relative min-h-0 flex-1 rounded-xl border border-stone-300 bg-stone-50">
                       {isVideo ? (
                         <video
                           ref={videoRef}
@@ -1721,27 +1754,27 @@ export default function ViewerPage() {
                           <audio
                             ref={audioRef}
                             {...playerSharedProps}
-                            className="w-full rounded-xl border border-white/20 bg-black"
+                            className="w-full rounded-xl border border-stone-300 bg-white"
                           />
                         </div>
                       )}
                       {mediaStatusOverlay}
                     </div>
 
-                    <div className={`min-h-0 flex-[2] overflow-y-auto rounded-xl border px-6 py-5 ${presentationMode ? 'border-slate-700 bg-black/70 text-white' : 'border-slate-700 bg-slate-900 text-white'}`}>
-                      <div className="space-y-2 font-mono">
-                        <div className="text-base text-white/35">{captionWindow.prev2}</div>
-                        <div className="text-lg text-white/60">{captionWindow.prev1}</div>
-                        <div className="rounded border border-white/25 bg-white/10 px-3 py-2 text-2xl leading-snug text-white">
+                    <div className="shrink-0 max-h-[28vh] overflow-y-auto rounded-xl border border-stone-300 bg-white px-6 py-4 shadow-sm">
+                      <div className="space-y-2" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
+                        <div className="text-base text-stone-400">{captionWindow.prev2}</div>
+                        <div className="text-lg text-stone-500">{captionWindow.prev1}</div>
+                        <div className="rounded border border-stone-300 bg-stone-100 px-3 py-2 text-2xl leading-snug text-stone-900">
                           {captionWindow.current}
                         </div>
-                        <div className="text-lg text-white/60">{captionWindow.next1}</div>
-                        <div className="text-base text-white/35">{captionWindow.next2}</div>
+                        <div className="text-lg text-stone-500">{captionWindow.next1}</div>
+                        <div className="text-base text-stone-400">{captionWindow.next2}</div>
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <div className={`relative h-full rounded-xl border ${presentationMode ? 'border-slate-700 bg-black' : 'border-black/30 bg-black'}`}>
+                  <div className="relative h-full rounded-xl border border-stone-300 bg-stone-50">
                     {isVideo ? (
                       <video
                         ref={videoRef}
@@ -1753,7 +1786,7 @@ export default function ViewerPage() {
                         <audio
                           ref={audioRef}
                           {...playerSharedProps}
-                          className="w-full rounded-xl border border-white/20 bg-black"
+                          className="w-full rounded-xl border border-stone-300 bg-white"
                         />
                       </div>
                     )}
@@ -1764,7 +1797,7 @@ export default function ViewerPage() {
             </section>
 
             {isDocumentMode && (
-              <section className={`relative flex min-h-0 flex-col ${presentationMode ? 'bg-slate-950 text-white' : 'bg-gray-100 text-gray-900'}`}>
+              <section className="relative flex min-h-0 flex-col bg-stone-100 text-stone-900">
                 {!presentationMode && (
                   <div className="px-4 pb-2 pt-3">
                     <div className="rounded-xl border border-gray-200 bg-white p-2">
@@ -1806,11 +1839,11 @@ export default function ViewerPage() {
                   )}
 
                   {isLoading ? (
-                    <div className={`rounded-xl border px-4 py-6 text-sm ${presentationMode ? 'border-slate-700 bg-slate-900 text-slate-200' : 'border-gray-200 bg-white text-gray-600'}`}>
+                    <div className="rounded-xl border border-stone-300 bg-white px-4 py-6 text-sm text-stone-600">
                       Loading transcript...
                     </div>
                   ) : groupedPages.length === 0 ? (
-                    <div className={`rounded-xl border px-4 py-6 text-sm ${presentationMode ? 'border-slate-700 bg-slate-900 text-slate-200' : 'border-gray-200 bg-white text-gray-600'}`}>
+                    <div className="rounded-xl border border-stone-300 bg-white px-4 py-6 text-sm text-stone-600">
                       No transcript lines available.
                     </div>
                   ) : (
@@ -1818,13 +1851,13 @@ export default function ViewerPage() {
                       {groupedPages.map((pageBlock) => (
                         <div
                           key={pageBlock.page}
-                          className={`mx-auto w-full max-w-[8.5in] rounded border ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-300 bg-white shadow-md'}`}
+                          className="mx-auto w-full max-w-[8.5in] rounded border border-stone-300 bg-white shadow-md"
                         >
-                          <div className={`border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide ${presentationMode ? 'border-slate-700 text-slate-300' : 'border-gray-200 text-gray-500'}`}>
+                          <div className="border-b border-stone-200 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
                             Page {pageBlock.page}
                           </div>
 
-                          <div className={`px-2 ${presentationMode ? 'divide-y divide-slate-700/50' : 'divide-y divide-dashed divide-gray-200'}`}>
+                          <div className="divide-y divide-stone-200 px-2" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
                             {pageBlock.lines.map((line) => {
                               const active = activeLineId === line.id
                               const selected = selectedLineId === line.id
@@ -1833,12 +1866,11 @@ export default function ViewerPage() {
                               const lineDisplay = splitSpeakerPrefix(line)
 
                               const lineClasses = [
-                                'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-1.5 font-mono text-[15px] leading-8 transition-colors',
-                                presentationMode ? 'text-slate-100 hover:bg-slate-800/60' : 'text-gray-900 hover:bg-gray-50',
-                                active ? (presentationMode ? 'bg-amber-300/20' : 'bg-amber-100') : '',
+                                'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-1.5 font-mono text-[15px] leading-8 text-stone-900 transition-colors hover:bg-stone-50',
+                                active ? 'bg-amber-100' : '',
                                 selected ? 'ring-1 ring-primary-400' : '',
-                                match ? (presentationMode ? 'bg-amber-200/15' : 'bg-amber-50') : '',
-                                currentMatch ? (presentationMode ? 'outline outline-1 outline-amber-300' : 'outline outline-1 outline-amber-400') : '',
+                                match ? 'bg-amber-50' : '',
+                                currentMatch ? 'outline outline-1 outline-amber-400' : '',
                               ]
 
                               return (
@@ -1853,14 +1885,14 @@ export default function ViewerPage() {
                                     seekToLine(line, true)
                                   }}
                                 >
-                                  <div className={`pt-0.5 text-right text-[11px] ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                                  <div className="pt-0.5 text-right text-[11px] text-stone-500">
                                     {line.line || '-'}
                                   </div>
                                   <div className="whitespace-pre-wrap break-words">
                                     {lineDisplay.speakerLabel ? (
                                       <>
                                         {lineDisplay.leading}
-                                        <span className={`font-semibold ${presentationMode ? 'text-slate-200' : 'text-gray-800'}`}>
+                                        <span className="font-semibold text-stone-800">
                                           {lineDisplay.speakerLabel}
                                         </span>
                                         {lineDisplay.trailing}
