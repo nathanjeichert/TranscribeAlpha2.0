@@ -33,6 +33,8 @@ interface ConverterItem {
 }
 
 const buildId = () => `${Date.now()}_${Math.random().toString(16).slice(2)}`
+const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024
+const LARGE_ZIP_WARNING_BYTES = 750 * 1024 * 1024
 
 function statusLabel(status: ConverterStatus): string {
   if (status === 'detecting') return 'Detecting'
@@ -79,10 +81,13 @@ export default function ConverterPage() {
   const [pageNotice, setPageNotice] = useState('')
   const [isConverting, setIsConverting] = useState(false)
   const [zipBusy, setZipBusy] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const stopRequestedRef = useRef(false)
   const itemsRef = useRef<ConverterItem[]>([])
+  const dragDepthRef = useRef(0)
 
   useEffect(() => {
     itemsRef.current = items
@@ -143,9 +148,7 @@ export default function ConverterPage() {
 
     setItems((prev) => [...prev, ...newItems])
 
-    for (const item of newItems) {
-      await detectForItem(item.id, item.file)
-    }
+    await Promise.allSettled(newItems.map((item) => detectForItem(item.id, item.file)))
   }, [detectForItem])
 
   const handleFileInputChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -157,13 +160,30 @@ export default function ConverterPage() {
 
   const handleDrop = useCallback(async (event: React.DragEvent<HTMLLabelElement>) => {
     event.preventDefault()
+    dragDepthRef.current = 0
+    setDragOver(false)
     const files = event.dataTransfer.files
     if (!files || !files.length) return
     await addFiles(Array.from(files))
   }, [addFiles])
 
+  const handleDragEnter = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
+    event.preventDefault()
+    dragDepthRef.current += 1
+    setDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
+    event.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) {
+      setDragOver(false)
+    }
+  }, [])
+
   const handleDragOver = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
     event.preventDefault()
+    setDragOver(true)
   }, [])
 
   const convertReadyFiles = useCallback(async () => {
@@ -175,15 +195,46 @@ export default function ConverterPage() {
       return
     }
 
+    const itemsToConvert: ConverterItem[] = []
+    for (const item of readyItems) {
+      if (item.file.size <= LARGE_FILE_WARNING_BYTES) {
+        itemsToConvert.push(item)
+        continue
+      }
+
+      const shouldContinue = window.confirm(
+        `This file is very large (${formatBytes(item.file.size)}). In-browser conversion may fail. Continue?\n\n${item.file.name}`,
+      )
+      if (shouldContinue) {
+        updateItem(item.id, { error: '' })
+        itemsToConvert.push(item)
+      } else {
+        updateItem(item.id, {
+          status: 'ready',
+          progress: 0,
+          error: 'Skipped in this batch due to large file size.',
+        })
+      }
+    }
+
+    if (!itemsToConvert.length) {
+      setPageError('')
+      setPageNotice('No files selected for conversion after large-file warnings.')
+      return
+    }
+
     stopRequestedRef.current = false
     setIsConverting(true)
+    setBatchProgress({ current: 1, total: itemsToConvert.length })
     setPageError('')
     setPageNotice('')
 
     try {
-      for (const item of readyItems) {
+      for (let index = 0; index < itemsToConvert.length; index += 1) {
+        const item = itemsToConvert[index]
         if (stopRequestedRef.current) break
 
+        setBatchProgress({ current: index + 1, total: itemsToConvert.length })
         updateItem(item.id, {
           status: 'converting',
           progress: 0,
@@ -191,7 +242,13 @@ export default function ConverterPage() {
         })
 
         try {
-          const cached = await readConvertedFromCache(item.file)
+          let cached: File | null = null
+          try {
+            cached = await readConvertedFromCache(item.file)
+          } catch (cacheReadError) {
+            console.warn('Converter cache read failed, continuing with conversion.', cacheReadError)
+          }
+
           if (cached) {
             updateItem(item.id, {
               status: 'converted',
@@ -208,7 +265,11 @@ export default function ConverterPage() {
             })
           })
 
-          await writeConvertedToCache(item.file, converted)
+          try {
+            await writeConvertedToCache(item.file, converted)
+          } catch (cacheWriteError) {
+            console.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
+          }
 
           updateItem(item.id, {
             status: 'converted',
@@ -233,6 +294,7 @@ export default function ConverterPage() {
       }
     } finally {
       setIsConverting(false)
+      setBatchProgress(null)
       if (stopRequestedRef.current) {
         setPageNotice('Conversion stopped. Completed files were kept.')
       }
@@ -245,11 +307,36 @@ export default function ConverterPage() {
     cancelActiveFFmpegJob()
   }, [])
 
+  const removeItem = useCallback((id: string) => {
+    if (isConverting) return
+    setItems((prev) => prev.filter((item) => item.id !== id))
+  }, [isConverting])
+
+  const retryItem = useCallback((id: string) => {
+    if (isConverting) return
+    updateItem(id, {
+      status: 'ready',
+      progress: 0,
+      error: '',
+      convertedFile: null,
+    })
+  }, [isConverting, updateItem])
+
   const downloadAllZip = useCallback(async () => {
     const converted = itemsRef.current.filter((item) => item.convertedFile).map((item) => item.convertedFile as File)
     if (!converted.length) {
       setPageError('No converted files are available to download.')
       return
+    }
+
+    const totalBytes = converted.reduce((sum, file) => sum + file.size, 0)
+    if (totalBytes > LARGE_ZIP_WARNING_BYTES) {
+      const shouldContinue = window.confirm(
+        `This ZIP is very large (${formatBytes(totalBytes)} across ${converted.length} files). Building it in-browser may fail. Continue?`,
+      )
+      if (!shouldContinue) {
+        return
+      }
     }
 
     setZipBusy(true)
@@ -269,10 +356,10 @@ export default function ConverterPage() {
           suffix += 1
         }
         usedNames.add(name)
-        zip.file(name, await file.arrayBuffer())
+        zip.file(name, file)
       }
 
-      const blob = await zip.generateAsync({ type: 'blob' })
+      const blob = await zip.generateAsync({ type: 'blob', streamFiles: true })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -326,8 +413,14 @@ export default function ConverterPage() {
         <label
           htmlFor="converter-file-picker"
           onDrop={handleDrop}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
           onDragOver={handleDragOver}
-          className="block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors border-gray-300 hover:border-primary-400 hover:bg-primary-50"
+          className={`block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
+            dragOver
+              ? 'border-primary-500 bg-primary-50'
+              : 'border-gray-300 hover:border-primary-400 hover:bg-primary-50'
+          }`}
         >
           <input
             id="converter-file-picker"
@@ -357,6 +450,11 @@ export default function ConverterPage() {
             <p className="text-sm text-gray-500">
               {formatBytes(totals.totalSize)} total, {totals.readyCount} ready, {totals.convertedCount} converted
             </p>
+            {isConverting && batchProgress && (
+              <p className="text-sm font-medium text-primary-700 mt-1">
+                Converting {batchProgress.current} of {batchProgress.total}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -423,6 +521,17 @@ export default function ConverterPage() {
                 {statusLabel(item.status)}
               </span>
 
+              {item.status === 'failed' && (
+                <button
+                  type="button"
+                  onClick={() => retryItem(item.id)}
+                  disabled={isConverting}
+                  className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Retry
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => {
@@ -433,6 +542,16 @@ export default function ConverterPage() {
                 className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Download
+              </button>
+
+              <button
+                type="button"
+                onClick={() => removeItem(item.id)}
+                disabled={isConverting}
+                className="btn-outline px-3 py-1.5 text-sm text-red-700 border-red-300 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-label={`Remove ${item.file.name}`}
+              >
+                X
               </button>
             </div>
           ))}
