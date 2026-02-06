@@ -587,13 +587,37 @@
       width: var(--page-width);
       max-width: 100%;
       background: var(--bg-page);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      box-shadow: var(--shadow-lg);
-      padding: var(--page-margin-top) var(--page-margin-right) var(--page-margin-bottom) var(--page-margin-left);
+      box-shadow: 0 4px 24px rgba(15,23,42,0.12);
+      padding: 0.33in;
+      position: relative;
       display: none;
     }
     .doc-page.active { display: block; }
+    .doc-page::before,
+    .doc-page::after {
+      content: '';
+      position: absolute;
+      pointer-events: none;
+      border: 1px solid var(--color-400);
+    }
+    .doc-page::before {
+      top: 0.33in; right: 0.33in; bottom: 0.33in; left: 0.33in;
+    }
+    .doc-page::after {
+      top: calc(0.33in + 4px); right: calc(0.33in + 4px); bottom: calc(0.33in + 4px); left: calc(0.33in + 4px);
+    }
+    .doc-page-inner {
+      position: relative;
+      padding: calc(var(--page-margin-top) - 0.33in) calc(var(--page-margin-right) - 0.33in) calc(var(--page-margin-bottom) - 0.33in) calc(var(--page-margin-left) - 0.33in);
+    }
+    .doc-page-number {
+      text-align: center;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+      padding-top: 8px;
+      user-select: none;
+    }
 
     .doc-line {
       display: flex;
@@ -628,12 +652,19 @@
       word-break: break-word;
       color: var(--text-primary);
     }
-    .line-text .speaker-name { font-weight: 600; }
+    .line-text .speaker-name { font-weight: bold; }
 
     .doc-empty {
       text-align: center;
       padding: 48px;
       color: var(--text-muted);
+    }
+
+    /* Audio Waveform Visualizer */
+    .waveform-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
 
     /* Caption Mode - hide document pane, video takes full width */
@@ -776,6 +807,7 @@
         <div class="video-pane" id="videoPane">
           <div class="video-container">
             <video id="video" preload="metadata" playsinline></video>
+            <canvas id="waveformCanvas" class="waveform-canvas" style="display:none;"></canvas>
             <div class="caption-overlay" id="captionOverlay">
               <div class="caption-line prev-2" id="captionPrev2"></div>
               <div class="caption-line prev-1" id="captionPrev1"></div>
@@ -1050,6 +1082,9 @@
       const pageEl = document.createElement('div');
       pageEl.className = 'doc-page' + (pi === 0 ? ' active' : '');
 
+      const innerEl = document.createElement('div');
+      innerEl.className = 'doc-page-inner';
+
       pageMap.get(pn).forEach(idx => {
         const ln = allLines[idx];
         const row = document.createElement('div');
@@ -1084,10 +1119,17 @@
           }
         });
 
-        pageEl.appendChild(row);
+        innerEl.appendChild(row);
         lineEls.set(idx, row);
       });
 
+      // Page number at bottom center
+      const pageNum = document.createElement('div');
+      pageNum.className = 'doc-page-number';
+      pageNum.textContent = String(pn);
+      innerEl.appendChild(pageNum);
+
+      pageEl.appendChild(innerEl);
       pages.appendChild(pageEl);
       pageEls.push({ el: pageEl, lineIdxs: pageMap.get(pn) });
     });
@@ -1460,6 +1502,123 @@
   });
 
   video.addEventListener('dblclick', () => fullscreenBtn.click());
+
+  // Audio waveform visualizer (Web Audio API)
+  const waveformCanvas = document.getElementById('waveformCanvas');
+  let audioCtx = null;
+  let analyser = null;
+  let animFrameId = null;
+  let waveformConnected = false;
+
+  function isAudioOnly() {
+    const ct = (mediaMeta.content_type || '').toLowerCase();
+    return ct.startsWith('audio/') || (!ct.startsWith('video/') && !video.videoWidth);
+  }
+
+  function initWaveform() {
+    if (waveformConnected || !waveformCanvas) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      const source = audioCtx.createMediaElementSource(video);
+      source.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      waveformConnected = true;
+    } catch(err) {
+      console.warn('Waveform init failed:', err);
+    }
+  }
+
+  function drawWaveform() {
+    if (!analyser || !waveformCanvas) return;
+    const ctx = waveformCanvas.getContext('2d');
+    const rect = waveformCanvas.parentElement.getBoundingClientRect();
+    waveformCanvas.width = rect.width * (window.devicePixelRatio || 1);
+    waveformCanvas.height = rect.height * (window.devicePixelRatio || 1);
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+    const w = rect.width;
+    const h = rect.height;
+
+    const bufLen = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufLen);
+    analyser.getByteFrequencyData(dataArray);
+
+    ctx.clearRect(0, 0, w, h);
+
+    const barCount = Math.min(bufLen, 80);
+    const totalBarWidth = w * 0.85;
+    const barW = totalBarWidth / barCount;
+    const gap = barW * 0.3;
+    const effectiveBarW = barW - gap;
+    const startX = (w - totalBarWidth) / 2;
+    const centerY = h / 2;
+
+    for (let i = 0; i < barCount; i++) {
+      const val = dataArray[i] / 255.0;
+      const barH = Math.max(val * (h * 0.45), 2);
+      const x = startX + i * barW;
+
+      const gradient = ctx.createLinearGradient(0, centerY - barH, 0, centerY + barH);
+      gradient.addColorStop(0, 'rgba(148, 163, 184, 0.9)');
+      gradient.addColorStop(0.5, 'rgba(203, 213, 225, 0.95)');
+      gradient.addColorStop(1, 'rgba(148, 163, 184, 0.9)');
+      ctx.fillStyle = gradient;
+
+      ctx.beginPath();
+      const r = Math.min(effectiveBarW / 2, 3);
+      const bx = x, by = centerY - barH, bw = effectiveBarW, bh = barH * 2;
+      ctx.moveTo(bx + r, by);
+      ctx.lineTo(bx + bw - r, by);
+      ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+      ctx.lineTo(bx + bw, by + bh - r);
+      ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+      ctx.lineTo(bx + r, by + bh);
+      ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+      ctx.lineTo(bx, by + r);
+      ctx.quadraticCurveTo(bx, by, bx + r, by);
+      ctx.fill();
+    }
+
+    animFrameId = requestAnimationFrame(drawWaveform);
+  }
+
+  function startWaveform() {
+    if (!waveformCanvas) return;
+    if (!waveformConnected) initWaveform();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    waveformCanvas.style.display = 'block';
+    video.style.display = 'none';
+    if (!animFrameId) drawWaveform();
+  }
+
+  function stopWaveform() {
+    if (animFrameId) {
+      cancelAnimationFrame(animFrameId);
+      animFrameId = null;
+    }
+  }
+
+  function checkAudioVisual() {
+    if (isAudioOnly()) {
+      if (!video.paused) startWaveform();
+      else {
+        if (waveformCanvas) {
+          waveformCanvas.style.display = 'block';
+          video.style.display = 'none';
+        }
+        stopWaveform();
+      }
+    } else {
+      if (waveformCanvas) waveformCanvas.style.display = 'none';
+      video.style.display = '';
+      stopWaveform();
+    }
+  }
+
+  video.addEventListener('play', checkAudioVisual);
+  video.addEventListener('pause', checkAudioVisual);
+  video.addEventListener('loadedmetadata', checkAudioVisual);
 
   // Init
   headerTitle.textContent = titleData.CASE_NAME || titleData.FILE_NAME || 'Transcript Viewer';

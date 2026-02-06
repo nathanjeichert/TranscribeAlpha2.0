@@ -25,6 +25,7 @@ import {
   promptRelinkMedia,
   storeMediaHandle,
 } from '@/lib/mediaHandles'
+import WaveSurfer from 'wavesurfer.js'
 import { authenticatedFetch } from '@/utils/auth'
 import { guardedPush } from '@/utils/navigationGuard'
 import { routes } from '@/utils/routes'
@@ -342,6 +343,9 @@ export default function ViewerPage() {
   const exportMenuRef = useRef<HTMLDivElement>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
+  const waveformRef = useRef<HTMLDivElement>(null)
+  const wavesurferRef = useRef<WaveSurfer | null>(null)
+
   const blobUrlRef = useRef<string | null>(null)
   const programmaticScrollRef = useRef(false)
   const clipRafRef = useRef<number | null>(null)
@@ -622,6 +626,42 @@ export default function ViewerPage() {
       sequenceAbortRef.current = true
     }
   }, [clearPresentationUiTimer, revokeMediaUrl, stopClipPlaybackLoop])
+
+  // WaveSurfer: initialize for audio-only playback
+  useEffect(() => {
+    if (isVideo || !mediaUrl || !waveformRef.current) {
+      if (wavesurferRef.current) {
+        wavesurferRef.current.destroy()
+        wavesurferRef.current = null
+      }
+      return
+    }
+
+    const audioElement = audioRef.current
+    if (!audioElement) return
+
+    const ws = WaveSurfer.create({
+      container: waveformRef.current,
+      height: 'auto',
+      waveColor: 'rgba(100, 116, 139, 0.35)',
+      progressColor: 'rgba(51, 65, 85, 0.7)',
+      cursorColor: 'rgba(245, 158, 11, 0.8)',
+      cursorWidth: 2,
+      barWidth: 2,
+      barGap: 1,
+      barRadius: 2,
+      normalize: true,
+      media: audioElement,
+    })
+
+    wavesurferRef.current = ws
+
+    return () => {
+      ws.destroy()
+      wavesurferRef.current = null
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVideo, mediaUrl])
 
   const findLineAtTime = useCallback((value: number): ViewerLine | null => {
     if (!transcript || !transcript.lines.length) return null
@@ -1750,57 +1790,67 @@ export default function ViewerPage() {
               )}
 
               <div className="min-h-0 flex-1 p-3">
-                {viewerMode === 'caption' ? (
-                  <div className="flex h-full min-h-0 flex-col gap-3">
-                    <div className="relative min-h-0 flex-1 rounded-xl border border-blue-200 bg-white">
-                      {isVideo ? (
+                {isVideo ? (
+                  /* Video element: layout differs by mode */
+                  viewerMode === 'caption' ? (
+                    <div className="flex h-full min-h-0 flex-col gap-3">
+                      <div className="relative min-h-0 flex-1 rounded-xl border border-blue-200 bg-white">
                         <video
                           ref={videoRef}
                           {...playerSharedProps}
                           className="h-full w-full rounded-xl bg-black object-contain"
                         />
-                      ) : (
-                        <div className="flex h-full flex-col justify-center p-4">
-                          <audio
-                            ref={audioRef}
-                            {...playerSharedProps}
-                            className="w-full rounded-xl border border-blue-200 bg-white"
-                          />
+                        {mediaStatusOverlay}
+                      </div>
+                      <div className="shrink-0 max-h-[24vh] overflow-y-auto rounded-xl border border-stone-300 bg-[#fffef8] px-6 py-4 shadow-sm">
+                        <div className="space-y-2 font-mono">
+                          <div className="text-base text-stone-400">{captionWindow.prev2}</div>
+                          <div className="text-lg text-stone-500">{captionWindow.prev1}</div>
+                          <div className="rounded border border-blue-200 bg-blue-50/45 px-3 py-2 text-2xl leading-snug text-stone-900">
+                            {captionWindow.current}
+                          </div>
+                          <div className="text-lg text-stone-500">{captionWindow.next1}</div>
+                          <div className="text-base text-stone-400">{captionWindow.next2}</div>
                         </div>
-                      )}
-                      {mediaStatusOverlay}
-                    </div>
-
-                    <div className="shrink-0 max-h-[24vh] overflow-y-auto rounded-xl border border-stone-300 bg-[#fffef8] px-6 py-4 shadow-sm">
-                      <div className="space-y-2" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
-                        <div className="text-base text-stone-400">{captionWindow.prev2}</div>
-                        <div className="text-lg text-stone-500">{captionWindow.prev1}</div>
-                        <div className="rounded border border-blue-200 bg-blue-50/45 px-3 py-2 text-2xl leading-snug text-stone-900">
-                          {captionWindow.current}
-                        </div>
-                        <div className="text-lg text-stone-500">{captionWindow.next1}</div>
-                        <div className="text-base text-stone-400">{captionWindow.next2}</div>
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="relative h-full rounded-xl border border-stone-300 bg-stone-50">
-                    {isVideo ? (
+                  ) : (
+                    <div className="relative h-full rounded-xl border border-stone-300 bg-stone-50">
                       <video
                         ref={videoRef}
                         {...playerSharedProps}
                         className="h-full w-full rounded-xl bg-black object-contain"
                       />
-                    ) : (
-                      <div className="flex h-full flex-col justify-center p-4">
-                        <audio
-                          ref={audioRef}
-                          {...playerSharedProps}
-                          className="w-full rounded-xl border border-stone-300 bg-white"
-                        />
+                      {mediaStatusOverlay}
+                    </div>
+                  )
+                ) : (
+                  /* Audio: waveform always mounted, captions shown below in caption mode */
+                  <div className="flex h-full min-h-0 flex-col gap-3">
+                    <audio
+                      ref={audioRef}
+                      {...playerSharedProps}
+                      className="hidden"
+                    />
+                    <div className="relative min-h-0 flex-1 rounded-xl overflow-hidden bg-gradient-to-b from-slate-800 to-slate-900">
+                      <div className="absolute inset-0 flex items-center px-6">
+                        <div ref={waveformRef} className="w-full" />
+                      </div>
+                      {mediaStatusOverlay}
+                    </div>
+                    {viewerMode === 'caption' && (
+                      <div className="shrink-0 max-h-[24vh] overflow-y-auto rounded-xl border border-stone-300 bg-[#fffef8] px-6 py-4 shadow-sm">
+                        <div className="space-y-2 font-mono">
+                          <div className="text-base text-stone-400">{captionWindow.prev2}</div>
+                          <div className="text-lg text-stone-500">{captionWindow.prev1}</div>
+                          <div className="rounded border border-blue-200 bg-blue-50/45 px-3 py-2 text-2xl leading-snug text-stone-900">
+                            {captionWindow.current}
+                          </div>
+                          <div className="text-lg text-stone-500">{captionWindow.next1}</div>
+                          <div className="text-base text-stone-400">{captionWindow.next2}</div>
+                        </div>
                       </div>
                     )}
-                    {mediaStatusOverlay}
                   </div>
                 )}
               </div>
@@ -1860,20 +1910,34 @@ export default function ViewerPage() {
                       No transcript lines available.
                     </div>
                   ) : (
-                    <div className="space-y-4">
+                    <div className="space-y-6">
                       {groupedPages.map((pageBlock) => (
                         <div
                           key={pageBlock.page}
-                          className="mx-auto w-full max-w-[8.5in] rounded-sm border border-stone-300 bg-[#fffef8] shadow-[0_8px_20px_rgba(15,23,42,0.14)]"
+                          className="relative mx-auto w-full max-w-[8.5in] bg-white shadow-[0_4px_24px_rgba(15,23,42,0.12)]"
+                          style={{ padding: '0.33in' }}
                         >
-                          <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50/85 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
-                            <span>Page {pageBlock.page}</span>
-                            <span className="text-[10px] tracking-[0.12em] text-blue-700/70">Transcript</span>
-                          </div>
+                          {/* Double page border */}
+                          <div
+                            className="absolute inset-0 border border-stone-400 pointer-events-none"
+                            style={{ margin: '0.33in' }}
+                          />
+                          <div
+                            className="absolute inset-0 border border-stone-400 pointer-events-none"
+                            style={{ margin: 'calc(0.33in + 4px)' }}
+                          />
 
-                          <div className="relative px-2 py-1" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
-                            <div className="pointer-events-none absolute bottom-0 left-[68px] top-0 border-l border-blue-100/90" />
-                            <div className="divide-y divide-stone-200/80">
+                          <div
+                            className="relative font-mono"
+                            style={{
+                              fontFamily: '"Courier New", Courier, monospace',
+                              padding: 'calc(0.75in - 0.33in) calc(1in - 0.33in) calc(0.75in - 0.33in) calc(1in - 0.33in)',
+                            }}
+                          >
+                            <div className="pointer-events-none absolute top-0 bottom-0" style={{ left: 'calc(1in - 0.33in + 56px + 6px)' }}>
+                              <div className="h-full border-l border-stone-200/70" />
+                            </div>
+                            <div>
                               {pageBlock.lines.map((line) => {
                                 const active = activeLineId === line.id
                                 const selected = selectedLineId === line.id
@@ -1882,9 +1946,9 @@ export default function ViewerPage() {
                                 const lineDisplay = splitSpeakerPrefix(line)
 
                                 const lineClasses = [
-                                  'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-0.5 font-mono text-[16px] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/40',
-                                  active ? 'bg-blue-50/70' : '',
-                                  selected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/90' : '',
+                                  'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-1 font-mono text-[12pt] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/30',
+                                  active ? 'bg-amber-50/60' : '',
+                                  selected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/70' : '',
                                   match ? 'bg-amber-50' : '',
                                   currentMatch ? 'outline outline-1 outline-amber-400' : '',
                                 ]
@@ -1904,14 +1968,14 @@ export default function ViewerPage() {
                                       seekToLine(line, true)
                                     }}
                                   >
-                                    <div className="pt-0.5 text-right text-[11px] font-medium text-blue-700/75">
+                                    <div className="pt-0.5 text-right text-[10px] tabular-nums text-stone-400 select-none">
                                       {line.line || '-'}
                                     </div>
                                     <div className="whitespace-pre-wrap break-words">
                                       {lineDisplay.speakerLabel ? (
                                         <>
                                           {lineDisplay.leading}
-                                          <span className="font-semibold text-stone-800">
+                                          <span className="font-bold text-stone-900">
                                             {lineDisplay.speakerLabel}
                                           </span>
                                           {lineDisplay.trailing}
@@ -1923,6 +1987,11 @@ export default function ViewerPage() {
                                   </div>
                                 )
                               })}
+                            </div>
+
+                            {/* Page number at bottom center */}
+                            <div className="mt-4 text-center text-[10px] tabular-nums text-stone-500 select-none">
+                              {pageBlock.page}
                             </div>
                           </div>
                         </div>

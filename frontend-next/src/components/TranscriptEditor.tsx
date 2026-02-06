@@ -1612,7 +1612,7 @@ export default function TranscriptEditor({
                         )}
                       </div>
                       <div
-                        className="min-w-0 cursor-text whitespace-pre-wrap text-primary-800 pr-6"
+                        className="min-w-0 cursor-text whitespace-pre-wrap font-mono text-primary-800 pr-6"
                         onClick={(event) => {
                           event.stopPropagation()
                           if (!isSelected) {
