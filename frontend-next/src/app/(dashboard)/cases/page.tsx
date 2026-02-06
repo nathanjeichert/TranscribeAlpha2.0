@@ -7,6 +7,13 @@ import { useDashboard } from '@/context/DashboardContext'
 import { authenticatedFetch } from '@/utils/auth'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
+import {
+  createCase as localCreateCase,
+  listUncategorizedTranscripts as localListUncategorized,
+  deleteTranscript as localDeleteTranscript,
+  moveTranscriptToCase as localMoveTranscriptToCase,
+  type TranscriptSummary,
+} from '@/lib/storage'
 
 interface TranscriptListItem {
   media_key: string
@@ -19,7 +26,7 @@ interface TranscriptListItem {
 export default function CasesPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { cases, uncategorizedCount, refreshCases, setActiveMediaKey } = useDashboard()
+  const { cases, uncategorizedCount, refreshCases, setActiveMediaKey, appVariant } = useDashboard()
 
   const [activeTab, setActiveTab] = useState<'cases' | 'uncategorized'>('cases')
   const [uncategorizedTranscripts, setUncategorizedTranscripts] = useState<TranscriptListItem[]>([])
@@ -44,17 +51,29 @@ export default function CasesPage() {
   const loadUncategorized = useCallback(async () => {
     setLoadingUncategorized(true)
     try {
-      const response = await authenticatedFetch('/api/transcripts/uncategorized')
-      if (response.ok) {
-        const data = await response.json()
-        setUncategorizedTranscripts(data.transcripts || [])
+      if (appVariant === 'criminal') {
+        const items = await localListUncategorized()
+        setUncategorizedTranscripts(
+          items.map((t: TranscriptSummary) => ({
+            media_key: t.media_key,
+            title_label: t.title_label,
+            updated_at: t.updated_at,
+            line_count: t.line_count,
+          })),
+        )
+      } else {
+        const response = await authenticatedFetch('/api/transcripts/uncategorized')
+        if (response.ok) {
+          const data = await response.json()
+          setUncategorizedTranscripts(data.transcripts || [])
+        }
       }
     } catch (err) {
       console.error('Failed to load uncategorized transcripts:', err)
     } finally {
       setLoadingUncategorized(false)
     }
-  }, [])
+  }, [appVariant])
 
   useEffect(() => {
     if (activeTab === 'uncategorized') {
@@ -75,12 +94,24 @@ export default function CasesPage() {
     setCreatingCase(true)
     setError('')
     try {
-      const response = await authenticatedFetch('/api/cases', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newCaseName.trim(), description: newCaseDescription.trim() }),
-      })
-      if (!response.ok) throw new Error('Failed to create case')
+      if (appVariant === 'criminal') {
+        const caseId = crypto.randomUUID()
+        const now = new Date().toISOString()
+        await localCreateCase({
+          case_id: caseId,
+          name: newCaseName.trim(),
+          description: newCaseDescription.trim(),
+          created_at: now,
+          updated_at: now,
+        })
+      } else {
+        const response = await authenticatedFetch('/api/cases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newCaseName.trim(), description: newCaseDescription.trim() }),
+        })
+        if (!response.ok) throw new Error('Failed to create case')
+      }
       await refreshCases()
       setShowNewCaseModal(false)
       setNewCaseName('')
@@ -97,13 +128,17 @@ export default function CasesPage() {
     setDeletingUncategorizedTranscript(true)
     setError('')
     try {
-      const response = await authenticatedFetch(
-        `/api/transcripts/by-key/${encodeURIComponent(uncategorizedDeleteTarget.media_key)}`,
-        { method: 'DELETE' }
-      )
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to delete transcript')
+      if (appVariant === 'criminal') {
+        await localDeleteTranscript(uncategorizedDeleteTarget.media_key)
+      } else {
+        const response = await authenticatedFetch(
+          `/api/transcripts/by-key/${encodeURIComponent(uncategorizedDeleteTarget.media_key)}`,
+          { method: 'DELETE' }
+        )
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to delete transcript')
+        }
       }
       setUncategorizedDeleteTarget(null)
       await loadUncategorized()
@@ -129,14 +164,18 @@ export default function CasesPage() {
     setAssigningTranscript(mediaKey)
     setError('')
     try {
-      const response = await authenticatedFetch(`/api/cases/${targetCaseId}/transcripts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ media_key: mediaKey }),
-      })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to assign transcript to case')
+      if (appVariant === 'criminal') {
+        await localMoveTranscriptToCase(mediaKey, targetCaseId)
+      } else {
+        const response = await authenticatedFetch(`/api/cases/${targetCaseId}/transcripts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ media_key: mediaKey }),
+        })
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to assign transcript to case')
+        }
       }
 
       await loadUncategorized()
@@ -275,9 +314,16 @@ export default function CasesPage() {
           ) : (
             <div className="divide-y divide-gray-100">
               <div className="p-4 bg-amber-50 border-b border-amber-100 flex items-center justify-between gap-3">
-                <p className="text-sm text-amber-800">
-                  <strong>Note:</strong> Uncategorized transcripts expire after 30 days.
-                </p>
+                {appVariant !== 'criminal' && (
+                  <p className="text-sm text-amber-800">
+                    <strong>Note:</strong> Uncategorized transcripts expire after 30 days.
+                  </p>
+                )}
+                {appVariant === 'criminal' && (
+                  <p className="text-sm text-amber-800">
+                    Assign transcripts to a case for better organization.
+                  </p>
+                )}
                 <button
                   onClick={() => setAssignModeEnabled((prev) => !prev)}
                   disabled={cases.length === 0}
@@ -335,7 +381,7 @@ export default function CasesPage() {
                           </button>
                         </>
                       )}
-                      {daysLeft !== null && (
+                      {appVariant !== 'criminal' && daysLeft !== null && (
                         <span className={`text-sm px-2 py-1 rounded ${
                           daysLeft <= 7 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                         }`}>

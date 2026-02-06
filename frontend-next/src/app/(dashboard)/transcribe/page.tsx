@@ -12,6 +12,11 @@ import {
   guardedPush,
   setQueueNavigationGuardActive,
 } from '@/utils/navigationGuard'
+import {
+  createCase as localCreateCase,
+  saveTranscript as localSaveTranscript,
+  type TranscriptData,
+} from '@/lib/storage'
 
 interface FormData {
   case_name: string
@@ -361,15 +366,29 @@ export default function TranscribePage() {
     setPageError('')
 
     try {
-      const response = await authenticatedFetch('/api/cases', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newCaseName.trim(), description: newCaseDescription.trim() }),
-      })
-      if (!response.ok) throw new Error('Failed to create case')
-      const data = await response.json()
-      await refreshCases()
-      setFormData((prev) => ({ ...prev, case_id: data.case.case_id }))
+      if (appVariant === 'criminal') {
+        const newCaseId = crypto.randomUUID()
+        const now = new Date().toISOString()
+        await localCreateCase({
+          case_id: newCaseId,
+          name: newCaseName.trim(),
+          description: newCaseDescription.trim(),
+          created_at: now,
+          updated_at: now,
+        })
+        await refreshCases()
+        setFormData((prev) => ({ ...prev, case_id: newCaseId }))
+      } else {
+        const response = await authenticatedFetch('/api/cases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newCaseName.trim(), description: newCaseDescription.trim() }),
+        })
+        if (!response.ok) throw new Error('Failed to create case')
+        const data = await response.json()
+        await refreshCases()
+        setFormData((prev) => ({ ...prev, case_id: data.case.case_id }))
+      }
       setShowNewCaseModal(false)
       setNewCaseName('')
       setNewCaseDescription('')
@@ -406,7 +425,8 @@ export default function TranscribePage() {
       if (formData.location.trim()) submitFormData.append('location', formData.location.trim())
 
       const effectiveCaseId = getEffectiveCaseId(item)
-      if (effectiveCaseId) {
+      // Criminal variant: don't send case_id to backend (backend doesn't persist)
+      if (effectiveCaseId && appVariant !== 'criminal') {
         submitFormData.append('case_id', effectiveCaseId)
       }
 
@@ -421,7 +441,7 @@ export default function TranscribePage() {
 
       return submitFormData
     },
-    [formData, getEffectiveCaseId],
+    [appVariant, formData, getEffectiveCaseId],
   )
 
   const transcribeOneItem = useCallback(
@@ -590,6 +610,24 @@ export default function TranscribePage() {
 
           try {
             const data = await transcribeOneItem(freshItem)
+
+            // Criminal variant: save transcript to local workspace
+            if (appVariant === 'criminal' && data.media_key) {
+              const effectiveCaseId = getEffectiveCaseId(freshItem)
+              const transcriptToSave = {
+                ...(data as unknown as Record<string, unknown>),
+                media_filename: freshItem.file.name,
+              } as TranscriptData
+              await localSaveTranscript(
+                data.media_key,
+                transcriptToSave,
+                effectiveCaseId || undefined,
+              )
+              // Note: File from <input> is not a FileSystemFileHandle.
+              // User will need to relink media via the editor's "Locate File" button.
+              // If showOpenFilePicker was used, the handle would be stored here.
+            }
+
             updateQueueItem(itemId, {
               status: 'done',
               stageText: 'Complete',
@@ -664,6 +702,7 @@ export default function TranscribePage() {
       stopAfterCurrentRef.current = false
     },
     [
+      appVariant,
       getEffectiveCaseId,
       isProcessing,
       refreshCases,
@@ -1076,7 +1115,7 @@ export default function TranscribePage() {
                 onChange={(event) => setFormData((prev) => ({ ...prev, case_id: event.target.value }))}
                 className="input-field flex-1"
               >
-                <option value="">No case (expires in 30 days)</option>
+                <option value="">{appVariant === 'criminal' ? 'No case (uncategorized)' : 'No case (expires in 30 days)'}</option>
                 {cases.map((c) => (
                   <option key={c.case_id} value={c.case_id}>
                     {c.name}

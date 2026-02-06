@@ -244,6 +244,7 @@ async def transcribe(
                 detail="Server configuration error: Gemini API key not configured",
             )
 
+    is_criminal = APP_VARIANT == "criminal"
     temp_upload_path = None
     try:
         temp_upload_path, file_size = await save_upload_to_tempfile(file)
@@ -273,21 +274,22 @@ async def transcribe(
             "MEDIA_ID": media_key,
         }
 
-        # Upload media for editor playback
+        # Upload media for editor playback (skip for criminal - media stays local)
         media_blob_name = None
         media_content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
-        try:
-            media_blob_name = upload_preview_file_to_cloud_storage_from_path(
-                temp_upload_path,
-                file.filename,
-                media_content_type,
-                user_id=current_user["user_id"],
-                media_key=media_key,
-            )
-        except Exception as e:
-            logger.warning("Failed to store media preview for editor session: %s", e)
-            media_blob_name = None
-            media_content_type = None
+        if not is_criminal:
+            try:
+                media_blob_name = upload_preview_file_to_cloud_storage_from_path(
+                    temp_upload_path,
+                    file.filename,
+                    media_content_type,
+                    user_id=current_user["user_id"],
+                    media_key=media_key,
+                )
+            except Exception as e:
+                logger.warning("Failed to store media preview for editor session: %s", e)
+                media_blob_name = None
+                media_content_type = None
 
         duration_seconds = 0.0
         asr_start_time = time.time()
@@ -445,6 +447,16 @@ async def transcribe(
             )
         )
 
+        if is_criminal:
+            # Criminal variant: return full transcript data without persisting to GCS
+            # The client saves it to the local workspace folder
+            response_data = {
+                **transcript_data,
+                "transcript": transcript_text,
+            }
+            return JSONResponse(response_data)
+
+        # Oncue variant: persist to GCS as before
         try:
             save_current_transcript(media_key, transcript_data)
 
@@ -462,7 +474,6 @@ async def transcribe(
                     logger.info("Added transcript %s to case %s", media_key, case_id)
                 except Exception as case_err:
                     logger.warning("Failed to add transcript to case %s: %s", case_id, case_err)
-                    # Don't fail the whole request - transcript was saved, case assignment can be retried
 
         except Exception as e:
             logger.error("Failed to store transcript: %s", e)
@@ -485,6 +496,8 @@ async def transcribe(
 @router.get("/api/transcripts")
 async def list_transcripts_endpoint(current_user: dict = Depends(get_current_user)):
     """List all transcripts for authenticated user."""
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Transcript listing is handled locally in this variant")
     try:
         transcripts = list_all_transcripts(current_user["user_id"])
         return JSONResponse(content={"transcripts": transcripts})
@@ -496,6 +509,8 @@ async def list_transcripts_endpoint(current_user: dict = Depends(get_current_use
 @router.get("/api/transcripts/by-key/{media_key}/history")
 async def list_transcript_history_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """List all snapshots for a media_key."""
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Snapshot history is handled locally in this variant")
     try:
         if not _user_owns_media_key(media_key, current_user["user_id"]):
             raise HTTPException(status_code=403, detail="Access denied to this transcript")
@@ -541,6 +556,8 @@ async def list_transcript_history_by_media_key(media_key: str, current_user: dic
 @router.get("/api/transcripts/by-key/{media_key}")
 async def get_transcript_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """Get current transcript state or latest snapshot by media_key."""
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Transcript retrieval is handled locally in this variant")
     try:
         data = load_current_transcript(media_key)
         if not data:
@@ -560,6 +577,8 @@ async def get_transcript_by_media_key(media_key: str, current_user: dict = Depen
 @router.delete("/api/transcripts/by-key/{media_key}")
 async def delete_transcript_by_media_key(media_key: str, current_user: dict = Depends(get_current_user)):
     """Permanently delete a transcript, snapshots, and linked media artifacts."""
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Transcript deletion is handled locally in this variant")
     try:
         deleted = delete_transcript_for_user(current_user["user_id"], media_key)
         if not deleted:
@@ -584,6 +603,8 @@ async def delete_transcript_by_media_key(media_key: str, current_user: dict = De
 @router.put("/api/transcripts/by-key/{media_key}")
 async def save_transcript_by_media_key(media_key: str, request: Request, current_user: dict = Depends(get_current_user)):
     """Save transcript changes (auto-save or manual save)."""
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Transcript saving is handled locally in this variant")
     try:
         payload = await request.json()
 
@@ -671,6 +692,8 @@ async def save_transcript_by_media_key(media_key: str, request: Request, current
 @router.post("/api/transcripts/by-key/{media_key}/restore/{snapshot_id}")
 async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, current_user: dict = Depends(get_current_user)):
     """Restore a specific snapshot as current state."""
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Snapshot restore is handled locally in this variant")
     try:
         if not _user_owns_media_key(media_key, current_user["user_id"]):
             raise HTTPException(status_code=403, detail="Access denied to this transcript")
@@ -743,6 +766,8 @@ async def restore_snapshot_by_media_key(media_key: str, snapshot_id: str, curren
 
 @router.post("/api/transcripts/by-key/{media_key}/gemini-refine")
 async def gemini_refine_transcript(media_key: str, current_user: dict = Depends(get_current_user)):
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Gemini refinement is handled via /api/gemini-refine in this variant")
     session_data = load_current_transcript(media_key)
     if not session_data:
         raise HTTPException(status_code=404, detail="Transcript not found")
@@ -865,6 +890,9 @@ async def import_transcript(
 
     Media file is required for both to enable playback and re-sync.
     """
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Transcript import is handled locally in this variant")
+
     filename = transcript_file.filename or ""
     file_ext = filename.lower().split('.')[-1] if '.' in filename else ''
 
@@ -1114,12 +1142,15 @@ async def resync_transcript(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Re-sync the transcript using Rev AI Forced Alignment.
+    Re-sync the transcript using Rev AI Forced Alignment (oncue variant).
 
     Payload:
       - media_key: string
       - api_key: string (optional, checks env if missing)
     """
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Use /api/resync-local for the criminal variant")
+
     media_key = payload.get("media_key")
     if not media_key:
         raise HTTPException(status_code=400, detail="Missing media_key")
@@ -1241,11 +1272,239 @@ async def resync_transcript(
                 pass
 
 
+@router.post("/api/resync-local")
+async def resync_transcript_local(
+    media_file: UploadFile = File(...),
+    transcript_data: str = Form(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Re-sync transcript using Rev AI Forced Alignment (criminal variant).
+    Accepts media file and transcript data as multipart form.
+    Returns re-synced lines without persisting.
+    """
+    temp_media_path = None
+    try:
+        session_data = json.loads(transcript_data)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid transcript_data JSON: {e}") from e
+
+    try:
+        temp_media_path, _ = await save_upload_to_tempfile(media_file)
+        if not temp_media_path:
+            raise HTTPException(status_code=400, detail="Unable to read uploaded media file")
+
+        rev_api_key = os.getenv("REV_AI_API_KEY")
+        if not rev_api_key:
+            raise HTTPException(status_code=500, detail="Rev AI API Key not configured")
+
+        aligner = RevAIAligner(rev_api_key)
+
+        lines = session_data.get("lines", [])
+        if not lines:
+            raise HTTPException(status_code=400, detail="No transcript lines to align")
+
+        audio_duration = float(session_data.get("audio_duration", 0.0))
+        normalized_lines, _ = normalize_line_payloads(lines, audio_duration)
+        turns = construct_turns_from_lines(normalized_lines)
+
+        turns_payload = [turn.model_dump() for turn in turns]
+        source_turns_payload = session_data.get("source_turns")
+
+        updated_turns_payload = await anyio.to_thread.run_sync(
+            aligner.align_transcript,
+            turns_payload,
+            temp_media_path,
+            None,
+            source_turns_payload,
+        )
+
+        updated_turns = [TranscriptTurn(**turn) for turn in updated_turns_payload]
+
+        title_data = session_data.get("title_data", {})
+        lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+
+        pdf_bytes, oncue_xml, transcript_text, new_line_entries = build_session_artifacts(
+            updated_turns,
+            title_data,
+            audio_duration,
+            lines_per_page,
+        )
+
+        response_data = {
+            "status": "success",
+            "lines": new_line_entries,
+            "turns": serialize_transcript_turns(updated_turns),
+            "pdf_base64": base64.b64encode(pdf_bytes).decode(),
+            "transcript_text": transcript_text,
+        }
+
+        media_filename = resolve_media_filename(
+            title_data,
+            None,
+            fallback=media_file.filename or "media.mp4",
+        )
+        exports = build_variant_exports(
+            APP_VARIANT,
+            new_line_entries,
+            title_data,
+            audio_duration,
+            lines_per_page,
+            media_filename,
+            media_file.content_type or mimetypes.guess_type(media_file.filename or "")[0],
+            oncue_xml=oncue_xml,
+        )
+        response_data.update(exports)
+
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Local re-sync failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Re-sync process failed: {e}") from e
+    finally:
+        if temp_media_path and os.path.exists(temp_media_path):
+            try:
+                os.remove(temp_media_path)
+            except OSError:
+                pass
+
+
+@router.post("/api/gemini-refine")
+async def gemini_refine_local(
+    media_file: UploadFile = File(...),
+    transcript_data: str = Form(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Gemini refinement for criminal variant.
+    Accepts media file and transcript data as multipart form.
+    Returns refined lines without persisting.
+    """
+    temp_media_path = None
+    try:
+        session_data = json.loads(transcript_data)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid transcript_data JSON: {e}") from e
+
+    try:
+        temp_media_path, _ = await save_upload_to_tempfile(media_file)
+        if not temp_media_path:
+            raise HTTPException(status_code=400, detail="Unable to read uploaded media file")
+
+        # Get or build the XML from transcript data
+        xml_b64 = session_data.get("oncue_xml_base64")
+        if xml_b64:
+            xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
+        else:
+            # Build XML from lines
+            lines = session_data.get("lines", [])
+            title_data = session_data.get("title_data", {})
+            audio_duration = float(session_data.get("audio_duration", 0.0))
+            lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+
+            normalized_lines, normalized_duration = normalize_line_payloads(lines, audio_duration)
+            turns = construct_turns_from_lines(normalized_lines)
+            if not turns:
+                raise HTTPException(status_code=400, detail="No usable transcript turns found")
+
+            _, oncue_xml_str, _, _ = build_session_artifacts(
+                turns, title_data, normalized_duration, lines_per_page,
+            )
+            if not oncue_xml_str:
+                raise HTTPException(status_code=400, detail="Unable to generate XML for Gemini refinement")
+            xml_text = oncue_xml_str
+
+        # Prepare audio for Gemini
+        media_content_type = media_file.content_type or mimetypes.guess_type(media_file.filename or "")[0]
+        ext = (media_file.filename or "").split(".")[-1].lower() if media_file.filename and "." in media_file.filename else ""
+        audio_path = temp_media_path
+        audio_mime = media_content_type or "audio/mpeg"
+
+        SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
+        if ext in SUPPORTED_VIDEO_TYPES:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_audio = os.path.join(temp_dir, "converted.mp3")
+                converted = convert_video_to_audio(temp_media_path, output_audio)
+                if converted:
+                    audio_path = converted
+                    audio_mime = "audio/mpeg"
+        else:
+            mime_map = {
+                "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                "flac": "audio/flac", "ogg": "audio/ogg", "aac": "audio/aac",
+            }
+            audio_mime = mime_map.get(ext, audio_mime)
+
+        duration_hint = float(session_data.get("audio_duration", 0.0))
+
+        gemini_lines = await anyio.to_thread.run_sync(
+            run_gemini_edit,
+            xml_text,
+            audio_path,
+            audio_mime,
+            duration_hint,
+        )
+
+        normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_hint)
+        turns = construct_turns_from_lines(normalized_lines)
+        if not turns:
+            raise HTTPException(status_code=400, detail="Gemini refinement returned no usable turns")
+
+        title_data = session_data.get("title_data", {})
+        lines_per_page = session_data.get("lines_per_page", DEFAULT_LINES_PER_PAGE)
+
+        pdf_bytes, oncue_xml, transcript_text, updated_lines = build_session_artifacts(
+            turns, title_data, normalized_duration, lines_per_page,
+        )
+
+        response_data = {
+            "status": "success",
+            "lines": updated_lines,
+            "turns": serialize_transcript_turns(turns),
+            "pdf_base64": base64.b64encode(pdf_bytes).decode(),
+            "transcript_text": transcript_text,
+            "audio_duration": normalized_duration,
+        }
+
+        media_filename = resolve_media_filename(
+            title_data, None, fallback=media_file.filename or "media.mp4",
+        )
+        exports = build_variant_exports(
+            APP_VARIANT,
+            updated_lines,
+            title_data,
+            normalized_duration,
+            lines_per_page,
+            media_filename,
+            media_content_type,
+            oncue_xml=oncue_xml,
+        )
+        response_data.update(exports)
+
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Local Gemini refinement failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Gemini refinement failed: {e}") from e
+    finally:
+        if temp_media_path and os.path.exists(temp_media_path):
+            try:
+                os.remove(temp_media_path)
+            except OSError:
+                pass
+
+
 @router.post("/api/transcripts/by-key/{media_key}/regenerate-viewer")
 async def regenerate_viewer_html(media_key: str, current_user: dict = Depends(get_current_user)):
     """Rebuild HTML viewer export from current session state without creating a snapshot."""
-    if APP_VARIANT != "criminal":
-        raise HTTPException(status_code=400, detail="HTML viewer exports are not enabled for this variant")
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Viewer regeneration is handled locally in this variant")
+    # Non-criminal variants don't support viewer HTML exports
+    raise HTTPException(status_code=400, detail="HTML viewer exports are not enabled for this variant")
     try:
         transcript = load_current_transcript(media_key)
         if not transcript:
@@ -1304,6 +1563,8 @@ async def get_media_status(media_key: str, current_user: dict = Depends(get_curr
     Check if the media file for a transcript still exists.
     Returns availability status and blob info.
     """
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Media status is handled locally in this variant")
     try:
         # Load transcript and verify ownership
         transcript = load_current_transcript(media_key)
@@ -1343,6 +1604,8 @@ async def reattach_media(
     Upload a new media file to attach to an existing transcript.
     Used when the original media has expired but the transcript is persistent.
     """
+    if APP_VARIANT == "criminal":
+        raise HTTPException(status_code=410, detail="Media reattachment is handled locally in this variant")
     try:
         # Load transcript and verify ownership
         transcript = load_current_transcript(media_key)

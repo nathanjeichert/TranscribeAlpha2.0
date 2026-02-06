@@ -7,6 +7,15 @@ import { useDashboard } from '@/context/DashboardContext'
 import { authenticatedFetch } from '@/utils/auth'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
+import {
+  getCase as localGetCase,
+  updateCase as localUpdateCase,
+  deleteCase as localDeleteCase,
+  moveTranscriptToCase as localMoveTranscriptToCase,
+  deleteTranscript as localDeleteTranscript,
+  searchCaseTranscripts as localSearchCaseTranscripts,
+  listTranscriptsInCase as localListTranscriptsInCase,
+} from '@/lib/storage'
 
 interface CaseMeta {
   case_id: string
@@ -45,7 +54,7 @@ export default function CaseDetailPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const caseId = searchParams.get('id') ?? ''
-  const { cases, refreshCases, setActiveMediaKey } = useDashboard()
+  const { cases, refreshCases, setActiveMediaKey, appVariant } = useDashboard()
 
   const [caseMeta, setCaseMeta] = useState<CaseMeta | null>(null)
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
@@ -84,24 +93,49 @@ export default function CaseDetailPage() {
     setIsLoading(true)
     setError('')
     try {
-      const response = await authenticatedFetch(`/api/cases/${caseId}`)
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error('Case not found')
+      if (appVariant === 'criminal') {
+        const caseDetail = await localGetCase(caseId)
+        if (!caseDetail) throw new Error('Case not found')
+        setCaseMeta({
+          case_id: caseDetail.case_id,
+          name: caseDetail.name,
+          description: caseDetail.description,
+          created_at: caseDetail.created_at,
+          updated_at: caseDetail.updated_at,
+          transcript_count: caseDetail.transcript_count,
+        })
+        const caseTranscripts = await localListTranscriptsInCase(caseId)
+        setTranscripts(
+          caseTranscripts.map((t) => ({
+            media_key: t.media_key,
+            title_label: t.title_label,
+            updated_at: t.updated_at,
+            line_count: t.line_count,
+            audio_duration: t.audio_duration,
+          })),
+        )
+        setEditName(caseDetail.name)
+        setEditDescription(caseDetail.description || '')
+      } else {
+        const response = await authenticatedFetch(`/api/cases/${caseId}`)
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error('Case not found')
+          }
+          throw new Error('Failed to load case')
         }
-        throw new Error('Failed to load case')
+        const data = await response.json()
+        setCaseMeta(data.case)
+        setTranscripts(data.transcripts || [])
+        setEditName(data.case.name)
+        setEditDescription(data.case.description || '')
       }
-      const data = await response.json()
-      setCaseMeta(data.case)
-      setTranscripts(data.transcripts || [])
-      setEditName(data.case.name)
-      setEditDescription(data.case.description || '')
     } catch (err: any) {
       setError(err?.message || 'Failed to load case')
     } finally {
       setIsLoading(false)
     }
-  }, [caseId])
+  }, [caseId, appVariant])
 
   useEffect(() => {
     loadCase()
@@ -118,16 +152,25 @@ export default function CaseDetailPage() {
     if (!editName.trim() || !caseId) return
     setSaving(true)
     try {
-      const response = await authenticatedFetch(`/api/cases/${caseId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: editName.trim(), description: editDescription.trim() }),
-      })
-      if (!response.ok) throw new Error('Failed to update case')
-      const data = await response.json()
-      setCaseMeta(data.case)
-      setIsEditing(false)
-      refreshCases()
+      if (appVariant === 'criminal') {
+        await localUpdateCase(caseId, { name: editName.trim(), description: editDescription.trim() })
+        setCaseMeta((prev) =>
+          prev ? { ...prev, name: editName.trim(), description: editDescription.trim(), updated_at: new Date().toISOString() } : prev,
+        )
+        setIsEditing(false)
+        refreshCases()
+      } else {
+        const response = await authenticatedFetch(`/api/cases/${caseId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: editName.trim(), description: editDescription.trim() }),
+        })
+        if (!response.ok) throw new Error('Failed to update case')
+        const data = await response.json()
+        setCaseMeta(data.case)
+        setIsEditing(false)
+        refreshCases()
+      }
     } catch (err) {
       setError('Failed to update case')
     } finally {
@@ -139,11 +182,15 @@ export default function CaseDetailPage() {
     if (!caseId) return
     setDeleting(true)
     try {
-      const response = await authenticatedFetch(
-        `/api/cases/${caseId}?delete_transcripts=${deleteTranscripts}`,
-        { method: 'DELETE' }
-      )
-      if (!response.ok) throw new Error('Failed to delete case')
+      if (appVariant === 'criminal') {
+        await localDeleteCase(caseId)
+      } else {
+        const response = await authenticatedFetch(
+          `/api/cases/${caseId}?delete_transcripts=${deleteTranscripts}`,
+          { method: 'DELETE' }
+        )
+        if (!response.ok) throw new Error('Failed to delete case')
+      }
       await refreshCases()
       guardedPush(router, routes.cases())
     } catch (err) {
@@ -167,24 +214,32 @@ export default function CaseDetailPage() {
     setReassigningTranscript(mediaKey)
     setError('')
     try {
-      if (target === 'uncategorized') {
-        const response = await authenticatedFetch(
-          `/api/cases/${caseId}/transcripts/${encodeURIComponent(mediaKey)}`,
-          { method: 'DELETE' }
-        )
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to move transcript to uncategorized')
+      if (appVariant === 'criminal') {
+        if (target === 'uncategorized') {
+          await localMoveTranscriptToCase(mediaKey, 'uncategorized')
+        } else {
+          await localMoveTranscriptToCase(mediaKey, target)
         }
       } else {
-        const response = await authenticatedFetch(`/api/cases/${target}/transcripts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ media_key: mediaKey }),
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to reassign transcript')
+        if (target === 'uncategorized') {
+          const response = await authenticatedFetch(
+            `/api/cases/${caseId}/transcripts/${encodeURIComponent(mediaKey)}`,
+            { method: 'DELETE' }
+          )
+          if (!response.ok) {
+            const detail = await response.json().catch(() => ({}))
+            throw new Error(detail?.detail || 'Failed to move transcript to uncategorized')
+          }
+        } else {
+          const response = await authenticatedFetch(`/api/cases/${target}/transcripts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ media_key: mediaKey }),
+          })
+          if (!response.ok) {
+            const detail = await response.json().catch(() => ({}))
+            throw new Error(detail?.detail || 'Failed to reassign transcript')
+          }
         }
       }
 
@@ -201,13 +256,17 @@ export default function CaseDetailPage() {
     if (!transcriptDeleteTarget) return
     setDeletingStoredTranscript(true)
     try {
-      const response = await authenticatedFetch(
-        `/api/transcripts/by-key/${encodeURIComponent(transcriptDeleteTarget.media_key)}`,
-        { method: 'DELETE' }
-      )
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to delete transcript')
+      if (appVariant === 'criminal') {
+        await localDeleteTranscript(transcriptDeleteTarget.media_key)
+      } else {
+        const response = await authenticatedFetch(
+          `/api/transcripts/by-key/${encodeURIComponent(transcriptDeleteTarget.media_key)}`,
+          { method: 'DELETE' }
+        )
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to delete transcript')
+        }
       }
       setTranscriptDeleteTarget(null)
       await loadCase()
@@ -224,12 +283,17 @@ export default function CaseDetailPage() {
     setSearching(true)
     setShowSearchResults(true)
     try {
-      const response = await authenticatedFetch(
-        `/api/cases/${caseId}/search?q=${encodeURIComponent(searchQuery)}`
-      )
-      if (!response.ok) throw new Error('Search failed')
-      const data = await response.json()
-      setSearchResults(data.results || [])
+      if (appVariant === 'criminal') {
+        const results = await localSearchCaseTranscripts(caseId, searchQuery)
+        setSearchResults(results)
+      } else {
+        const response = await authenticatedFetch(
+          `/api/cases/${caseId}/search?q=${encodeURIComponent(searchQuery)}`
+        )
+        if (!response.ok) throw new Error('Search failed')
+        const data = await response.json()
+        setSearchResults(data.results || [])
+      }
     } catch (err) {
       setSearchResults([])
     } finally {

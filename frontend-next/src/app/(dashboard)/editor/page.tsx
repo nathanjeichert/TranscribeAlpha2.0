@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
@@ -8,6 +8,8 @@ import { authenticatedFetch } from '@/utils/auth'
 import TranscriptEditor, { EditorSessionResponse, EditorSaveResponse } from '@/components/TranscriptEditor'
 import MediaMissingBanner from '@/components/MediaMissingBanner'
 import { routes } from '@/utils/routes'
+import { getTranscript as localGetTranscript } from '@/lib/storage'
+import { getMediaHandle, getMediaObjectURL, promptRelinkMedia, storeMediaHandle } from '@/lib/mediaHandles'
 
 type TranscriptData = EditorSessionResponse & {
   transcript?: string | null
@@ -40,6 +42,18 @@ export default function EditorPage() {
   const [historySnapshots, setHistorySnapshots] = useState<SnapshotListItem[]>([])
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(null)
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false)
+  const [mediaFilename, setMediaFilename] = useState<string>('')
+  const blobUrlRef = useRef<string | null>(null)
+
+  // Revoke blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+    }
+  }, [])
 
   // Get media_key from URL or context
   useEffect(() => {
@@ -57,30 +71,57 @@ export default function EditorPage() {
     setIsLoading(true)
     setError('')
     try {
-      const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`)
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to load transcript')
-      }
-      const data: TranscriptData = await response.json()
-      setTranscriptData(data)
+      if (appVariant === 'criminal') {
+        const data = await localGetTranscript(key)
+        if (!data) throw new Error('Transcript not found')
+        setTranscriptData(data as unknown as TranscriptData)
+        setMediaFilename((data as Record<string, unknown>).media_filename as string || '')
 
-      if (data.media_blob_name) {
-        setMediaUrl(`/api/media/${data.media_blob_name}`)
-        setMediaContentType(data.media_content_type ?? undefined)
+        // Try to get media from IndexedDB handle
+        if (blobUrlRef.current) {
+          URL.revokeObjectURL(blobUrlRef.current)
+          blobUrlRef.current = null
+        }
+        const url = await getMediaObjectURL(key)
+        if (url) {
+          blobUrlRef.current = url
+          setMediaUrl(url)
+          setMediaContentType((data as Record<string, unknown>).media_content_type as string || undefined)
+          setMediaAvailable(true)
+        } else {
+          setMediaUrl('')
+          setMediaAvailable(false)
+        }
       } else {
-        setMediaUrl('')
-        setMediaContentType(undefined)
+        const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}`)
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}))
+          throw new Error(detail?.detail || 'Failed to load transcript')
+        }
+        const data: TranscriptData = await response.json()
+        setTranscriptData(data)
+
+        if (data.media_blob_name) {
+          setMediaUrl(`/api/media/${data.media_blob_name}`)
+          setMediaContentType(data.media_content_type ?? undefined)
+        } else {
+          setMediaUrl('')
+          setMediaContentType(undefined)
+        }
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to load transcript')
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [appVariant])
 
   // Check media availability
   const checkMediaStatus = useCallback(async (key: string) => {
+    if (appVariant === 'criminal') {
+      // Already checked in loadTranscript for criminal
+      return
+    }
     try {
       const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(key)}/media-status`)
       if (!response.ok) {
@@ -95,7 +136,7 @@ export default function EditorPage() {
       // Assume available if check fails
       setMediaAvailable(true)
     }
-  }, [])
+  }, [appVariant])
 
   useEffect(() => {
     if (mediaKey) {
@@ -109,11 +150,11 @@ export default function EditorPage() {
       ...prev,
       ...session,
     }))
-    if (session.media_blob_name) {
+    if (appVariant !== 'criminal' && session.media_blob_name) {
       setMediaUrl(`/api/media/${session.media_blob_name}`)
       setMediaContentType(session.media_content_type ?? undefined)
     }
-  }, [])
+  }, [appVariant])
 
   const handleSaveComplete = useCallback((data: EditorSaveResponse) => {
     setTranscriptData(prev => ({
@@ -130,6 +171,25 @@ export default function EditorPage() {
     }
     setShowReimportModal(false)
   }, [mediaKey, loadTranscript])
+
+  const handleRelinkMedia = useCallback(async () => {
+    if (!mediaKey) return
+    const result = await promptRelinkMedia(mediaFilename || 'media file')
+    if (result) {
+      await storeMediaHandle(mediaKey, result.handle)
+      // Refresh media URL
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+      const url = await getMediaObjectURL(mediaKey)
+      if (url) {
+        blobUrlRef.current = url
+        setMediaUrl(url)
+        setMediaAvailable(true)
+      }
+    }
+  }, [mediaKey, mediaFilename])
 
   const openHistoryModal = useCallback(async () => {
     if (!mediaKey) return
@@ -281,7 +341,9 @@ export default function EditorPage() {
       {!mediaAvailable && (
         <MediaMissingBanner
           mediaKey={mediaKey}
-          onReimport={() => setShowReimportModal(true)}
+          appVariant={appVariant}
+          mediaFilename={mediaFilename}
+          onReimport={appVariant === 'criminal' ? handleRelinkMedia : () => setShowReimportModal(true)}
         />
       )}
 
@@ -299,8 +361,8 @@ export default function EditorPage() {
         buildFilename={generateFilename}
         onSessionChange={handleSessionChange}
         onSaveComplete={handleSaveComplete}
-        onRequestMediaImport={() => setShowReimportModal(true)}
-        onOpenHistory={openHistoryModal}
+        onRequestMediaImport={appVariant === 'criminal' ? handleRelinkMedia : () => setShowReimportModal(true)}
+        onOpenHistory={appVariant === 'criminal' ? undefined : openHistoryModal}
       />
 
       {/* Reimport Modal */}

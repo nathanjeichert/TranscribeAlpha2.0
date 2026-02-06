@@ -1,9 +1,53 @@
 'use client'
 
+import { useCallback, useEffect, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
+import { getWorkspaceName, getStorageEstimate, clearWorkspace, pickAndInitWorkspace } from '@/lib/storage'
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+}
 
 export default function SettingsPage() {
   const { appVariant } = useDashboard()
+  const isCriminal = appVariant === 'criminal'
+
+  const [workspaceName, setWorkspaceName] = useState<string | null>(null)
+  const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
+  const [changingWorkspace, setChangingWorkspace] = useState(false)
+
+  const loadWorkspaceInfo = useCallback(async () => {
+    if (!isCriminal) return
+    const name = getWorkspaceName()
+    setWorkspaceName(name)
+    try {
+      const estimate = await getStorageEstimate()
+      setStorageEstimate(estimate)
+    } catch {
+      // Workspace may not be accessible
+    }
+  }, [isCriminal])
+
+  useEffect(() => {
+    loadWorkspaceInfo()
+  }, [loadWorkspaceInfo])
+
+  const handleChangeWorkspace = async () => {
+    setChangingWorkspace(true)
+    try {
+      await clearWorkspace()
+      await pickAndInitWorkspace()
+      await loadWorkspaceInfo()
+    } catch {
+      // User cancelled picker
+    } finally {
+      setChangingWorkspace(false)
+    }
+  }
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
@@ -41,18 +85,56 @@ export default function SettingsPage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Storage</h2>
           <div className="space-y-4">
-            <div className="py-3 border-b border-gray-100">
-              <p className="font-medium text-gray-900 mb-1">Transcript Storage</p>
-              <p className="text-sm text-gray-500">
-                Transcripts assigned to cases are stored permanently. Uncategorized transcripts expire after 30 days.
-              </p>
-            </div>
-            <div className="py-3">
-              <p className="font-medium text-gray-900 mb-1">Media Files</p>
-              <p className="text-sm text-gray-500">
-                Media files are stored temporarily and may expire. You can re-import media files at any time to restore playback.
-              </p>
-            </div>
+            {isCriminal ? (
+              <>
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                  <div>
+                    <p className="font-medium text-gray-900">Workspace Folder</p>
+                    <p className="text-sm text-gray-500">
+                      {workspaceName || 'Not configured'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleChangeWorkspace}
+                    disabled={changingWorkspace}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {changingWorkspace ? 'Changing...' : 'Change Workspace'}
+                  </button>
+                </div>
+                <div className="py-3 border-b border-gray-100">
+                  <p className="font-medium text-gray-900 mb-1">Storage Usage</p>
+                  {storageEstimate ? (
+                    <p className="text-sm text-gray-500">
+                      {storageEstimate.fileCount} files &middot; {formatBytes(storageEstimate.totalSize)}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-gray-500">Calculating...</p>
+                  )}
+                </div>
+                <div className="py-3">
+                  <p className="font-medium text-gray-900 mb-1">Data Storage</p>
+                  <p className="text-sm text-gray-500">
+                    All transcripts and case data are stored locally in your workspace folder. Media files remain on your computer and are referenced by file location.
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="py-3 border-b border-gray-100">
+                  <p className="font-medium text-gray-900 mb-1">Transcript Storage</p>
+                  <p className="text-sm text-gray-500">
+                    Transcripts assigned to cases are stored permanently. Uncategorized transcripts expire after 30 days.
+                  </p>
+                </div>
+                <div className="py-3">
+                  <p className="font-medium text-gray-900 mb-1">Media Files</p>
+                  <p className="text-sm text-gray-500">
+                    Media files are stored temporarily and may expire. You can re-import media files at any time to restore playback.
+                  </p>
+                </div>
+              </>
+            )}
           </div>
         </div>
 

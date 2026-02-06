@@ -17,13 +17,14 @@ sys.path.insert(0, current_dir)
 sys.path.insert(0, parent_dir)
 
 try:
-    from .config import ALLOWED_ORIGINS
+    from .config import ALLOWED_ORIGINS, APP_VARIANT
 except ImportError:
     try:
-        from config import ALLOWED_ORIGINS
+        from config import ALLOWED_ORIGINS, APP_VARIANT
     except ImportError:
         import config as config_module
         ALLOWED_ORIGINS = config_module.ALLOWED_ORIGINS
+        APP_VARIANT = config_module.APP_VARIANT
 
 try:
     from .storage import cleanup_expired_clip_sessions, cleanup_old_files
@@ -108,17 +109,23 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Run cleanup on startup and log Cloud Storage status."""
-    logger.info("Starting TranscribeAlpha with Cloud Storage enabled")
-    cleanup_old_files()
-    cleanup_expired_clip_sessions()
+    if APP_VARIANT == "criminal":
+        logger.info("Starting TranscribeAlpha in criminal (local-first) mode — skipping GCS cleanup")
+    else:
+        logger.info("Starting TranscribeAlpha with Cloud Storage enabled")
+        cleanup_old_files()
+        cleanup_expired_clip_sessions()
 
 
 app.include_router(auth_router)
 app.include_router(transcripts_router)
-app.include_router(cases_router)
-app.include_router(clips_router)
-app.include_router(media_router)
 app.include_router(health_router)
+
+# Only mount cases, clips, media routers for non-criminal variant
+if APP_VARIANT != "criminal":
+    app.include_router(cases_router)
+    app.include_router(clips_router)
+    app.include_router(media_router)
 
 # Mount static files LAST so API routes take precedence
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
