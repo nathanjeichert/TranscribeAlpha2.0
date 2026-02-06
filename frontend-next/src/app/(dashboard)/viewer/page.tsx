@@ -69,9 +69,6 @@ type ToolsTab = 'clips' | 'sequences'
 
 const SEARCH_TOLERANCE = 0.05
 const PROGRAMMATIC_SCROLL_RESET_MS = 700
-const PAGE_RENDER_WINDOW = 2
-const PAGE_LINE_HEIGHT_ESTIMATE_PX = 34
-const PAGE_MIN_PLACEHOLDER_HEIGHT_PX = 180
 const SPEAKER_LINE_PATTERN = /^(\s*)([A-Z][A-Z0-9 .,'"&/()-]*:)(\s*)(.*)$/
 
 const formatClock = (seconds: number) => {
@@ -303,7 +300,6 @@ export default function ViewerPage() {
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchCursor, setSearchCursor] = useState(0)
-  const [viewportPageIndex, setViewportPageIndex] = useState(0)
 
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -335,6 +331,7 @@ export default function ViewerPage() {
   const [sequenceState, setSequenceState] = useState<SequenceState>({ phase: 'idle' })
 
   const [activeClipPlaybackId, setActiveClipPlaybackId] = useState<string | null>(null)
+  const [presentationHovering, setPresentationHovering] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -343,7 +340,6 @@ export default function ViewerPage() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const exportMenuRef = useRef<HTMLDivElement>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const pageRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
   const blobUrlRef = useRef<string | null>(null)
   const programmaticScrollRef = useRef(false)
@@ -376,16 +372,6 @@ export default function ViewerPage() {
       .sort((a, b) => a[0] - b[0])
       .map(([page, lines]) => ({ page, lines }))
   }, [transcript])
-
-  const linePageIndexMap = useMemo(() => {
-    const map = new Map<string, number>()
-    groupedPages.forEach((pageBlock, pageIndex) => {
-      pageBlock.lines.forEach((line) => {
-        map.set(line.id, pageIndex)
-      })
-    })
-    return map
-  }, [groupedPages])
 
   const searchMatches = useMemo(() => {
     if (!transcript || !searchQuery.trim()) return [] as string[]
@@ -453,26 +439,6 @@ export default function ViewerPage() {
       next2: at(activeLineIndex + 2),
     }
   }, [activeLineIndex, transcript])
-
-  const renderedPageIndexes = useMemo(() => {
-    const indexes = new Set<number>()
-    if (!groupedPages.length) return indexes
-
-    const start = Math.max(0, viewportPageIndex - PAGE_RENDER_WINDOW)
-    const end = Math.min(groupedPages.length - 1, viewportPageIndex + PAGE_RENDER_WINDOW)
-    for (let idx = start; idx <= end; idx += 1) {
-      indexes.add(idx)
-    }
-
-    const focusLineIds = [activeLineId, selectedLineId, currentSearchLineId]
-    focusLineIds.forEach((lineId) => {
-      if (!lineId) return
-      const pageIndex = linePageIndexMap.get(lineId)
-      if (typeof pageIndex === 'number') indexes.add(pageIndex)
-    })
-
-    return indexes
-  }, [activeLineId, currentSearchLineId, groupedPages.length, linePageIndexMap, selectedLineId, viewportPageIndex])
 
   const getPlayerElement = useCallback((): HTMLMediaElement | null => {
     return isVideo ? videoRef.current : audioRef.current
@@ -623,11 +589,10 @@ export default function ViewerPage() {
   }, [sequences])
 
   useEffect(() => {
-    setViewportPageIndex((prev) => {
-      if (!groupedPages.length) return 0
-      return Math.min(prev, groupedPages.length - 1)
-    })
-  }, [groupedPages.length])
+    if (!presentationMode) {
+      setPresentationHovering(false)
+    }
+  }, [presentationMode])
 
   useEffect(() => {
     return () => {
@@ -713,51 +678,10 @@ export default function ViewerPage() {
     return () => container.removeEventListener('scroll', onScroll)
   }, [autoFollow])
 
-  useEffect(() => {
-    const container = transcriptScrollRef.current
-    if (!container || !groupedPages.length) return
-
-    let rafId: number | null = null
-    const updateViewportPage = () => {
-      rafId = null
-      const viewportCenter = container.scrollTop + (container.clientHeight / 2)
-      let closestPageIndex = 0
-      let closestDistance = Number.POSITIVE_INFINITY
-
-      groupedPages.forEach((pageBlock, pageIndex) => {
-        const pageNode = pageRefs.current[pageBlock.page]
-        if (!pageNode) return
-        const pageCenter = pageNode.offsetTop + (pageNode.offsetHeight / 2)
-        const distance = Math.abs(pageCenter - viewportCenter)
-        if (distance < closestDistance) {
-          closestDistance = distance
-          closestPageIndex = pageIndex
-        }
-      })
-
-      setViewportPageIndex((prev) => (prev === closestPageIndex ? prev : closestPageIndex))
-    }
-
-    const requestUpdate = () => {
-      if (rafId !== null) return
-      rafId = window.requestAnimationFrame(updateViewportPage)
-    }
-
-    requestUpdate()
-    container.addEventListener('scroll', requestUpdate, { passive: true })
-    window.addEventListener('resize', requestUpdate)
-    return () => {
-      container.removeEventListener('scroll', requestUpdate)
-      window.removeEventListener('resize', requestUpdate)
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId)
-      }
-    }
-  }, [groupedPages])
-
   const enterPresentationMode = useCallback(async () => {
     const target = viewerShellRef.current
     setPresentationMode(true)
+    setPresentationHovering(true)
 
     if (target && !document.fullscreenElement) {
       try {
@@ -774,6 +698,7 @@ export default function ViewerPage() {
     setTitleCard(null)
     setSequenceState({ phase: 'idle' })
     setPresentationMode(false)
+    setPresentationHovering(false)
 
     if (document.fullscreenElement) {
       try {
@@ -872,6 +797,7 @@ export default function ViewerPage() {
         sequenceAbortRef.current = true
         stopClipPlaybackLoop()
         setPresentationMode(false)
+        setPresentationHovering(false)
         setTitleCard(null)
         setSequenceState({ phase: 'idle' })
       }
@@ -901,10 +827,6 @@ export default function ViewerPage() {
     setSearchCursor((prev) => {
       const next = (prev + direction + searchMatches.length) % searchMatches.length
       const lineId = searchMatches[next]
-      const targetPageIndex = linePageIndexMap.get(lineId)
-      if (typeof targetPageIndex === 'number') {
-        setViewportPageIndex(targetPageIndex)
-      }
 
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
@@ -919,7 +841,7 @@ export default function ViewerPage() {
       })
       return next
     })
-  }, [linePageIndexMap, searchMatches])
+  }, [searchMatches])
 
   useEffect(() => {
     setSearchCursor(0)
@@ -1576,8 +1498,10 @@ export default function ViewerPage() {
     )
   }
 
+  const presentationControlsVisible = !presentationMode || presentationHovering
+
   const playerSharedProps = {
-    controls: true,
+    controls: presentationControlsVisible,
     src: mediaUrl || undefined,
     onTimeUpdate: handleTimeUpdate,
     onLoadedMetadata: handleLoadedMetadata,
@@ -1585,6 +1509,24 @@ export default function ViewerPage() {
 
   const isDocumentMode = viewerMode === 'document'
   const toolsVisible = !presentationMode && showToolsPanel
+  const mediaStatusOverlay = (
+    <>
+      {!mediaAvailable && (
+        <div className="absolute bottom-3 left-3 right-3 rounded border border-amber-200 bg-amber-50/95 p-3 text-sm text-amber-900">
+          <p className="mb-2">Media file not found.</p>
+          <button type="button" onClick={() => void relinkMedia()} className="btn-outline px-3 py-1.5 text-xs">
+            Locate File
+          </button>
+        </div>
+      )}
+
+      {mediaLoading && (
+        <div className="absolute right-3 top-3 rounded bg-black/70 px-2 py-1 text-xs text-white">
+          Loading media...
+        </div>
+      )}
+    </>
+  )
 
   return (
     <div ref={viewerShellRef} className={`h-full ${presentationMode ? 'bg-slate-950 text-white' : 'bg-gray-50 text-gray-900'}`}>
@@ -1710,10 +1652,22 @@ export default function ViewerPage() {
       <div className={`min-h-0 ${presentationMode ? 'h-screen' : 'h-[calc(100vh-74px)]'}`}>
         <div className={`grid h-full min-h-0 ${toolsVisible ? 'grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1'}`}>
           <div className={`grid h-full min-h-0 ${isDocumentMode ? 'grid-cols-1 xl:grid-cols-[minmax(340px,44%)_minmax(0,1fr)]' : 'grid-cols-1'}`}>
-            <section className={`relative flex min-h-0 flex-col ${presentationMode ? 'bg-slate-950' : 'bg-slate-900'}`}>
+            <section
+              className={`relative flex min-h-0 flex-col ${presentationMode ? 'bg-slate-950' : 'bg-slate-900'}`}
+              onMouseEnter={() => {
+                if (presentationMode) setPresentationHovering(true)
+              }}
+              onMouseLeave={() => {
+                if (presentationMode) setPresentationHovering(false)
+              }}
+            >
               {presentationMode && (
-                <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-center gap-2">
-                  <div className="pointer-events-auto flex items-center rounded border border-white/25 bg-black/50 p-0.5">
+                <div
+                  className={`absolute right-4 top-4 z-30 flex items-center gap-2 transition-opacity duration-200 ${
+                    presentationControlsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+                  }`}
+                >
+                  <div className="flex items-center rounded border border-white/25 bg-black/50 p-0.5">
                     <button
                       type="button"
                       className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-white text-slate-900' : 'text-slate-200 hover:bg-white/20'}`}
@@ -1731,7 +1685,7 @@ export default function ViewerPage() {
                   </div>
                   <button
                     type="button"
-                    className="pointer-events-auto rounded border border-white/30 bg-black/40 px-3 py-1.5 text-sm text-white hover:bg-black/60"
+                    className="rounded border border-white/30 bg-black/40 px-3 py-1.5 text-sm text-white hover:bg-black/60"
                     onClick={() => void exitPresentationMode()}
                   >
                     Exit
@@ -1739,107 +1693,108 @@ export default function ViewerPage() {
                 </div>
               )}
 
-              <div className={`border-b px-4 py-3 ${presentationMode ? 'border-slate-700 bg-slate-900/70' : 'border-slate-700 bg-slate-900'}`}>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className={`text-sm font-medium ${presentationMode ? 'text-slate-100' : 'text-slate-100'}`}>
-                    {transcript?.title_data?.CASE_NAME || transcript?.title_data?.FILE_NAME || transcript?.media_key}
-                  </div>
-                  <div className={`text-xs ${presentationMode ? 'text-slate-300' : 'text-slate-300'}`}>
-                    {formatClock(currentTime)} / {formatClock(duration || transcript?.audio_duration || 0)}
+              {!presentationMode && (
+                <div className="border-b border-slate-700 bg-slate-900 px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-slate-100">
+                      {transcript?.title_data?.CASE_NAME || transcript?.title_data?.FILE_NAME || transcript?.media_key}
+                    </div>
+                    <div className="text-xs text-slate-300">
+                      {formatClock(currentTime)} / {formatClock(duration || transcript?.audio_duration || 0)}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <div className="min-h-0 flex-1 p-3">
-                <div className={`relative h-full rounded-xl border ${presentationMode ? 'border-slate-700 bg-black' : 'border-black/30 bg-black'}`}>
-                  {isVideo ? (
-                    <>
+                {viewerMode === 'caption' ? (
+                  <div className="flex h-full min-h-0 flex-col gap-3">
+                    <div className={`relative min-h-0 flex-[3] rounded-xl border ${presentationMode ? 'border-slate-700 bg-black' : 'border-black/30 bg-black'}`}>
+                      {isVideo ? (
+                        <video
+                          ref={videoRef}
+                          {...playerSharedProps}
+                          className="h-full w-full rounded-xl bg-black object-contain"
+                        />
+                      ) : (
+                        <div className="flex h-full flex-col justify-center p-4">
+                          <audio
+                            ref={audioRef}
+                            {...playerSharedProps}
+                            className="w-full rounded-xl border border-white/20 bg-black"
+                          />
+                        </div>
+                      )}
+                      {mediaStatusOverlay}
+                    </div>
+
+                    <div className={`min-h-0 flex-[2] overflow-y-auto rounded-xl border px-6 py-5 ${presentationMode ? 'border-slate-700 bg-black/70 text-white' : 'border-slate-700 bg-slate-900 text-white'}`}>
+                      <div className="space-y-2 font-mono">
+                        <div className="text-base text-white/35">{captionWindow.prev2}</div>
+                        <div className="text-lg text-white/60">{captionWindow.prev1}</div>
+                        <div className="rounded border border-white/25 bg-white/10 px-3 py-2 text-2xl leading-snug text-white">
+                          {captionWindow.current}
+                        </div>
+                        <div className="text-lg text-white/60">{captionWindow.next1}</div>
+                        <div className="text-base text-white/35">{captionWindow.next2}</div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={`relative h-full rounded-xl border ${presentationMode ? 'border-slate-700 bg-black' : 'border-black/30 bg-black'}`}>
+                    {isVideo ? (
                       <video
                         ref={videoRef}
                         {...playerSharedProps}
                         className="h-full w-full rounded-xl bg-black object-contain"
                       />
-                      {viewerMode === 'caption' && (
-                        <div className="pointer-events-none absolute inset-0 flex flex-col justify-center gap-2 bg-black/65 px-8 py-6">
-                          <div className="font-mono text-base text-white/35">{captionWindow.prev2}</div>
-                          <div className="font-mono text-lg text-white/60">{captionWindow.prev1}</div>
-                          <div className="rounded border border-white/25 bg-white/10 px-3 py-2 font-mono text-2xl text-white">
-                            {captionWindow.current}
-                          </div>
-                          <div className="font-mono text-lg text-white/60">{captionWindow.next1}</div>
-                          <div className="font-mono text-base text-white/35">{captionWindow.next2}</div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="flex h-full flex-col justify-center p-4">
-                      <audio
-                        ref={audioRef}
-                        {...playerSharedProps}
-                        className="w-full rounded-xl border border-white/20 bg-black"
-                      />
-                      {viewerMode === 'caption' && (
-                        <div className="mt-6 space-y-2 rounded-lg border border-white/20 bg-black/40 p-4">
-                          <div className="font-mono text-sm text-white/35">{captionWindow.prev2}</div>
-                          <div className="font-mono text-base text-white/60">{captionWindow.prev1}</div>
-                          <div className="rounded border border-white/25 bg-white/10 px-3 py-2 font-mono text-lg text-white">
-                            {captionWindow.current}
-                          </div>
-                          <div className="font-mono text-base text-white/60">{captionWindow.next1}</div>
-                          <div className="font-mono text-sm text-white/35">{captionWindow.next2}</div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {!mediaAvailable && (
-                    <div className="absolute bottom-3 left-3 right-3 rounded border border-amber-200 bg-amber-50/95 p-3 text-sm text-amber-900">
-                      <p className="mb-2">Media file not found.</p>
-                      <button type="button" onClick={() => void relinkMedia()} className="btn-outline px-3 py-1.5 text-xs">
-                        Locate File
-                      </button>
-                    </div>
-                  )}
-
-                  {mediaLoading && (
-                    <div className="absolute right-3 top-3 rounded bg-black/70 px-2 py-1 text-xs text-white">
-                      Loading media...
-                    </div>
-                  )}
-                </div>
+                    ) : (
+                      <div className="flex h-full flex-col justify-center p-4">
+                        <audio
+                          ref={audioRef}
+                          {...playerSharedProps}
+                          className="w-full rounded-xl border border-white/20 bg-black"
+                        />
+                      </div>
+                    )}
+                    {mediaStatusOverlay}
+                  </div>
+                )}
               </div>
             </section>
 
             {isDocumentMode && (
               <section className={`relative flex min-h-0 flex-col ${presentationMode ? 'bg-slate-950 text-white' : 'bg-gray-100 text-gray-900'}`}>
-                <div className="px-4 pb-2 pt-3">
-                  <div className={`rounded-xl border p-2 ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-200 bg-white'}`}>
-                    <div className="flex items-center gap-2">
-                      <input
-                        ref={searchInputRef}
-                        className={`h-9 flex-1 rounded border px-3 text-sm ${presentationMode ? 'border-slate-700 bg-slate-800 text-white placeholder:text-slate-400' : 'border-gray-300 bg-white text-gray-900 placeholder:text-gray-500'}`}
-                        value={searchQuery}
-                        onChange={(event) => setSearchQuery(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            goToSearchResult(event.shiftKey ? -1 : 1)
-                          }
-                        }}
-                        placeholder="Search transcript"
-                      />
-                      <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(-1)} disabled={!searchMatches.length}>
-                        Prev
-                      </button>
-                      <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(1)} disabled={!searchMatches.length}>
-                        Next
-                      </button>
-                      <span className={`min-w-[54px] text-right text-xs ${presentationMode ? 'text-slate-300' : 'text-gray-500'}`}>
-                        {searchMatches.length ? `${((searchCursor % searchMatches.length) + searchMatches.length) % searchMatches.length + 1}/${searchMatches.length}` : '0/0'}
-                      </span>
+                {!presentationMode && (
+                  <div className="px-4 pb-2 pt-3">
+                    <div className="rounded-xl border border-gray-200 bg-white p-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          ref={searchInputRef}
+                          className="h-9 flex-1 rounded border border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-500"
+                          value={searchQuery}
+                          onChange={(event) => setSearchQuery(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              goToSearchResult(event.shiftKey ? -1 : 1)
+                            }
+                          }}
+                          placeholder="Search transcript"
+                        />
+                        <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(-1)} disabled={!searchMatches.length}>
+                          Prev
+                        </button>
+                        <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(1)} disabled={!searchMatches.length}>
+                          Next
+                        </button>
+                        <span className="min-w-[54px] text-right text-xs text-gray-500">
+                          {searchMatches.length ? `${((searchCursor % searchMatches.length) + searchMatches.length) % searchMatches.length + 1}/${searchMatches.length}` : '0/0'}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
                 <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 pb-6">
                   {showReturnToCurrent && activeLineId && (
@@ -1860,86 +1815,66 @@ export default function ViewerPage() {
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      {groupedPages.map((pageBlock, pageIndex) => {
-                        const shouldRenderPage = renderedPageIndexes.has(pageIndex)
-                        const placeholderHeight = Math.max(
-                          PAGE_MIN_PLACEHOLDER_HEIGHT_PX,
-                          pageBlock.lines.length * PAGE_LINE_HEIGHT_ESTIMATE_PX,
-                        )
-
-                        return (
-                          <div
-                            key={pageBlock.page}
-                            ref={(node) => {
-                              pageRefs.current[pageBlock.page] = node
-                            }}
-                            className={`mx-auto w-full max-w-[8.5in] rounded border ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-300 bg-white shadow-md'}`}
-                          >
-                            <div className={`border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide ${presentationMode ? 'border-slate-700 text-slate-300' : 'border-gray-200 text-gray-500'}`}>
-                              Page {pageBlock.page}
-                            </div>
-
-                            {shouldRenderPage ? (
-                              <div className={`px-2 ${presentationMode ? 'divide-y divide-slate-700/50' : 'divide-y divide-dashed divide-gray-200'}`}>
-                                {pageBlock.lines.map((line) => {
-                                  const active = activeLineId === line.id
-                                  const selected = selectedLineId === line.id
-                                  const match = searchMatchSet.has(line.id)
-                                  const currentMatch = currentSearchLineId === line.id
-                                  const lineDisplay = splitSpeakerPrefix(line)
-
-                                  const lineClasses = [
-                                    'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-1.5 font-mono text-[15px] leading-8 transition-colors',
-                                    presentationMode ? 'text-slate-100 hover:bg-slate-800/60' : 'text-gray-900 hover:bg-gray-50',
-                                    active ? (presentationMode ? 'bg-amber-300/20' : 'bg-amber-100') : '',
-                                    selected ? 'ring-1 ring-primary-400' : '',
-                                    match ? (presentationMode ? 'bg-amber-200/15' : 'bg-amber-50') : '',
-                                    currentMatch ? (presentationMode ? 'outline outline-1 outline-amber-300' : 'outline outline-1 outline-amber-400') : '',
-                                  ]
-
-                                  return (
-                                    <div
-                                      key={line.id}
-                                      ref={(node) => {
-                                        lineRefs.current[line.id] = node
-                                      }}
-                                      className={lineClasses.join(' ')}
-                                      onClick={() => {
-                                        setSelectedLineId(line.id)
-                                        seekToLine(line, true)
-                                      }}
-                                    >
-                                      <div className={`pt-0.5 text-right text-[11px] ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                                        {line.line || '-'}
-                                      </div>
-                                      <div className="whitespace-pre-wrap break-words">
-                                        {lineDisplay.speakerLabel ? (
-                                          <>
-                                            {lineDisplay.leading}
-                                            <span className={`font-semibold ${presentationMode ? 'text-slate-200' : 'text-gray-800'}`}>
-                                              {lineDisplay.speakerLabel}
-                                            </span>
-                                            {lineDisplay.trailing}
-                                          </>
-                                        ) : (
-                                          lineDisplay.lineText || line.text
-                                        )}
-                                      </div>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            ) : (
-                              <div
-                                className={`px-3 py-4 text-xs ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}
-                                style={{ minHeight: `${placeholderHeight}px` }}
-                              >
-                                Scroll to load page content...
-                              </div>
-                            )}
+                      {groupedPages.map((pageBlock) => (
+                        <div
+                          key={pageBlock.page}
+                          className={`mx-auto w-full max-w-[8.5in] rounded border ${presentationMode ? 'border-slate-700 bg-slate-900' : 'border-gray-300 bg-white shadow-md'}`}
+                        >
+                          <div className={`border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide ${presentationMode ? 'border-slate-700 text-slate-300' : 'border-gray-200 text-gray-500'}`}>
+                            Page {pageBlock.page}
                           </div>
-                        )
-                      })}
+
+                          <div className={`px-2 ${presentationMode ? 'divide-y divide-slate-700/50' : 'divide-y divide-dashed divide-gray-200'}`}>
+                            {pageBlock.lines.map((line) => {
+                              const active = activeLineId === line.id
+                              const selected = selectedLineId === line.id
+                              const match = searchMatchSet.has(line.id)
+                              const currentMatch = currentSearchLineId === line.id
+                              const lineDisplay = splitSpeakerPrefix(line)
+
+                              const lineClasses = [
+                                'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-1.5 font-mono text-[15px] leading-8 transition-colors',
+                                presentationMode ? 'text-slate-100 hover:bg-slate-800/60' : 'text-gray-900 hover:bg-gray-50',
+                                active ? (presentationMode ? 'bg-amber-300/20' : 'bg-amber-100') : '',
+                                selected ? 'ring-1 ring-primary-400' : '',
+                                match ? (presentationMode ? 'bg-amber-200/15' : 'bg-amber-50') : '',
+                                currentMatch ? (presentationMode ? 'outline outline-1 outline-amber-300' : 'outline outline-1 outline-amber-400') : '',
+                              ]
+
+                              return (
+                                <div
+                                  key={line.id}
+                                  ref={(node) => {
+                                    lineRefs.current[line.id] = node
+                                  }}
+                                  className={lineClasses.join(' ')}
+                                  onClick={() => {
+                                    setSelectedLineId(line.id)
+                                    seekToLine(line, true)
+                                  }}
+                                >
+                                  <div className={`pt-0.5 text-right text-[11px] ${presentationMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                                    {line.line || '-'}
+                                  </div>
+                                  <div className="whitespace-pre-wrap break-words">
+                                    {lineDisplay.speakerLabel ? (
+                                      <>
+                                        {lineDisplay.leading}
+                                        <span className={`font-semibold ${presentationMode ? 'text-slate-200' : 'text-gray-800'}`}>
+                                          {lineDisplay.speakerLabel}
+                                        </span>
+                                        {lineDisplay.trailing}
+                                      </>
+                                    ) : (
+                                      lineDisplay.lineText || line.text
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
