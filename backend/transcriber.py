@@ -117,6 +117,31 @@ if ASSEMBLYAI_API_KEY and ASSEMBLYAI_AVAILABLE:
 elif ASSEMBLYAI_AVAILABLE:
     logger.warning("ASSEMBLYAI_API_KEY environment variable not set")
 
+_SPEAKER_LETTER_RE = re.compile(r"^[A-Z]$")
+_SPEAKER_NUMERIC_RE = re.compile(r"^[0-9]+$")
+
+
+def normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEAKER A") -> str:
+    """Normalize diarization labels so downstream exports use SPEAKER X."""
+    fallback_value = str(fallback or "").strip().upper() or "SPEAKER A"
+    candidate = str(raw_value or "").strip()
+    candidate = re.sub(r":+$", "", candidate).strip().upper()
+
+    if not candidate:
+        candidate = fallback_value
+
+    if candidate == "UNKNOWN":
+        return fallback_value
+
+    if candidate.startswith("SPEAKER"):
+        suffix = candidate[len("SPEAKER"):].strip()
+        return f"SPEAKER {suffix}" if suffix else "SPEAKER"
+
+    if _SPEAKER_LETTER_RE.fullmatch(candidate) or _SPEAKER_NUMERIC_RE.fullmatch(candidate):
+        return f"SPEAKER {candidate}"
+
+    return candidate
+
 def mark_continuation_turns(turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
     """
     Mark turns as continuations when the same speaker has consecutive turns.
@@ -198,7 +223,7 @@ def transcribe_with_assemblyai(
         List of TranscriptTurn objects with word-level timing data, or None on failure
 
     Note:
-        Speaker labels are preserved exactly as returned by AssemblyAI diarization.
+        Bare diarization tokens (A/B/C, 1/2/3, etc.) are normalized to SPEAKER X.
     """
     if not ASSEMBLYAI_AVAILABLE:
         logger.error("AssemblyAI SDK not available")
@@ -260,9 +285,7 @@ def transcribe_with_assemblyai(
 
         for utterance in transcript.utterances or []:
             speaker_label = getattr(utterance, "speaker", None)
-            speaker_name = str(speaker_label).strip() if speaker_label is not None else ""
-            if not speaker_name:
-                speaker_name = "UNKNOWN"
+            speaker_name = normalize_speaker_label(speaker_label, fallback="SPEAKER A")
 
             # Convert timestamp from milliseconds to [MM:SS] format for consistency
             timestamp_str = None
@@ -278,9 +301,7 @@ def transcribe_with_assemblyai(
             if hasattr(utterance, "words") and utterance.words:
                 for word in utterance.words:
                     word_speaker_raw = getattr(word, "speaker", None)
-                    word_speaker = str(word_speaker_raw).strip() if word_speaker_raw is not None else speaker_name
-                    if not word_speaker:
-                        word_speaker = speaker_name
+                    word_speaker = normalize_speaker_label(word_speaker_raw, fallback=speaker_name)
                     word_timestamps.append(
                         WordTimestamp(
                             text=word.text,

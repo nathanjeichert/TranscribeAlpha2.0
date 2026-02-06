@@ -69,6 +69,30 @@ _VIEWER_DATA_RE = re.compile(
     r'<script[^>]*id=["\']transcript-data["\'][^>]*>(.*?)</script>',
     re.IGNORECASE | re.DOTALL,
 )
+_SPEAKER_LETTER_RE = re.compile(r"^[A-Z]$")
+_SPEAKER_NUMERIC_RE = re.compile(r"^[0-9]+$")
+
+
+def normalize_speaker_label(raw_value: Any, fallback: str = "SPEAKER") -> str:
+    """Normalize diarization labels so exports consistently use SPEAKER X."""
+    fallback_value = str(fallback or "").strip().upper() or "SPEAKER"
+    candidate = str(raw_value or "").strip()
+    candidate = re.sub(r":+$", "", candidate).strip().upper()
+
+    if not candidate:
+        candidate = fallback_value
+
+    if candidate == "UNKNOWN":
+        return fallback_value
+
+    if candidate.startswith("SPEAKER"):
+        suffix = candidate[len("SPEAKER"):].strip()
+        return f"SPEAKER {suffix}" if suffix else "SPEAKER"
+
+    if _SPEAKER_LETTER_RE.fullmatch(candidate) or _SPEAKER_NUMERIC_RE.fullmatch(candidate):
+        return f"SPEAKER {candidate}"
+
+    return candidate
 
 
 def _extract_media_key(data: dict) -> str:
@@ -397,7 +421,7 @@ def parse_viewer_html(html_text: str) -> Dict[str, Any]:
             rendered_text = entry.get("rendered_text")
             text = text_value if isinstance(text_value, str) else rendered_text if isinstance(rendered_text, str) else ""
             speaker_value = entry.get("speaker")
-            speaker = speaker_value if isinstance(speaker_value, str) and speaker_value.strip() else "SPEAKER"
+            speaker = normalize_speaker_label(speaker_value, fallback="SPEAKER")
             start_val = entry.get("start")
             end_val = entry.get("end")
             try:
@@ -614,7 +638,7 @@ def normalize_line_payloads(
             start_val = max(0.0, start_val)
             end_val = max(start_val, end_val)
 
-        speaker_name = str(line.get("speaker", "")).strip() or "SPEAKER"
+        speaker_name = normalize_speaker_label(line.get("speaker", ""), fallback="SPEAKER")
         text_value = str(line.get("text", "")).strip()
 
         normalized_line = {
@@ -678,7 +702,7 @@ def construct_turns_from_lines(normalized_lines: List[dict]) -> List[TranscriptT
         current_start = None
 
     for line in normalized_lines:
-        speaker = str(line.get("speaker", "")).strip() or "SPEAKER"
+        speaker = normalize_speaker_label(line.get("speaker", ""), fallback="SPEAKER")
         text_val = str(line.get("text", "")).strip()
         start_val = float(line.get("start", 0.0))
         end_val = float(line.get("end", start_val))
@@ -825,18 +849,21 @@ def parse_oncue_xml(xml_text: str) -> Dict[str, Any]:
             if ":   " in trimmed:
                 potential_speaker, remainder = trimmed.split(":   ", 1)
                 if potential_speaker.strip():
-                    speaker = potential_speaker.strip().upper()
+                    speaker = normalize_speaker_label(
+                        potential_speaker,
+                        fallback=current_speaker or "SPEAKER",
+                    )
                     text_content = remainder.strip()
                     is_continuation = False
             elif current_speaker is None:
-                speaker = "SPEAKER"
+                speaker = normalize_speaker_label("", fallback="SPEAKER")
                 text_content = trimmed.strip()
                 is_continuation = False
         else:
             text_content = ""
 
         if speaker is None:
-            speaker = "SPEAKER"
+            speaker = normalize_speaker_label("", fallback=current_speaker or "SPEAKER")
 
         current_speaker = speaker
         max_end = max(max_end, video_stop)

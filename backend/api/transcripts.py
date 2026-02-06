@@ -173,6 +173,7 @@ try:
         build_snapshot_payload,
         build_variant_exports,
         construct_turns_from_lines,
+        normalize_speaker_label,
         normalize_line_payloads,
         parse_oncue_xml,
         parse_viewer_html,
@@ -186,6 +187,7 @@ except ImportError:
             build_snapshot_payload,
             build_variant_exports,
             construct_turns_from_lines,
+            normalize_speaker_label,
             normalize_line_payloads,
             parse_oncue_xml,
             parse_viewer_html,
@@ -198,6 +200,7 @@ except ImportError:
         build_snapshot_payload = transcript_utils_module.build_snapshot_payload
         build_variant_exports = transcript_utils_module.build_variant_exports
         construct_turns_from_lines = transcript_utils_module.construct_turns_from_lines
+        normalize_speaker_label = transcript_utils_module.normalize_speaker_label
         normalize_line_payloads = transcript_utils_module.normalize_line_payloads
         parse_oncue_xml = transcript_utils_module.parse_oncue_xml
         parse_viewer_html = transcript_utils_module.parse_viewer_html
@@ -337,7 +340,7 @@ async def format_pdf_clip_excerpt(
             except (TypeError, ValueError):
                 return fallback
 
-        speaker = str(raw_entry.get("speaker") or "").strip()
+        speaker = normalize_speaker_label(raw_entry.get("speaker") or "", fallback="SPEAKER")
         text = str(raw_entry.get("text") or "")
         rendered_text = str(raw_entry.get("rendered_text") or "")
         if not rendered_text:

@@ -1,12 +1,49 @@
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, List, Optional
 
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
+_SPEAKER_LETTER_RE = re.compile(r"^[A-Z]$")
+_SPEAKER_NUMERIC_RE = re.compile(r"^[0-9]+$")
+
+
+def _speaker_suffix_for_index(index: int) -> str:
+    """Convert 0-based index to A, B, ..., Z, AA, AB, ..."""
+    value = max(index, 0)
+    chars: List[str] = []
+    while True:
+        value, remainder = divmod(value, 26)
+        chars.append(chr(ord("A") + remainder))
+        if value == 0:
+            break
+        value -= 1
+    return "".join(reversed(chars))
+
+
+def _normalize_speaker_label(raw_value: Any, fallback: str) -> str:
+    fallback_value = str(fallback or "").strip().upper() or "SPEAKER A"
+    candidate = str(raw_value or "").strip()
+    candidate = re.sub(r":+$", "", candidate).strip().upper()
+
+    if not candidate:
+        candidate = fallback_value
+
+    if candidate == "UNKNOWN":
+        return fallback_value
+
+    if candidate.startswith("SPEAKER"):
+        suffix = candidate[len("SPEAKER"):].strip()
+        return f"SPEAKER {suffix}" if suffix else "SPEAKER"
+
+    if _SPEAKER_LETTER_RE.fullmatch(candidate) or _SPEAKER_NUMERIC_RE.fullmatch(candidate):
+        return f"SPEAKER {candidate}"
+
+    return candidate
 
 
 def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hint: float) -> List[dict]:
@@ -174,14 +211,17 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
     for idx, item in enumerate(parsed):
         if not isinstance(item, dict):
             continue
-        speaker = str(item.get("speaker", "")).strip() or f"SPEAKER {idx + 1}"
+        speaker = _normalize_speaker_label(
+            item.get("speaker", ""),
+            fallback=f"SPEAKER {_speaker_suffix_for_index(idx)}",
+        )
         text = str(item.get("text", "")).strip()
         start_val = float(item.get("start", 0.0))
         end_val = float(item.get("end", start_val))
         normalized.append(
             {
                 "id": item.get("id") or f"gem-{idx}",
-                "speaker": speaker.upper(),
+                "speaker": speaker,
                 "text": text,
                 "start": max(start_val, 0.0),
                 "end": max(end_val, start_val),
@@ -400,8 +440,9 @@ def transcribe_with_gemini(
     speaker_mapping = {}
     if speaker_name_list:
         for i, name in enumerate(speaker_name_list):
-            speaker_mapping[f"SPEAKER {chr(ord('A') + i)}"] = name.upper()
-            speaker_mapping[chr(ord('A') + i)] = name.upper()
+            suffix = _speaker_suffix_for_index(i)
+            speaker_mapping[f"SPEAKER {suffix}"] = name.upper()
+            speaker_mapping[suffix] = name.upper()
 
     normalized = []
     for idx, item in enumerate(parsed):
@@ -409,7 +450,10 @@ def transcribe_with_gemini(
             logger.warning("Skipping non-dict item at index %d", idx)
             continue
 
-        speaker = str(item.get("speaker", "")).strip().upper() or f"SPEAKER {chr(ord('A') + idx)}"
+        speaker = _normalize_speaker_label(
+            item.get("speaker", ""),
+            fallback=f"SPEAKER {_speaker_suffix_for_index(idx)}",
+        )
 
         if speaker in speaker_mapping:
             speaker = speaker_mapping[speaker]
