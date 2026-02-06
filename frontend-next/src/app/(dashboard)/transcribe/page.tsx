@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { authenticatedFetch, getAuthHeaders } from '@/utils/auth'
 import { useDashboard } from '@/context/DashboardContext'
 import { routes } from '@/utils/routes'
+import { guardedPush, setQueueNavigationGuardActive } from '@/utils/navigationGuard'
 
 interface FormData {
   case_name: string
@@ -157,6 +158,13 @@ export default function TranscribePage() {
     }
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
+  }, [isProcessing])
+
+  useEffect(() => {
+    setQueueNavigationGuardActive(isProcessing)
+    return () => {
+      setQueueNavigationGuardActive(false)
+    }
   }, [isProcessing])
 
   const caseNameById = useMemo(() => {
@@ -1361,7 +1369,7 @@ export default function TranscribePage() {
                             type="button"
                             onClick={() => {
                               setActiveMediaKey(result.media_key)
-                              router.push(routes.editor(result.media_key))
+                              guardedPush(router, routes.editor(result.media_key))
                             }}
                             className="btn-primary text-sm px-3 py-2"
                           >

@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
 import { routes } from '@/utils/routes'
+import { guardedPush } from '@/utils/navigationGuard'
 
 export default function DashboardHome() {
   const router = useRouter()
@@ -53,7 +54,7 @@ export default function DashboardHome() {
                   key={transcript.media_key}
                   onClick={() => {
                     setActiveMediaKey(transcript.media_key)
-                    router.push(routes.editor(transcript.media_key))
+                    guardedPush(router, routes.editor(transcript.media_key))
                   }}
                   className="w-full p-4 text-left hover:bg-gray-50 transition-colors flex items-center gap-4"
                 >

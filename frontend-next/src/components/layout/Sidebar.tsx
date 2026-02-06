@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
 import { normalizePathname, routes } from '@/utils/routes'
+import { guardedPush } from '@/utils/navigationGuard'
 
 interface NavItemProps {
   href: string
@@ -223,7 +224,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                     key={transcript.media_key}
                     onClick={() => {
                       setActiveMediaKey(transcript.media_key)
-                      router.push(routes.editor(transcript.media_key))
+                      guardedPush(router, routes.editor(transcript.media_key))
                     }}
                     className="w-full flex items-center gap-3 px-4 py-2 rounded-lg text-sm text-left text-primary-300 hover:bg-primary-800 hover:text-white transition-colors"
                   >

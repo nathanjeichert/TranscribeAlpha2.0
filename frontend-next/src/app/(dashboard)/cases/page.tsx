@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
 import { authenticatedFetch } from '@/utils/auth'
 import { routes } from '@/utils/routes'
+import { guardedPush } from '@/utils/navigationGuard'
 
 interface TranscriptListItem {
   media_key: string
@@ -184,7 +185,7 @@ export default function CasesPage() {
         <button
           onClick={() => {
             setActiveTab('cases')
-            router.push(routes.cases())
+            guardedPush(router, routes.cases())
           }}
           className={`px-4 py-3 font-medium text-sm border-b-2 -mb-px transition-colors ${
             activeTab === 'cases'
@@ -197,7 +198,7 @@ export default function CasesPage() {
         <button
           onClick={() => {
             setActiveTab('uncategorized')
-            router.push(routes.casesTab('uncategorized'))
+            guardedPush(router, routes.casesTab('uncategorized'))
           }}
           className={`px-4 py-3 font-medium text-sm border-b-2 -mb-px transition-colors ${
             activeTab === 'uncategorized'
@@ -344,7 +345,7 @@ export default function CasesPage() {
                       <button
                         onClick={() => {
                           setActiveMediaKey(transcript.media_key)
-                          router.push(routes.editor(transcript.media_key))
+                          guardedPush(router, routes.editor(transcript.media_key))
                         }}
                         className="btn-outline text-sm px-3 py-1"
                       >

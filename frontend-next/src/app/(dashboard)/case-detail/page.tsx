@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
 import { authenticatedFetch } from '@/utils/auth'
 import { routes } from '@/utils/routes'
+import { guardedPush } from '@/utils/navigationGuard'
 
 interface CaseMeta {
   case_id: string
@@ -144,7 +145,7 @@ export default function CaseDetailPage() {
       )
       if (!response.ok) throw new Error('Failed to delete case')
       await refreshCases()
-      router.push(routes.cases())
+      guardedPush(router, routes.cases())
     } catch (err) {
       setError('Failed to delete case')
       setDeleting(false)
@@ -407,7 +408,7 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => {
                       setActiveMediaKey(result.media_key)
-                      router.push(routes.editor(result.media_key))
+                      guardedPush(router, routes.editor(result.media_key))
                     }}
                     className="font-medium text-primary-600 hover:text-primary-700 mb-2 text-left"
                   >
@@ -522,7 +523,7 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => {
                       setActiveMediaKey(transcript.media_key)
-                      router.push(routes.editor(transcript.media_key))
+                      guardedPush(router, routes.editor(transcript.media_key))
                     }}
                     className="btn-outline text-sm px-3 py-1"
                   >
