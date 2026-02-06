@@ -23,5 +23,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Refactor instructions (local only)
+refactor-instructions/
+
 # Dependencies
 node_modules/
