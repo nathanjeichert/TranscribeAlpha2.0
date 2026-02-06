@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { DashboardProvider, useDashboard } from '@/context/DashboardContext'
 import Sidebar from '@/components/layout/Sidebar'
 import WorkspaceSetup from '@/components/WorkspaceSetup'
-import { isWorkspaceConfigured, initWorkspace } from '@/lib/storage'
+import { isWorkspaceConfigured, initWorkspace, setupMultiTabDetection } from '@/lib/storage'
 import { confirmQueueNavigation, isQueueNavigationGuardActive } from '@/utils/navigationGuard'
 
 const SIDEBAR_COLLAPSED_KEY = 'dashboard_sidebar_collapsed'
@@ -14,6 +14,14 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false)
   const [checking, setChecking] = useState(true)
   const [showSetup, setShowSetup] = useState(false)
+  const [multiTabWarning, setMultiTabWarning] = useState(false)
+
+  // Multi-tab detection for criminal variant
+  useEffect(() => {
+    if (appVariant !== 'criminal') return
+    const cleanup = setupMultiTabDetection(() => setMultiTabWarning(true))
+    return cleanup
+  }, [appVariant])
 
   const checkWorkspace = useCallback(async () => {
     if (appVariant !== 'criminal') {
@@ -66,7 +74,67 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
     )
   }
 
-  return <>{children}</>
+  return (
+    <>
+      {multiTabWarning && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-500 text-amber-950 text-center py-2 px-4 text-sm font-medium">
+          TranscribeAlpha is open in another tab. Please close other tabs to avoid data conflicts.
+          <button onClick={() => setMultiTabWarning(false)} className="ml-3 underline">Dismiss</button>
+        </div>
+      )}
+      {children}
+    </>
+  )
+}
+
+function PWAInstallPrompt() {
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null)
+  const [dismissed, setDismissed] = useState(false)
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('pwa_install_dismissed') === 'true') {
+        setDismissed(true)
+      }
+    } catch {}
+
+    const handler = (e: Event) => {
+      e.preventDefault()
+      setDeferredPrompt(e)
+    }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+
+  if (!deferredPrompt || dismissed) return null
+
+  return (
+    <div className="fixed bottom-4 right-4 z-40 bg-white border border-gray-200 rounded-xl shadow-lg p-4 max-w-sm">
+      <p className="text-sm font-medium text-gray-900 mb-1">Install TranscribeAlpha</p>
+      <p className="text-xs text-gray-500 mb-3">Install for the best experience: faster loading, offline access, and reliable file permissions.</p>
+      <div className="flex gap-2">
+        <button
+          onClick={async () => {
+            deferredPrompt.prompt()
+            await deferredPrompt.userChoice
+            setDeferredPrompt(null)
+          }}
+          className="px-3 py-1.5 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-500"
+        >
+          Install
+        </button>
+        <button
+          onClick={() => {
+            setDismissed(true)
+            try { localStorage.setItem('pwa_install_dismissed', 'true') } catch {}
+          }}
+          className="px-3 py-1.5 text-gray-500 text-sm hover:text-gray-700"
+        >
+          Not now
+        </button>
+      </div>
+    </div>
+  )
 }
 
 export default function DashboardLayout({
@@ -148,6 +216,7 @@ export default function DashboardLayout({
             {children}
           </main>
         </div>
+        <PWAInstallPrompt />
       </WorkspaceGate>
     </DashboardProvider>
   )

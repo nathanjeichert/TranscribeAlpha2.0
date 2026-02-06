@@ -17,6 +17,7 @@ import {
   saveTranscript as localSaveTranscript,
   type TranscriptData,
 } from '@/lib/storage'
+import { storeMediaHandle } from '@/lib/mediaHandles'
 
 interface FormData {
   case_name: string
@@ -45,6 +46,7 @@ interface TranscriptResponse {
 interface QueueItem {
   id: string
   file: File
+  fileHandle?: FileSystemFileHandle | null
   status: QueueItemStatus
   stageText: string
   error: string
@@ -253,10 +255,11 @@ export default function TranscribePage() {
     })
   }, [])
 
-  const createQueueItem = useCallback((file: File): QueueItem => {
+  const createQueueItem = useCallback((file: File, fileHandle?: FileSystemFileHandle | null): QueueItem => {
     return {
       id: buildQueueId(),
       file,
+      fileHandle: fileHandle ?? null,
       status: 'queued',
       stageText: 'Queued',
       error: '',
@@ -359,6 +362,63 @@ export default function TranscribePage() {
   const handleDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
   }, [])
+
+  const handleOpenFilePicker = useCallback(async () => {
+    if (appVariant !== 'criminal') return
+    try {
+      const handles: FileSystemFileHandle[] = await (window as any).showOpenFilePicker({
+        multiple: mode === 'bulk',
+        types: [
+          {
+            description: 'Audio/Video files',
+            accept: {
+              'audio/*': ['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma'],
+              'video/*': ['.mp4', '.mov', '.avi', '.mkv'],
+            },
+          },
+        ],
+      })
+      if (!handles.length) return
+
+      setPageError('')
+      setPageNotice('')
+      setShowAllResults(false)
+
+      if (mode === 'single') {
+        const file = await handles[0].getFile()
+        const item = createQueueItem(file, handles[0])
+        setQueue([item])
+        return
+      }
+
+      const current = queueRef.current
+      const currentHasProcessed = current.some((item) => item.status !== 'queued')
+      const currentHasQueued = current.some((item) => item.status === 'queued')
+      const baseQueue = currentHasProcessed && !currentHasQueued ? [] : current
+
+      const remainingSlots = Math.max(MAX_BATCH_FILES - baseQueue.length, 0)
+      if (remainingSlots <= 0) {
+        setPageError(`Batch limit reached. Maximum ${MAX_BATCH_FILES} files per run.`)
+        return
+      }
+
+      const accepted = handles.slice(0, remainingSlots)
+      const dropped = handles.length - accepted.length
+
+      const nextItems: QueueItem[] = []
+      for (const handle of accepted) {
+        const file = await handle.getFile()
+        nextItems.push(createQueueItem(file, handle))
+      }
+      setQueue([...baseQueue, ...nextItems])
+
+      if (dropped > 0) {
+        setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
+      }
+    } catch {
+      // User cancelled the file picker
+    }
+  }, [appVariant, createQueueItem, mode])
 
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
@@ -623,9 +683,10 @@ export default function TranscribePage() {
                 transcriptToSave,
                 effectiveCaseId || undefined,
               )
-              // Note: File from <input> is not a FileSystemFileHandle.
-              // User will need to relink media via the editor's "Locate File" button.
-              // If showOpenFilePicker was used, the handle would be stored here.
+              // Store the file handle if the user used showOpenFilePicker
+              if (freshItem.fileHandle) {
+                await storeMediaHandle(data.media_key, freshItem.fileHandle)
+              }
             }
 
             updateQueueItem(itemId, {
@@ -1009,6 +1070,16 @@ export default function TranscribePage() {
                 <div className="text-sm text-gray-500">Supports MP4, MOV, AVI, WAV, MP3, FLAC and more</div>
               </div>
             </label>
+
+            {appVariant === 'criminal' && (
+              <button
+                type="button"
+                onClick={handleOpenFilePicker}
+                className="mt-3 w-full py-2.5 text-sm font-medium text-primary-700 bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100 transition-colors"
+              >
+                Browse Files (preserves file access for playback)
+              </button>
+            )}
           </div>
 
           {queue.length > 0 && (

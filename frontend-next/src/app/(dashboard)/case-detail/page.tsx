@@ -183,7 +183,7 @@ export default function CaseDetailPage() {
     setDeleting(true)
     try {
       if (appVariant === 'criminal') {
-        await localDeleteCase(caseId)
+        await localDeleteCase(caseId, deleteTranscripts)
       } else {
         const response = await authenticatedFetch(
           `/api/cases/${caseId}?delete_transcripts=${deleteTranscripts}`,

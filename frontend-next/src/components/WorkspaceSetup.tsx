@@ -16,15 +16,13 @@ export default function WorkspaceSetup({ onComplete }: WorkspaceSetupProps) {
     setPicking(true)
     setError('')
     try {
-      const handle = await pickAndInitWorkspace()
+      const { isExisting } = await pickAndInitWorkspace()
 
-      // Check if returning user (existing config.json)
-      try {
-        await handle.getFileHandle('config.json')
+      if (isExisting) {
         setIsReturning(true)
         // Small delay so user sees the "Welcome back" message
         setTimeout(() => onComplete(), 800)
-      } catch {
+      } else {
         onComplete()
       }
     } catch (err: any) {

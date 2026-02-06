@@ -40,7 +40,7 @@ export default function SettingsPage() {
     setChangingWorkspace(true)
     try {
       await clearWorkspace()
-      await pickAndInitWorkspace()
+      await pickAndInitWorkspace() // returns { handle, isExisting } but we don't need it here
       await loadWorkspaceInfo()
     } catch {
       // User cancelled picker

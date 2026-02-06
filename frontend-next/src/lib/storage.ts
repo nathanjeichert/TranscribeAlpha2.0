@@ -139,7 +139,7 @@ export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null>
   }
 }
 
-export async function pickAndInitWorkspace(): Promise<FileSystemDirectoryHandle> {
+export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirectoryHandle; isExisting: boolean }> {
   const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
 
   // Check if returning user
@@ -175,7 +175,7 @@ export async function pickAndInitWorkspace(): Promise<FileSystemDirectoryHandle>
   })
 
   workspaceHandle = handle
-  return handle
+  return { handle, isExisting }
 }
 
 async function ensureWorkspaceStructure(root: FileSystemDirectoryHandle): Promise<void> {
@@ -336,6 +336,7 @@ export async function createCase(meta: CaseMeta): Promise<void> {
   const caseDir = await casesDir.getDirectoryHandle(meta.case_id, { create: true })
   await caseDir.getDirectoryHandle('transcripts', { create: true })
   await caseDir.getDirectoryHandle('clips', { create: true })
+  await caseDir.getDirectoryHandle('sequences', { create: true })
   await writeJSONToHandle(caseDir, 'meta.json', meta)
 }
 
@@ -354,8 +355,9 @@ export async function updateCase(caseId: string, updates: Partial<CaseMeta>): Pr
 
 export async function deleteCase(caseId: string, deleteTranscripts = false): Promise<void> {
   if (!deleteTranscripts) {
-    // Move transcripts to uncategorized
+    // Move transcripts to uncategorized -- write ALL copies first, then delete the case
     const transcripts = await listTranscriptsInCase(caseId)
+    const failedCopies: string[] = []
     for (const t of transcripts) {
       try {
         const data = await readJSON<TranscriptData>(`cases/${caseId}/transcripts/${t.media_key}.json`)
@@ -364,8 +366,11 @@ export async function deleteCase(caseId: string, deleteTranscripts = false): Pro
           await writeJSON(`uncategorized/${t.media_key}.json`, data)
         }
       } catch {
-        // Best effort
+        failedCopies.push(t.media_key)
       }
+    }
+    if (failedCopies.length > 0) {
+      throw new Error(`Could not move ${failedCopies.length} transcript(s) to uncategorized. Case was not deleted.`)
     }
   }
   await deleteDirectory(`cases/${caseId}`)
@@ -488,14 +493,40 @@ export async function moveTranscriptToCase(mediaKey: string, targetCaseId: strin
   const data = await getTranscript(mediaKey)
   if (!data) throw new Error('Transcript not found')
 
-  // Delete from current location
-  await deleteTranscript(mediaKey)
-
-  // Save to new location
+  // Write to new location FIRST (so data is safe before we delete the old copy)
   if (targetCaseId === 'uncategorized' || !targetCaseId) {
+    data.case_id = null
     await saveTranscript(mediaKey, data)
   } else {
+    data.case_id = targetCaseId
     await saveTranscript(mediaKey, data, targetCaseId)
+  }
+
+  // Only delete from old location after write succeeded
+  // Find old location (it's wherever getTranscript found it, excluding the new location)
+  if (targetCaseId === 'uncategorized' || !targetCaseId) {
+    // We wrote to uncategorized, so delete from any case
+    const caseEntries = await listDirectory('cases')
+    for (const caseId of caseEntries) {
+      if (await fileExists(`cases/${caseId}/transcripts/${mediaKey}.json`)) {
+        await deleteFile(`cases/${caseId}/transcripts/${mediaKey}.json`)
+        return
+      }
+    }
+  } else {
+    // We wrote to a case, so delete from uncategorized or other cases
+    if (await fileExists(`uncategorized/${mediaKey}.json`)) {
+      await deleteFile(`uncategorized/${mediaKey}.json`)
+      return
+    }
+    const caseEntries = await listDirectory('cases')
+    for (const caseId of caseEntries) {
+      if (caseId === targetCaseId) continue
+      if (await fileExists(`cases/${caseId}/transcripts/${mediaKey}.json`)) {
+        await deleteFile(`cases/${caseId}/transcripts/${mediaKey}.json`)
+        return
+      }
+    }
   }
 }
 

@@ -1423,13 +1423,14 @@ async def gemini_refine_local(
         audio_mime = media_content_type or "audio/mpeg"
 
         SUPPORTED_VIDEO_TYPES = ["mp4", "mov", "avi", "mkv"]
+        temp_audio_dir = None
         if ext in SUPPORTED_VIDEO_TYPES:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                output_audio = os.path.join(temp_dir, "converted.mp3")
-                converted = convert_video_to_audio(temp_media_path, output_audio)
-                if converted:
-                    audio_path = converted
-                    audio_mime = "audio/mpeg"
+            temp_audio_dir = tempfile.mkdtemp()
+            output_audio = os.path.join(temp_audio_dir, "converted.mp3")
+            converted = convert_video_to_audio(temp_media_path, output_audio)
+            if converted:
+                audio_path = converted
+                audio_mime = "audio/mpeg"
         else:
             mime_map = {
                 "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
@@ -1439,13 +1440,18 @@ async def gemini_refine_local(
 
         duration_hint = float(session_data.get("audio_duration", 0.0))
 
-        gemini_lines = await anyio.to_thread.run_sync(
-            run_gemini_edit,
-            xml_text,
-            audio_path,
-            audio_mime,
-            duration_hint,
-        )
+        try:
+            gemini_lines = await anyio.to_thread.run_sync(
+                run_gemini_edit,
+                xml_text,
+                audio_path,
+                audio_mime,
+                duration_hint,
+            )
+        finally:
+            if temp_audio_dir and os.path.exists(temp_audio_dir):
+                import shutil
+                shutil.rmtree(temp_audio_dir, ignore_errors=True)
 
         normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_hint)
         turns = construct_turns_from_lines(normalized_lines)
