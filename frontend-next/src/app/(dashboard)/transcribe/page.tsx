@@ -1,6 +1,8 @@
 'use client'
 
-import { useCallback, useRef, useState, useEffect } from 'react'
+import JSZip from 'jszip'
+import Link from 'next/link'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { authenticatedFetch, getAuthHeaders } from '@/utils/auth'
 import { useDashboard } from '@/context/DashboardContext'
@@ -11,81 +13,306 @@ interface FormData {
   case_number: string
   firm_name: string
   input_date: string
-  input_time: string
   location: string
-  speakers_expected: string
   transcription_model: 'assemblyai' | 'gemini'
   case_id: string
 }
 
 type WizardStep = 'upload' | 'configure' | 'transcribe'
+type TranscribeMode = 'single' | 'bulk'
+type QueueItemStatus = 'queued' | 'uploading' | 'transcribing' | 'building' | 'done' | 'failed' | 'canceled'
+
+interface TranscriptResponse {
+  media_key: string
+  lines?: Array<unknown>
+  pdf_base64?: string
+  docx_base64?: string
+  oncue_xml_base64?: string
+  viewer_html_base64?: string
+  title_data?: Record<string, string>
+}
+
+interface QueueItem {
+  id: string
+  file: File
+  status: QueueItemStatus
+  stageText: string
+  error: string
+  result: TranscriptResponse | null
+  attemptCount: number
+  speaker_names: string
+  speakers_expected: string
+  case_target: string
+}
+
+interface RequestFailure {
+  message: string
+  retryable: boolean
+}
 
 const wizardSteps: Array<{ key: WizardStep; label: string }> = [
-  { key: 'upload', label: 'Upload File' },
-  { key: 'configure', label: 'Optional Details' },
-  { key: 'transcribe', label: 'Transcribe' },
+  { key: 'upload', label: 'Upload' },
+  { key: 'configure', label: 'Configure' },
+  { key: 'transcribe', label: 'Results' },
 ]
+
+const MAX_BATCH_FILES = 10
+const RESULTS_PREVIEW_LIMIT = 10
+const CASE_USE_BATCH = '__batch__'
+const CASE_UNCATEGORIZED = '__uncategorized__'
+
+const buildQueueId = () => `${Date.now()}_${Math.random().toString(16).slice(2)}`
+
+const sanitizeFilenamePart = (value: string) => {
+  const sanitized = value
+    .replace(/[^a-zA-Z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return sanitized || 'transcript'
+}
+
+const stripExtension = (filename: string) => filename.replace(/\.[^.]+$/, '')
+
+const buildFileSignature = (file: File) => `${file.name}::${file.size}::${file.lastModified}`
+
+const statusLabel = (status: QueueItemStatus) => {
+  if (status === 'queued') return 'Queued'
+  if (status === 'uploading') return 'Uploading'
+  if (status === 'transcribing') return 'Transcribing'
+  if (status === 'building') return 'Building'
+  if (status === 'done') return 'Complete'
+  if (status === 'failed') return 'Failed'
+  return 'Canceled'
+}
+
+const statusBadgeClass = (status: QueueItemStatus) => {
+  if (status === 'done') return 'bg-green-100 text-green-700'
+  if (status === 'failed') return 'bg-red-100 text-red-700'
+  if (status === 'canceled') return 'bg-amber-100 text-amber-800'
+  if (status === 'queued') return 'bg-gray-100 text-gray-600'
+  return 'bg-primary-100 text-primary-700'
+}
+
+const isRetryableStatus = (status: number) => status === 429 || (status >= 500 && status <= 599)
 
 export default function TranscribePage() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { cases, refreshCases, refreshRecentTranscripts, setActiveMediaKey, appVariant } = useDashboard()
 
+  const [mode, setMode] = useState<TranscribeMode>('single')
   const [step, setStep] = useState<WizardStep>('upload')
   const [formData, setFormData] = useState<FormData>({
     case_name: '',
     case_number: '',
     firm_name: '',
     input_date: '',
-    input_time: '',
     location: '',
-    speakers_expected: '',
     transcription_model: 'assemblyai',
     case_id: '',
   })
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [loadingStage, setLoadingStage] = useState<string>('')
-  const [error, setError] = useState<string>('')
-  const [transcriptResult, setTranscriptResult] = useState<any>(null)
+
+  const [queue, setQueue] = useState<QueueItem[]>([])
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [stopAfterCurrent, setStopAfterCurrent] = useState(false)
+  const [pageError, setPageError] = useState('')
+  const [pageNotice, setPageNotice] = useState('')
+  const [showAllResults, setShowAllResults] = useState(false)
+  const [zipBusy, setZipBusy] = useState<'pdf' | 'variant' | null>(null)
+
   const [showNewCaseModal, setShowNewCaseModal] = useState(false)
   const [newCaseName, setNewCaseName] = useState('')
   const [newCaseDescription, setNewCaseDescription] = useState('')
   const [creatingCase, setCreatingCase] = useState(false)
 
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const stageTimerRef = useRef<number | null>(null)
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
 
-  // Pre-select case_id from URL if provided
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const queueRef = useRef<QueueItem[]>([])
+  const stopAfterCurrentRef = useRef(false)
+
+  useEffect(() => {
+    queueRef.current = queue
+  }, [queue])
+
+  useEffect(() => {
+    stopAfterCurrentRef.current = stopAfterCurrent
+  }, [stopAfterCurrent])
+
   useEffect(() => {
     const caseIdParam = searchParams.get('case_id')
     if (caseIdParam) {
-      setFormData(prev => ({ ...prev, case_id: caseIdParam }))
+      setFormData((prev) => ({ ...prev, case_id: caseIdParam }))
     }
   }, [searchParams])
 
-  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = event.target
-    setFormData((prev) => ({ ...prev, [name]: value }))
-  }
+  useEffect(() => {
+    if (!isProcessing) return
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isProcessing])
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    setSelectedFile(file)
-    setError('')
-    setTranscriptResult(null)
-  }
+  const caseNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const c of cases) {
+      map.set(c.case_id, c.name)
+    }
+    return map
+  }, [cases])
 
-  const handleDrop = useCallback((event: React.DragEvent) => {
-    event.preventDefault()
-    const file = event.dataTransfer.files?.[0]
-    if (file) {
-      setSelectedFile(file)
-      setError('')
-      setTranscriptResult(null)
+  const queuedCount = useMemo(() => queue.filter((item) => item.status === 'queued').length, [queue])
+  const doneCount = useMemo(() => queue.filter((item) => item.status === 'done').length, [queue])
+  const failedCount = useMemo(() => queue.filter((item) => item.status === 'failed').length, [queue])
+  const canceledCount = useMemo(() => queue.filter((item) => item.status === 'canceled').length, [queue])
+  const inProgressCount = useMemo(
+    () => queue.filter((item) => item.status === 'uploading' || item.status === 'transcribing' || item.status === 'building').length,
+    [queue],
+  )
+
+  const processedItems = useMemo(
+    () => queue.filter((item) => item.status === 'done' || item.status === 'failed' || item.status === 'canceled'),
+    [queue],
+  )
+
+  const visibleProcessedItems = useMemo(() => {
+    if (showAllResults) return processedItems
+    return processedItems.slice(0, RESULTS_PREVIEW_LIMIT)
+  }, [processedItems, showAllResults])
+
+  const updateQueueItem = useCallback((itemId: string, updater: Partial<QueueItem> | ((current: QueueItem) => QueueItem)) => {
+    setQueue((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId) return item
+        if (typeof updater === 'function') {
+          return updater(item)
+        }
+        return { ...item, ...updater }
+      }),
+    )
+  }, [])
+
+  const reorderQueue = useCallback((sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return
+    setQueue((prev) => {
+      const sourceIndex = prev.findIndex((item) => item.id === sourceId)
+      const targetIndex = prev.findIndex((item) => item.id === targetId)
+      if (sourceIndex === -1 || targetIndex === -1) return prev
+      const next = [...prev]
+      const [moved] = next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, moved)
+      return next
+    })
+  }, [])
+
+  const createQueueItem = useCallback((file: File): QueueItem => {
+    return {
+      id: buildQueueId(),
+      file,
+      status: 'queued',
+      stageText: 'Queued',
+      error: '',
+      result: null,
+      attemptCount: 0,
+      speaker_names: '',
+      speakers_expected: '',
+      case_target: CASE_USE_BATCH,
     }
   }, [])
+
+  const handleModeChange = (nextMode: TranscribeMode) => {
+    if (isProcessing || mode === nextMode) return
+
+    setMode(nextMode)
+    setPageError('')
+    setPageNotice('')
+
+    if (nextMode === 'single' && queue.length > 1) {
+      setQueue((prev) => {
+        const keep = prev[0]
+        return keep ? [{ ...keep, status: 'queued', stageText: 'Queued', error: '', result: null }] : []
+      })
+      setShowAllResults(false)
+      setPageNotice('Switched to single mode. Keeping only the first selected file.')
+    }
+  }
+
+  const addFilesToQueue = useCallback(
+    (incoming: File[]) => {
+      if (!incoming.length) return
+
+      setPageError('')
+      setPageNotice('')
+      setShowAllResults(false)
+
+      if (mode === 'single') {
+        const nextItem = createQueueItem(incoming[0])
+        setQueue([nextItem])
+        return
+      }
+
+      const current = queueRef.current
+      const currentHasProcessed = current.some((item) => item.status !== 'queued')
+      const currentHasQueued = current.some((item) => item.status === 'queued')
+      const baseQueue = currentHasProcessed && !currentHasQueued ? [] : current
+
+      const existingSignatures = new Set(baseQueue.map((item) => buildFileSignature(item.file)))
+      let duplicateCount = 0
+      const dedupedIncoming: File[] = []
+
+      for (const file of incoming) {
+        const signature = buildFileSignature(file)
+        if (existingSignatures.has(signature)) {
+          duplicateCount += 1
+        }
+        dedupedIncoming.push(file)
+        existingSignatures.add(signature)
+      }
+
+      const remainingSlots = Math.max(MAX_BATCH_FILES - baseQueue.length, 0)
+      if (remainingSlots <= 0) {
+        setPageError(`Batch limit reached. Maximum ${MAX_BATCH_FILES} files per run.`)
+        return
+      }
+
+      const accepted = dedupedIncoming.slice(0, remainingSlots)
+      const dropped = dedupedIncoming.length - accepted.length
+
+      const nextItems = accepted.map((file) => createQueueItem(file))
+      setQueue([...baseQueue, ...nextItems])
+
+      if (duplicateCount > 0) {
+        setPageNotice(`${duplicateCount} duplicate file(s) were added. Duplicates are allowed and will be processed.`)
+      }
+      if (dropped > 0) {
+        setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
+      }
+    },
+    [createQueueItem, mode],
+  )
+
+  const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+    addFilesToQueue(Array.from(files))
+    event.target.value = ''
+  }
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault()
+      const files = event.dataTransfer.files
+      if (!files || files.length === 0) return
+      addFilesToQueue(Array.from(files))
+    },
+    [addFilesToQueue],
+  )
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault()
@@ -94,6 +321,8 @@ export default function TranscribePage() {
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
     setCreatingCase(true)
+    setPageError('')
+
     try {
       const response = await authenticatedFetch('/api/cases', {
         method: 'POST',
@@ -103,109 +332,326 @@ export default function TranscribePage() {
       if (!response.ok) throw new Error('Failed to create case')
       const data = await response.json()
       await refreshCases()
-      setFormData(prev => ({ ...prev, case_id: data.case.case_id }))
+      setFormData((prev) => ({ ...prev, case_id: data.case.case_id }))
       setShowNewCaseModal(false)
       setNewCaseName('')
       setNewCaseDescription('')
-    } catch (err) {
-      setError('Failed to create case')
+    } catch {
+      setPageError('Failed to create case')
     } finally {
       setCreatingCase(false)
     }
   }
 
-  const handleSubmit = async () => {
-    if (!selectedFile) {
-      setError('Please select a file to transcribe')
-      return
-    }
-
-    setIsLoading(true)
-    setLoadingStage('Uploading media...')
-    setError('')
-    setTranscriptResult(null)
-
-    const clearStageTimer = () => {
-      if (stageTimerRef.current) {
-        window.clearTimeout(stageTimerRef.current)
-        stageTimerRef.current = null
+  const getEffectiveCaseId = useCallback(
+    (item: QueueItem) => {
+      if (item.case_target === CASE_USE_BATCH) {
+        return formData.case_id
       }
-    }
+      if (item.case_target === CASE_UNCATEGORIZED) {
+        return ''
+      }
+      return item.case_target
+    },
+    [formData.case_id],
+  )
 
-    try {
+  const buildRequestFormData = useCallback(
+    (item: QueueItem) => {
       const submitFormData = new FormData()
-      submitFormData.append('file', selectedFile)
-      Object.entries(formData).forEach(([key, value]) => {
-        if (value) submitFormData.append(key, value.toString())
-      })
+      submitFormData.append('file', item.file)
+      submitFormData.append('transcription_model', formData.transcription_model)
 
-      const isVideoFile =
-        (selectedFile.type || '').startsWith('video/') ||
-        /\.(mp4|mov|avi|mkv)$/i.test(selectedFile.name)
+      if (formData.case_name.trim()) submitFormData.append('case_name', formData.case_name.trim())
+      if (formData.case_number.trim()) submitFormData.append('case_number', formData.case_number.trim())
+      if (formData.firm_name.trim()) submitFormData.append('firm_name', formData.firm_name.trim())
+      if (formData.input_date) submitFormData.append('input_date', formData.input_date)
+      if (formData.location.trim()) submitFormData.append('location', formData.location.trim())
 
-      const data = await new Promise<any>((resolve, reject) => {
+      const effectiveCaseId = getEffectiveCaseId(item)
+      if (effectiveCaseId) {
+        submitFormData.append('case_id', effectiveCaseId)
+      }
+
+      if (item.speaker_names.trim()) {
+        submitFormData.append('speaker_names', item.speaker_names.trim())
+      }
+
+      const expectedSpeakers = Number(item.speakers_expected)
+      if (Number.isInteger(expectedSpeakers) && expectedSpeakers > 0) {
+        submitFormData.append('speakers_expected', String(expectedSpeakers))
+      }
+
+      return submitFormData
+    },
+    [formData, getEffectiveCaseId],
+  )
+
+  const transcribeOneItem = useCallback(
+    async (item: QueueItem): Promise<TranscriptResponse> => {
+      const submitFormData = buildRequestFormData(item)
+
+      return new Promise<TranscriptResponse>((resolve, reject) => {
         const request = new XMLHttpRequest()
         request.open('POST', '/api/transcribe', true)
+        request.responseType = 'json'
+
         const authHeaders = getAuthHeaders()
         Object.entries(authHeaders).forEach(([key, value]) => {
           request.setRequestHeader(key, String(value))
         })
-        request.responseType = 'json'
+
+        const isVideoFile =
+          (item.file.type || '').startsWith('video/') || /\.(mp4|mov|avi|mkv)$/i.test(item.file.name)
+
+        let stageTimer: number | null = null
+        const clearStageTimer = () => {
+          if (stageTimer) {
+            window.clearTimeout(stageTimer)
+            stageTimer = null
+          }
+        }
+
+        updateQueueItem(item.id, {
+          status: 'uploading',
+          stageText: 'Uploading media...',
+          error: '',
+        })
 
         request.upload.onprogress = () => {
-          setLoadingStage('Uploading media...')
+          updateQueueItem(item.id, {
+            status: 'uploading',
+            stageText: 'Uploading media...',
+          })
         }
 
         request.upload.onload = () => {
           clearStageTimer()
           if (isVideoFile) {
-            setLoadingStage('Converting to audio...')
-            stageTimerRef.current = window.setTimeout(() => {
-              setLoadingStage('Transcribing (this could take a few minutes)...')
-              stageTimerRef.current = null
+            updateQueueItem(item.id, {
+              status: 'transcribing',
+              stageText: 'Converting to audio...',
+            })
+            stageTimer = window.setTimeout(() => {
+              updateQueueItem(item.id, {
+                status: 'transcribing',
+                stageText: 'Transcribing (this may take a few minutes)...',
+              })
+              stageTimer = null
             }, 1200)
           } else {
-            setLoadingStage('Transcribing (this could take a few minutes)...')
+            updateQueueItem(item.id, {
+              status: 'transcribing',
+              stageText: 'Transcribing (this may take a few minutes)...',
+            })
           }
         }
 
         request.onload = () => {
           clearStageTimer()
-          const responseData = request.response ?? (() => {
-            try { return JSON.parse(request.responseText) } catch { return null }
-          })()
+          const responseData =
+            request.response
+            ?? (() => {
+              try {
+                return JSON.parse(request.responseText)
+              } catch {
+                return null
+              }
+            })()
 
           if (request.status >= 200 && request.status < 300) {
-            setLoadingStage('Producing transcript...')
-            resolve(responseData)
+            updateQueueItem(item.id, {
+              status: 'building',
+              stageText: 'Producing transcript...',
+            })
+            resolve(responseData as TranscriptResponse)
             return
           }
 
           const detail = responseData?.detail || 'Transcription failed'
-          reject(new Error(detail))
+          const failure: RequestFailure = {
+            message: detail,
+            retryable: isRetryableStatus(request.status),
+          }
+          reject(failure)
         }
 
         request.onerror = () => {
           clearStageTimer()
-          reject(new Error('Upload failed. Please try again.'))
+          reject({
+            message: 'Upload failed. Please try again.',
+            retryable: true,
+          } satisfies RequestFailure)
         }
 
         request.send(submitFormData)
       })
+    },
+    [buildRequestFormData, updateQueueItem],
+  )
 
-      setTranscriptResult(data)
-      setActiveMediaKey(data.media_key)
-      await refreshRecentTranscripts()
-      if (formData.case_id) {
+  const runQueue = useCallback(
+    async (targetStatuses: QueueItemStatus[]) => {
+      if (isProcessing) return
+
+      setPageError('')
+      setPageNotice('')
+      setStep('transcribe')
+      setIsProcessing(true)
+      setStopAfterCurrent(false)
+      stopAfterCurrentRef.current = false
+
+      const targetStatusSet = new Set(targetStatuses)
+      const snapshot = queueRef.current
+      const targetIds = snapshot
+        .filter((item) => targetStatusSet.has(item.status))
+        .map((item) => item.id)
+
+      if (!targetIds.length) {
+        setIsProcessing(false)
+        setPageNotice('No files matched that action.')
+        return
+      }
+
+      const targetIdSet = new Set(targetIds)
+      setQueue((prev) =>
+        prev.map((item) => {
+          if (!targetIdSet.has(item.id)) return item
+          return {
+            ...item,
+            status: 'queued',
+            stageText: 'Queued',
+            error: '',
+          }
+        }),
+      )
+
+      let needsCaseRefresh = false
+
+      for (const itemId of targetIds) {
+        if (stopAfterCurrentRef.current) {
+          break
+        }
+
+        const currentItem = queueRef.current.find((entry) => entry.id === itemId)
+        if (!currentItem) {
+          continue
+        }
+
+        let succeeded = false
+
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const freshItem = queueRef.current.find((entry) => entry.id === itemId)
+          if (!freshItem) break
+
+          updateQueueItem(itemId, {
+            attemptCount: attempt + 1,
+            error: '',
+            stageText: attempt === 0 ? 'Queued' : 'Retrying once...',
+            status: attempt === 0 ? 'queued' : 'uploading',
+          })
+
+          try {
+            const data = await transcribeOneItem(freshItem)
+            updateQueueItem(itemId, {
+              status: 'done',
+              stageText: 'Complete',
+              error: '',
+              result: data,
+              attemptCount: attempt + 1,
+            })
+            setActiveMediaKey(data.media_key)
+            await refreshRecentTranscripts()
+
+            const effectiveCaseId = getEffectiveCaseId(freshItem)
+            if (effectiveCaseId) {
+              needsCaseRefresh = true
+            }
+
+            succeeded = true
+            break
+          } catch (err) {
+            const failure = err as RequestFailure
+            const retryable = failure?.retryable ?? false
+            const message = failure?.message || 'Transcription failed'
+
+            if (attempt === 0 && retryable) {
+              updateQueueItem(itemId, {
+                status: 'uploading',
+                stageText: 'Retrying once...',
+                error: '',
+                attemptCount: attempt + 1,
+              })
+              continue
+            }
+
+            updateQueueItem(itemId, {
+              status: 'failed',
+              stageText: 'Failed',
+              error: message,
+              attemptCount: attempt + 1,
+            })
+          }
+        }
+
+        if (!succeeded) {
+          // Continue with next file.
+        }
+      }
+
+      if (stopAfterCurrentRef.current) {
+        const pendingIds = new Set(targetIds)
+        setQueue((prev) =>
+          prev.map((item) => {
+            if (!pendingIds.has(item.id)) return item
+            if (item.status === 'queued') {
+              return {
+                ...item,
+                status: 'canceled',
+                stageText: 'Canceled before start',
+                error: 'Processing was stopped before this file started.',
+              }
+            }
+            return item
+          }),
+        )
+        setPageNotice('Queue stopped. Current item finished; remaining queued items were canceled.')
+      }
+
+      if (needsCaseRefresh) {
         await refreshCases()
       }
-    } catch (err: any) {
-      setError(err.message || 'Transcription failed')
-    } finally {
-      clearStageTimer()
-      setIsLoading(false)
-      setLoadingStage('')
+
+      setIsProcessing(false)
+      setStopAfterCurrent(false)
+      stopAfterCurrentRef.current = false
+    },
+    [
+      getEffectiveCaseId,
+      isProcessing,
+      refreshCases,
+      refreshRecentTranscripts,
+      setActiveMediaKey,
+      transcribeOneItem,
+      updateQueueItem,
+    ],
+  )
+
+  const handleStartQueued = () => {
+    if (!queue.length) {
+      setPageError('Please add at least one file.')
+      return
     }
+    void runQueue(['queued'])
+  }
+
+  const handleRetryFailures = () => {
+    void runQueue(['failed', 'canceled'])
+  }
+
+  const handleStopQueue = () => {
+    setStopAfterCurrent(true)
+    stopAfterCurrentRef.current = true
   }
 
   const downloadBase64File = (base64Data: string, filename: string, mimeType: string) => {
@@ -226,41 +672,187 @@ export default function TranscribePage() {
     URL.revokeObjectURL(objectUrl)
   }
 
-  const buildDownloadFilename = (extension: '.pdf' | '.xml' | '.html') => {
-    const baseLabel = formData.case_name.trim() || selectedFile?.name?.replace(/\.[^.]+$/, '') || 'transcript'
-    const sanitizedBase = baseLabel
-      .replace(/[^a-zA-Z0-9\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '') || 'transcript'
-    const dateSuffix = formData.input_date ? `-${formData.input_date}` : ''
-    return `${sanitizedBase}${dateSuffix}${extension}`
-  }
+  const buildItemFilename = useCallback(
+    (item: QueueItem, extension: '.pdf' | '.xml' | '.html') => {
+      const titleData = item.result?.title_data || {}
+      const caseName = titleData.CASE_NAME || formData.case_name || stripExtension(item.file.name)
+      const datePart = titleData.DATE || formData.input_date
+      const sanitizedBase = sanitizeFilenamePart(caseName)
+      return `${sanitizedBase}${datePart ? `-${datePart}` : ''}${extension}`
+    },
+    [formData.case_name, formData.input_date],
+  )
 
-  const canProceedToConfig = selectedFile !== null
-  const canProceedToTranscribe = selectedFile !== null
+  const handleDownloadBatchZip = useCallback(
+    async (kind: 'pdf' | 'variant') => {
+      const completed = queueRef.current.filter((item) => item.status === 'done' && item.result)
+      if (!completed.length) {
+        setPageError('No completed transcripts available to download.')
+        return
+      }
+
+      setPageError('')
+      setZipBusy(kind)
+
+      try {
+        const zip = new JSZip()
+        const usedNames = new Set<string>()
+
+        const reserveUniqueName = (baseName: string) => {
+          if (!usedNames.has(baseName)) {
+            usedNames.add(baseName)
+            return baseName
+          }
+
+          const dotIndex = baseName.lastIndexOf('.')
+          const stem = dotIndex > 0 ? baseName.slice(0, dotIndex) : baseName
+          const ext = dotIndex > 0 ? baseName.slice(dotIndex) : ''
+
+          let counter = 2
+          while (true) {
+            const candidate = `${stem}-${counter}${ext}`
+            if (!usedNames.has(candidate)) {
+              usedNames.add(candidate)
+              return candidate
+            }
+            counter += 1
+          }
+        }
+
+        let addedCount = 0
+
+        for (const item of completed) {
+          const payload = item.result
+          if (!payload) continue
+
+          if (kind === 'pdf') {
+            const pdfData = payload.pdf_base64 ?? payload.docx_base64
+            if (!pdfData) continue
+            const filename = reserveUniqueName(buildItemFilename(item, '.pdf'))
+            zip.file(filename, pdfData, { base64: true })
+            addedCount += 1
+            continue
+          }
+
+          if (appVariant === 'oncue') {
+            if (!payload.oncue_xml_base64) continue
+            const filename = reserveUniqueName(buildItemFilename(item, '.xml'))
+            zip.file(filename, payload.oncue_xml_base64, { base64: true })
+            addedCount += 1
+          } else {
+            if (!payload.viewer_html_base64) continue
+            const filename = reserveUniqueName(buildItemFilename(item, '.html'))
+            zip.file(filename, payload.viewer_html_base64, { base64: true })
+            addedCount += 1
+          }
+        }
+
+        if (addedCount === 0) {
+          setPageError(kind === 'pdf' ? 'No PDF files available to bundle.' : `No ${appVariant === 'oncue' ? 'XML' : 'HTML'} files available to bundle.`)
+          return
+        }
+
+        const blob = await zip.generateAsync({ type: 'blob' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        const stamp = new Date().toISOString().slice(0, 10)
+        anchor.download =
+          kind === 'pdf'
+            ? `transcribealpha-pdfs-${stamp}.zip`
+            : `transcribealpha-${appVariant === 'oncue' ? 'xml' : 'html'}-${stamp}.zip`
+        document.body.appendChild(anchor)
+        anchor.click()
+        document.body.removeChild(anchor)
+        URL.revokeObjectURL(url)
+      } catch {
+        setPageError('Failed to generate ZIP archive.')
+      } finally {
+        setZipBusy(null)
+      }
+    },
+    [appVariant, buildItemFilename],
+  )
+
+  const hasQueue = queue.length > 0
+  const hasProcessed = isProcessing || processedItems.length > 0
+  const canProceedToConfig = hasQueue
+  const canProceedToTranscribe = queuedCount > 0
   const currentStepIndex = wizardSteps.findIndex((wizardStep) => wizardStep.key === step)
 
   const canNavigateToStep = (targetStep: WizardStep) => {
     if (targetStep === 'upload') return true
     if (targetStep === 'configure') return canProceedToConfig
-    return Boolean(transcriptResult)
+    return hasProcessed
+  }
+
+  const setFileCaseTarget = (itemId: string, value: string) => {
+    updateQueueItem(itemId, { case_target: value })
+  }
+
+  const setFileSpeakerNames = (itemId: string, value: string) => {
+    updateQueueItem(itemId, { speaker_names: value })
+  }
+
+  const setFileSpeakersExpected = (itemId: string, value: string) => {
+    updateQueueItem(itemId, { speakers_expected: value })
+  }
+
+  const resetForNewBatch = () => {
+    if (isProcessing) return
+    setQueue([])
+    setStep('upload')
+    setShowAllResults(false)
+    setPageError('')
+    setPageNotice('')
+  }
+
+  const renderCaseTargetLabel = (item: QueueItem) => {
+    const effective = getEffectiveCaseId(item)
+    if (!effective) return 'Uncategorized'
+    return caseNameById.get(effective) || 'Assigned Case'
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-gray-900">New Transcript</h1>
-        <p className="text-gray-600 mt-1">Step 1 is required. Step 2 is optional metadata.</p>
+    <div className="p-8 max-w-6xl mx-auto">
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">New Transcript</h1>
+          <p className="text-gray-600 mt-1">
+            {mode === 'single'
+              ? 'Upload one file, configure options, and transcribe.'
+              : `Upload up to ${MAX_BATCH_FILES} files and process them in a managed queue.`}
+          </p>
+        </div>
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+          <button
+            type="button"
+            onClick={() => handleModeChange('single')}
+            disabled={isProcessing}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${
+              mode === 'single' ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            Single
+          </button>
+          <button
+            type="button"
+            onClick={() => handleModeChange('bulk')}
+            disabled={isProcessing}
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${
+              mode === 'bulk' ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            Bulk
+          </button>
+        </div>
       </div>
 
-      {/* Progress Steps */}
       <div className="flex items-center mb-8">
         {wizardSteps.map((wizardStep, i) => (
           <div key={wizardStep.key} className="flex items-center">
             <button
+              type="button"
               onClick={() => {
                 if (canNavigateToStep(wizardStep.key)) {
                   setStep(wizardStep.key)
@@ -275,85 +867,154 @@ export default function TranscribePage() {
               }`}
               disabled={!canNavigateToStep(wizardStep.key)}
             >
-              <span className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
-                step === wizardStep.key ? 'bg-white text-primary-600' : 'bg-gray-200 text-gray-600'
-              }`}>
+              <span
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-sm ${
+                  step === wizardStep.key ? 'bg-white text-primary-600' : 'bg-gray-200 text-gray-600'
+                }`}
+              >
                 {i + 1}
               </span>
               <span>{wizardStep.label}</span>
             </button>
-            {i < 2 && (
-              <div className={`w-12 h-0.5 mx-2 ${
-                currentStepIndex > i
-                  ? 'bg-primary-600'
-                  : 'bg-gray-200'
-              }`} />
+            {i < wizardSteps.length - 1 && (
+              <div
+                className={`w-12 h-0.5 mx-2 ${
+                  currentStepIndex > i ? 'bg-primary-600' : 'bg-gray-200'
+                }`}
+              />
             )}
           </div>
         ))}
       </div>
 
-      {/* Step 1: Upload */}
+      {(pageError || pageNotice) && (
+        <div className="space-y-3 mb-6">
+          {pageError && <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{pageError}</div>}
+          {pageNotice && <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800">{pageNotice}</div>}
+        </div>
+      )}
+
       {step === 'upload' && (
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-1">Upload Media File (Required)</h2>
-            <p className="text-sm text-gray-600 mb-4">Choose audio or video to begin the transcript.</p>
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">
+              Upload {mode === 'single' ? 'Media File' : 'Media Files'}
+            </h2>
+            <p className="text-sm text-gray-600 mb-4">
+              {mode === 'single'
+                ? 'Choose one audio/video file.'
+                : `Choose up to ${MAX_BATCH_FILES} files. Drag the grip handle in the queue to reorder.`}
+            </p>
+
             <label
               htmlFor="media-upload"
               onDrop={handleDrop}
               onDragOver={handleDragOver}
-              className={`block border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${
-                selectedFile
-                  ? 'border-green-300 bg-green-50'
-                  : 'border-gray-300 hover:border-primary-400 hover:bg-primary-50'
-              }`}
+              className="block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors border-gray-300 hover:border-primary-400 hover:bg-primary-50"
             >
               <input
                 id="media-upload"
                 type="file"
                 ref={fileInputRef}
-                onChange={handleFileChange}
+                onChange={handleFileInputChange}
+                multiple={mode === 'bulk'}
                 accept="audio/*,video/*,.mp4,.avi,.mov,.mkv,.wav,.mp3,.m4a,.flac,.ogg"
                 className="sr-only"
               />
-              {selectedFile ? (
-                <div className="space-y-3">
-                  <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-                    <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path d="M5 13l4 4L19 7" />
-                    </svg>
-                  </div>
-                  <div className="font-medium text-gray-900">{selectedFile.name}</div>
-                  <div className="text-sm text-gray-500">
-                    {(selectedFile.size / (1024 * 1024)).toFixed(1)} MB
-                  </div>
-                  <div className="text-sm text-green-600 font-medium">File selected successfully</div>
+              <div className="space-y-3">
+                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto">
+                  <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto">
-                    <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                    </svg>
-                  </div>
-                  <div className="font-medium text-gray-900">Drop your file here or click to browse</div>
-                  <div className="text-sm text-gray-500">
-                    Supports MP4, AVI, MOV, WAV, MP3, FLAC and more
-                  </div>
+                <div className="font-medium text-gray-900">
+                  {mode === 'single' ? 'Drop file here or click to browse' : 'Drop files here or click to browse'}
                 </div>
-              )}
+                <div className="text-sm text-gray-500">Supports MP4, MOV, AVI, WAV, MP3, FLAC and more</div>
+              </div>
             </label>
           </div>
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-              {error}
+          {queue.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-gray-900">Queue</h3>
+                  <p className="text-sm text-gray-500">
+                    {queue.length} file{queue.length !== 1 ? 's' : ''} selected
+                  </p>
+                </div>
+                {!isProcessing && (
+                  <button
+                    type="button"
+                    onClick={() => setQueue([])}
+                    className="btn-outline text-sm px-3 py-1"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className="divide-y divide-gray-100">
+                {queue.map((item, index) => (
+                  <div
+                    key={item.id}
+                    draggable={!isProcessing}
+                    onDragStart={() => setDraggingId(item.id)}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      if (draggingId && draggingId !== item.id) {
+                        setDragOverId(item.id)
+                      }
+                    }}
+                    onDragEnd={() => {
+                      setDraggingId(null)
+                      setDragOverId(null)
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      if (!draggingId) return
+                      reorderQueue(draggingId, item.id)
+                      setDraggingId(null)
+                      setDragOverId(null)
+                    }}
+                    className={`p-4 flex items-center gap-4 ${dragOverId === item.id ? 'bg-primary-50' : 'bg-white'}`}
+                  >
+                    <div className="text-gray-400 cursor-grab" title="Drag to reorder">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01" />
+                      </svg>
+                    </div>
+                    <div className="w-8 h-8 rounded-lg bg-primary-100 text-primary-700 flex items-center justify-center text-sm font-semibold">
+                      {index + 1}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{item.file.name}</p>
+                      <p className="text-sm text-gray-500">{(item.file.size / (1024 * 1024)).toFixed(1)} MB</p>
+                    </div>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(item.status)}`}>
+                      {statusLabel(item.status)}
+                    </span>
+                    {!isProcessing && (
+                      <button
+                        type="button"
+                        onClick={() => setQueue((prev) => prev.filter((entry) => entry.id !== item.id))}
+                        className="text-gray-400 hover:text-red-600 transition-colors"
+                        title="Remove"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                          <path d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
           <div className="flex justify-end">
             <button
+              type="button"
               onClick={() => setStep('configure')}
               disabled={!canProceedToConfig}
               className="btn-primary px-8 py-3"
@@ -364,20 +1025,18 @@ export default function TranscribePage() {
         </div>
       )}
 
-      {/* Step 2: Configure */}
       {step === 'configure' && (
         <div className="space-y-6">
-          {/* Case Selection */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">Assign to Case (Recommended)</h2>
             <p className="text-sm text-gray-500 mb-4">
-              Assign this transcript to a case for permanent storage. Unassigned transcripts expire after 30 days.
+              Batch default case assignment. Each file can optionally override this below.
             </p>
             <div className="flex gap-3">
               <select
                 name="case_id"
                 value={formData.case_id}
-                onChange={handleInputChange}
+                onChange={(event) => setFormData((prev) => ({ ...prev, case_id: event.target.value }))}
                 className="input-field flex-1"
               >
                 <option value="">No case (expires in 30 days)</option>
@@ -387,30 +1046,24 @@ export default function TranscribePage() {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                onClick={() => setShowNewCaseModal(true)}
-                className="btn-outline whitespace-nowrap"
-              >
+              <button type="button" onClick={() => setShowNewCaseModal(true)} className="btn-outline whitespace-nowrap">
                 + New Case
               </button>
             </div>
           </div>
 
-          {/* Case Information */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">Optional Transcript Details</h2>
-              <span className="text-sm text-gray-400">All fields optional</span>
+              <h2 className="text-lg font-semibold text-gray-900">Batch Metadata Defaults</h2>
+              <span className="text-sm text-gray-400">Applied to all files in this run</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Case Name</label>
                 <input
                   type="text"
-                  name="case_name"
                   value={formData.case_name}
-                  onChange={handleInputChange}
+                  onChange={(event) => setFormData((prev) => ({ ...prev, case_name: event.target.value }))}
                   className="input-field"
                   placeholder="e.g., Smith vs. Johnson"
                 />
@@ -419,20 +1072,18 @@ export default function TranscribePage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Case Number</label>
                 <input
                   type="text"
-                  name="case_number"
                   value={formData.case_number}
-                  onChange={handleInputChange}
+                  onChange={(event) => setFormData((prev) => ({ ...prev, case_number: event.target.value }))}
                   className="input-field"
                   placeholder="e.g., CV-2023-001234"
                 />
               </div>
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Firm/Organization</label>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Firm / Organization</label>
                 <input
                   type="text"
-                  name="firm_name"
                   value={formData.firm_name}
-                  onChange={handleInputChange}
+                  onChange={(event) => setFormData((prev) => ({ ...prev, firm_name: event.target.value }))}
                   className="input-field"
                   placeholder="e.g., Legal Associates LLC"
                 />
@@ -441,19 +1092,8 @@ export default function TranscribePage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
                 <input
                   type="date"
-                  name="input_date"
                   value={formData.input_date}
-                  onChange={handleInputChange}
-                  className="input-field"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Time</label>
-                <input
-                  type="time"
-                  name="input_time"
-                  value={formData.input_time}
-                  onChange={handleInputChange}
+                  onChange={(event) => setFormData((prev) => ({ ...prev, input_date: event.target.value }))}
                   className="input-field"
                 />
               </div>
@@ -461,218 +1101,340 @@ export default function TranscribePage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Location</label>
                 <input
                   type="text"
-                  name="location"
                   value={formData.location}
-                  onChange={handleInputChange}
+                  onChange={(event) => setFormData((prev) => ({ ...prev, location: event.target.value }))}
                   className="input-field"
-                  placeholder="e.g., Conference Room A, 123 Main St"
+                  placeholder="e.g., Conference Room A"
                 />
               </div>
             </div>
           </div>
 
-          {/* Transcription Settings */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcription Options</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Transcription Model</label>
-                <select
-                  name="transcription_model"
-                  value={formData.transcription_model}
-                  onChange={handleInputChange}
-                  className="input-field"
-                >
-                  <option value="assemblyai">AssemblyAI (Recommended)</option>
-                  <option value="gemini">Gemini 3.0 Pro</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Number of Speakers (optional)</label>
-                <input
-                  type="number"
-                  name="speakers_expected"
-                  value={formData.speakers_expected}
-                  onChange={handleInputChange}
-                  className="input-field"
-                  min={1}
-                  step={1}
-                  placeholder="e.g., 2"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  If provided, this is passed as <code>speakers_expected</code> for AssemblyAI diarization.
-                </p>
-              </div>
-            </div>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcription Model</h2>
+            <select
+              value={formData.transcription_model}
+              onChange={(event) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  transcription_model: event.target.value as 'assemblyai' | 'gemini',
+                }))
+              }
+              className="input-field"
+            >
+              <option value="assemblyai">AssemblyAI (Recommended)</option>
+              <option value="gemini">Gemini 3.0 Pro</option>
+            </select>
           </div>
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-              {error}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="p-4 border-b border-gray-100">
+              <h2 className="text-lg font-semibold text-gray-900">Per-File Overrides</h2>
+              <p className="text-sm text-gray-500 mt-1">Set optional speaker hints and case override per file.</p>
             </div>
-          )}
+            <div className="divide-y divide-gray-100">
+              {queue.map((item, index) => (
+                <div key={item.id} className="p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-gray-900">
+                        {index + 1}. {item.file.name}
+                      </p>
+                      <p className="text-xs text-gray-500">{(item.file.size / (1024 * 1024)).toFixed(1)} MB</p>
+                    </div>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(item.status)}`}>
+                      {statusLabel(item.status)}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                        Case Assignment
+                      </label>
+                      <select
+                        value={item.case_target}
+                        onChange={(event) => setFileCaseTarget(item.id, event.target.value)}
+                        disabled={isProcessing}
+                        className="input-field text-sm"
+                      >
+                        <option value={CASE_USE_BATCH}>Use batch setting</option>
+                        <option value={CASE_UNCATEGORIZED}>No case (uncategorized)</option>
+                        {cases.map((c) => (
+                          <option key={c.case_id} value={c.case_id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">Current: {renderCaseTargetLabel(item)}</p>
+                    </div>
+
+                    <div className="lg:col-span-2">
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                        Speaker Names (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={item.speaker_names}
+                        onChange={(event) => setFileSpeakerNames(item.id, event.target.value)}
+                        disabled={isProcessing}
+                        className="input-field text-sm"
+                        placeholder="e.g., John Smith, Jane Doe"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                        Number of Speakers (Optional)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={item.speakers_expected}
+                        onChange={(event) => setFileSpeakersExpected(item.id, event.target.value)}
+                        disabled={isProcessing}
+                        className="input-field text-sm"
+                        placeholder="e.g., 2"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
 
           <div className="flex justify-between">
-            <button onClick={() => setStep('upload')} className="btn-outline px-6 py-3">
+            <button type="button" onClick={() => setStep('upload')} className="btn-outline px-6 py-3">
               Back
             </button>
             <button
-              onClick={() => {
-                handleSubmit()
-                setStep('transcribe')
-              }}
-              disabled={!canProceedToTranscribe || isLoading}
+              type="button"
+              onClick={handleStartQueued}
+              disabled={!canProceedToTranscribe || isProcessing}
               className="btn-primary px-8 py-3"
             >
-              Start Transcription
+              {mode === 'single' ? 'Start Transcription' : 'Start Queue'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Step 3: Transcribe */}
       {step === 'transcribe' && (
         <div className="space-y-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8">
-            {isLoading ? (
-              <div className="text-center py-12">
-                <div className="w-16 h-16 mx-auto mb-6 relative">
-                  <div className="absolute inset-0 border-4 border-primary-200 rounded-full"></div>
-                  <div className="absolute inset-0 border-4 border-primary-600 rounded-full border-t-transparent animate-spin"></div>
-                </div>
-                <h2 className="text-xl font-semibold text-gray-900 mb-2">Processing...</h2>
-                <p className="text-gray-500">{loadingStage}</p>
-              </div>
-            ) : transcriptResult ? (
-              <div className="text-center py-8">
-                <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <h2 className="text-xl font-semibold text-gray-900 mb-2">Transcription Complete!</h2>
-                <p className="text-gray-500 mb-6">
-                  Generated {transcriptResult.lines?.length || 0} transcript lines
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 max-w-xl mx-auto">
-                  <button
-                    onClick={() => {
-                      const pdfData = transcriptResult.pdf_base64 ?? transcriptResult.docx_base64
-                      if (pdfData) {
-                        downloadBase64File(pdfData, buildDownloadFilename('.pdf'), 'application/pdf')
-                      }
-                    }}
-                    disabled={!transcriptResult.pdf_base64 && !transcriptResult.docx_base64}
-                    className="btn-primary px-5 py-3"
-                  >
-                    Download PDF
-                  </button>
-                  {appVariant === 'oncue' ? (
-                    <button
-                      onClick={() => {
-                        if (transcriptResult.oncue_xml_base64) {
-                          downloadBase64File(
-                            transcriptResult.oncue_xml_base64,
-                            buildDownloadFilename('.xml'),
-                            'application/xml',
-                          )
-                        }
-                      }}
-                      disabled={!transcriptResult.oncue_xml_base64}
-                      className="btn-primary px-5 py-3"
-                    >
-                      Download OnCue XML
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        if (transcriptResult.viewer_html_base64) {
-                          downloadBase64File(
-                            transcriptResult.viewer_html_base64,
-                            buildDownloadFilename('.html'),
-                            'text/html',
-                          )
-                        }
-                      }}
-                      disabled={!transcriptResult.viewer_html_base64}
-                      className="btn-primary px-5 py-3"
-                    >
-                      Download HTML Viewer
-                    </button>
-                  )}
-                </div>
-                <div className="flex flex-col sm:flex-row justify-center items-center gap-3">
-                  <button
-                    onClick={() => router.push(routes.editor(transcriptResult.media_key))}
-                    className="btn-primary px-6 py-3"
-                  >
-                    Open in Editor
-                  </button>
-                  <button
-                    onClick={() => {
-                      setSelectedFile(null)
-                      setTranscriptResult(null)
-                      setFormData({
-                        case_name: '',
-                        case_number: '',
-                        firm_name: '',
-                        input_date: '',
-                        input_time: '',
-                        location: '',
-                        speakers_expected: '',
-                        transcription_model: 'assemblyai',
-                        case_id: formData.case_id,
-                      })
-                      setStep('upload')
-                    }}
-                    className="btn-outline px-6 py-3"
-                  >
-                    New Transcript
-                  </button>
-                </div>
-              </div>
-            ) : error ? (
-              <div className="text-center py-8">
-                <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </div>
-                <h2 className="text-xl font-semibold text-gray-900 mb-2">Transcription Failed</h2>
-                <p className="text-gray-500 mb-6">{error}</p>
-                <div className="flex justify-center gap-4">
-                  <button onClick={() => setStep('configure')} className="btn-outline px-6 py-3">
-                    Back to Configure
-                  </button>
-                  <button
-                    onClick={() => {
-                      setError('')
-                      handleSubmit()
-                    }}
-                    className="btn-primary px-6 py-3"
-                  >
-                    Retry
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <p className="text-gray-500">Starting transcription...</p>
-              </div>
-            )}
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-900 text-sm">
+            Keep this tab open while processing. If you leave or close the tab, queued work stops.
           </div>
 
-          {!isLoading && !transcriptResult && !error && (
-            <div className="flex justify-start">
-              <button onClick={() => setStep('configure')} className="btn-outline px-6 py-3">
-                Back
-              </button>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Queue Progress</h2>
+                <p className="text-sm text-gray-500">
+                  {doneCount} complete, {failedCount} failed, {canceledCount} canceled, {queuedCount} queued
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {isProcessing ? (
+                  <>
+                    <span className="text-sm text-primary-700 font-medium">
+                      {stopAfterCurrent ? 'Stopping after current file...' : `${inProgressCount || 1} file in progress`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleStopQueue}
+                      disabled={stopAfterCurrent}
+                      className="btn-outline px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Stop Queue
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {queuedCount > 0 && (
+                      <button type="button" onClick={handleStartQueued} className="btn-primary px-3 py-2 text-sm">
+                        Resume Queue
+                      </button>
+                    )}
+                    {(failedCount > 0 || canceledCount > 0) && (
+                      <button type="button" onClick={handleRetryFailures} className="btn-outline px-3 py-2 text-sm">
+                        Retry Failed/Canceled
+                      </button>
+                    )}
+                    <button type="button" onClick={resetForNewBatch} className="btn-outline px-3 py-2 text-sm">
+                      New Batch
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="divide-y divide-gray-100">
+              {queue.map((item, index) => (
+                <div key={item.id} className="p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-900 truncate">
+                        {index + 1}. {item.file.name}
+                      </p>
+                      <p className="text-sm text-gray-500">{item.stageText}</p>
+                      {item.error && <p className="text-sm text-red-600 mt-1">{item.error}</p>}
+                    </div>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(item.status)}`}>
+                      {statusLabel(item.status)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {doneCount > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <h3 className="font-semibold text-gray-900 mb-3">Batch Downloads</h3>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadBatchZip('pdf')}
+                  disabled={zipBusy !== null}
+                  className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {zipBusy === 'pdf' ? 'Building PDF ZIP...' : 'Download All PDFs (.zip)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadBatchZip('variant')}
+                  disabled={zipBusy !== null}
+                  className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {zipBusy === 'variant'
+                    ? `Building ${appVariant === 'oncue' ? 'XML' : 'HTML'} ZIP...`
+                    : `Download All ${appVariant === 'oncue' ? 'OnCue XML' : 'HTML Viewer'} (.zip)`}
+                </button>
+              </div>
             </div>
           )}
+
+          {processedItems.length > 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                <h3 className="font-semibold text-gray-900">Results</h3>
+                {processedItems.length > RESULTS_PREVIEW_LIMIT && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllResults((prev) => !prev)}
+                    className="text-sm text-primary-600 hover:text-primary-700"
+                  >
+                    {showAllResults ? 'Show fewer' : `Show all (${processedItems.length})`}
+                  </button>
+                )}
+              </div>
+              <div className="divide-y divide-gray-100">
+                {visibleProcessedItems.map((item) => {
+                  const result = item.result
+                  const lineCount = Array.isArray(result?.lines) ? result?.lines.length : 0
+                  const effectiveCaseId = getEffectiveCaseId(item)
+
+                  return (
+                    <div key={item.id} className="p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 truncate">{item.file.name}</p>
+                          <p className="text-sm text-gray-500">
+                            {item.status === 'done'
+                              ? `${lineCount} transcript lines`
+                              : item.status === 'failed'
+                                ? `Failed${item.attemptCount > 1 ? ' after retry' : ''}`
+                                : 'Canceled'}
+                          </p>
+                        </div>
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusBadgeClass(item.status)}`}>
+                          {statusLabel(item.status)}
+                        </span>
+                      </div>
+
+                      {item.error && <p className="text-sm text-red-600">{item.error}</p>}
+
+                      {item.status === 'done' && result && (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveMediaKey(result.media_key)
+                              router.push(routes.editor(result.media_key))
+                            }}
+                            className="btn-primary text-sm px-3 py-2"
+                          >
+                            Open Editor
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const pdfData = result.pdf_base64 ?? result.docx_base64
+                              if (!pdfData) return
+                              downloadBase64File(pdfData, buildItemFilename(item, '.pdf'), 'application/pdf')
+                            }}
+                            disabled={!result.pdf_base64 && !result.docx_base64}
+                            className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Download PDF
+                          </button>
+
+                          {appVariant === 'oncue' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!result.oncue_xml_base64) return
+                                downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
+                              }}
+                              disabled={!result.oncue_xml_base64}
+                              className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Download OnCue XML
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!result.viewer_html_base64) return
+                                downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
+                              }}
+                              disabled={!result.viewer_html_base64}
+                              className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Download HTML Viewer
+                            </button>
+                          )}
+
+                          {effectiveCaseId && (
+                            <Link href={routes.caseDetail(effectiveCaseId)} className="btn-outline text-sm px-3 py-2">
+                              View Case
+                            </Link>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isProcessing && processedItems.length === 0 && (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8 text-center text-gray-500">
+              Queue has not started yet.
+            </div>
+          )}
+
+          <div className="flex justify-start">
+            <button type="button" onClick={() => setStep('configure')} className="btn-outline px-6 py-3">
+              Back to Configure
+            </button>
+          </div>
         </div>
       )}
 
-      {/* New Case Modal */}
       {showNewCaseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
@@ -683,7 +1445,7 @@ export default function TranscribePage() {
                 <input
                   type="text"
                   value={newCaseName}
-                  onChange={(e) => setNewCaseName(e.target.value)}
+                  onChange={(event) => setNewCaseName(event.target.value)}
                   className="input-field"
                   placeholder="e.g., Smith vs. Johnson"
                   autoFocus
@@ -693,7 +1455,7 @@ export default function TranscribePage() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
                 <textarea
                   value={newCaseDescription}
-                  onChange={(e) => setNewCaseDescription(e.target.value)}
+                  onChange={(event) => setNewCaseDescription(event.target.value)}
                   className="input-field"
                   rows={3}
                   placeholder="Brief description of the case..."
@@ -702,6 +1464,7 @@ export default function TranscribePage() {
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button
+                type="button"
                 onClick={() => {
                   setShowNewCaseModal(false)
                   setNewCaseName('')
@@ -712,9 +1475,10 @@ export default function TranscribePage() {
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleCreateCase}
                 disabled={!newCaseName.trim() || creatingCase}
-                className="btn-primary px-4 py-2"
+                className="btn-primary px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {creatingCase ? 'Creating...' : 'Create Case'}
               </button>
