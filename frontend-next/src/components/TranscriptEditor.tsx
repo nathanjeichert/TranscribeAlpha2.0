@@ -1394,7 +1394,7 @@ export default function TranscriptEditor({
                   ref={videoRef}
                   controls
                   preload="metadata"
-                  className="w-full rounded-lg"
+                  className="w-full max-h-[32vh] rounded-lg bg-black object-contain"
                   src={resolvedMediaUrl}
                   onError={() => { void handleMediaError() }}
                 />
