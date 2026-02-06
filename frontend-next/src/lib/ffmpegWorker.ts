@@ -1,5 +1,6 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
+import { openDB } from './idb'
 import { readBinaryFile, writeBinaryFile } from './storage'
 
 export type CodecInfo = {
@@ -13,6 +14,9 @@ export type CodecInfo = {
 }
 
 type ProgressCallback = (ratio: number) => void
+type IterableDirectoryHandle = FileSystemDirectoryHandle & {
+  entries(): AsyncIterable<[string, FileSystemHandle]>
+}
 
 const STANDARD_WAV_FORMATS: Record<number, string> = {
   0x0001: 'PCM',
@@ -31,8 +35,27 @@ const STANDARD_AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', '
 const STANDARD_VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov'])
 const KNOWN_VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'])
 const KNOWN_AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wav', 'wma'])
+const MIME_TYPE_BY_EXTENSION: Record<string, string> = {
+  aac: 'audio/aac',
+  avi: 'video/x-msvideo',
+  flac: 'audio/flac',
+  m4a: 'audio/mp4',
+  m4v: 'video/x-m4v',
+  mkv: 'video/x-matroska',
+  mov: 'video/quicktime',
+  mp3: 'audio/mpeg',
+  mp4: 'video/mp4',
+  ogg: 'audio/ogg',
+  opus: 'audio/opus',
+  wav: 'audio/wav',
+  webm: 'video/webm',
+  wma: 'audio/x-ms-wma',
+}
 
 const CACHE_DIR = 'cache/converted'
+const CACHE_KEY_SAMPLE_BYTES = 64 * 1024
+const CONVERTED_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+const WORKSPACE_IDB_KEY = 'workspace-dir-handle'
 
 let ffmpegInstance: FFmpeg | null = null
 let loadPromise: Promise<void> | null = null
@@ -83,6 +106,14 @@ function getConvertedMimeType(file: File): string {
 function getConvertedFilename(file: File): string {
   const ext = getConvertedExtension(file)
   return replaceExtension(file.name, `_converted.${ext}`)
+}
+
+function getMimeTypeFromFilename(filename: string, fallbackFile: File): string {
+  const extension = getFileExtension(filename)
+  const byExtension = MIME_TYPE_BY_EXTENSION[extension]
+  if (byExtension) return byExtension
+  if (fallbackFile.type) return fallbackFile.type
+  return isLikelyVideoFile(fallbackFile) ? 'video/mp4' : 'audio/wav'
 }
 
 function isLikelyVideoFile(file: File): boolean {
@@ -152,8 +183,7 @@ function isOutOfMemoryError(error: Error): boolean {
   return (
     message.includes('memory') ||
     message.includes('cannot enlarge memory') ||
-    message.includes('out of memory') ||
-    message.includes('wasm')
+    message.includes('out of memory')
   )
 }
 
@@ -422,6 +452,9 @@ export async function convertToPlayable(
       }
       const outputData = await ffmpeg.readFile(outputName)
       const bytes = toUint8Array(outputData)
+      if (bytes.byteLength === 0) {
+        throw new Error('FFmpeg conversion produced an empty output file')
+      }
       return new File([toBlobBuffer(bytes)], getConvertedFilename(file), {
         type: getConvertedMimeType(file),
       })
@@ -456,16 +489,17 @@ export async function clipMedia(
   return runSerial(async () => {
     terminatedByUser = false
     const ffmpeg = await getFFmpeg()
-    const inputExt = getFileExtension(file.name) || (isLikelyVideoFile(file) ? 'mp4' : 'wav')
+    const sourceFile = await maybeRepairWav(file)
+    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const inputName = `clip-input.${inputExt}`
     const copyOutputName = `clip-output.${inputExt}`
-    const fallbackOutputName = isLikelyVideoFile(file) ? 'clip-output.mp4' : 'clip-output.wav'
+    const fallbackOutputName = isLikelyVideoFile(sourceFile) ? 'clip-output.mp4' : 'clip-output.wav'
     const duration = Math.max(0, endTime - startTime)
 
     activeProgressCallback = onProgress ?? null
 
     try {
-      await ffmpeg.writeFile(inputName, await fetchFile(file))
+      await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
 
       let outputName = copyOutputName
 
@@ -483,7 +517,7 @@ export async function clipMedia(
         await removeVirtualFile(ffmpeg, copyOutputName)
         outputName = fallbackOutputName
 
-        const fallbackArgs = isLikelyVideoFile(file)
+        const fallbackArgs = isLikelyVideoFile(sourceFile)
           ? [
             '-ss', startTime.toString(),
             '-t', duration.toString(),
@@ -512,10 +546,12 @@ export async function clipMedia(
 
       const outputData = await ffmpeg.readFile(outputName)
       const bytes = toUint8Array(outputData)
-      const resultType = outputName.endsWith('.mp4') ? 'video/mp4' : (file.type || 'audio/wav')
-      const extension = outputName.endsWith('.mp4') ? '.mp4' : '.wav'
-      return new File([toBlobBuffer(bytes)], replaceExtension(file.name, `_clip${extension}`), {
-        type: resultType,
+      const outputExtension = getFileExtension(outputName)
+      const outputFilename = outputExtension
+        ? replaceExtension(file.name, `_clip.${outputExtension}`)
+        : replaceExtension(file.name, '_clip')
+      return new File([toBlobBuffer(bytes)], outputFilename, {
+        type: getMimeTypeFromFilename(outputName, sourceFile),
       })
     } catch (error) {
       if (terminatedByUser) {
@@ -539,14 +575,15 @@ export async function extractAudio(
   return runSerial(async () => {
     terminatedByUser = false
     const ffmpeg = await getFFmpeg()
-    const inputExt = getFileExtension(file.name) || (isLikelyVideoFile(file) ? 'mp4' : 'wav')
+    const sourceFile = await maybeRepairWav(file)
+    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const inputName = `audio-input.${inputExt}`
     const outputName = 'audio-output.mp3'
 
     activeProgressCallback = onProgress ?? null
 
     try {
-      await ffmpeg.writeFile(inputName, await fetchFile(file))
+      await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
       const exitCode = await ffmpeg.exec([
         '-i', inputName,
         '-vn',
@@ -577,23 +614,100 @@ export async function extractAudio(
   })
 }
 
-export function cacheKey(file: File): string {
-  const raw = `${file.name}|${file.size}|${file.lastModified}`
-  let hash = 0
-  for (let i = 0; i < raw.length; i += 1) {
-    hash = ((hash << 5) - hash) + raw.charCodeAt(i)
-    hash |= 0
+function bytesToHex(bytes: Uint8Array): string {
+  let hex = ''
+  for (let i = 0; i < bytes.length; i += 1) {
+    hex += bytes[i].toString(16).padStart(2, '0')
   }
-  return Math.abs(hash).toString(36)
+  return hex
 }
 
-export function getConvertedCachePath(file: File): string {
+async function getWorkspaceHandleFromIndexedDB(): Promise<FileSystemDirectoryHandle | null> {
+  try {
+    const db = await openDB()
+    return await new Promise<FileSystemDirectoryHandle | null>((resolve) => {
+      const tx = db.transaction('workspace', 'readonly')
+      const store = tx.objectStore('workspace')
+      const request = store.get(WORKSPACE_IDB_KEY)
+      request.onsuccess = () => {
+        resolve((request.result as FileSystemDirectoryHandle | null) ?? null)
+      }
+      request.onerror = () => {
+        resolve(null)
+      }
+    })
+  } catch {
+    return null
+  }
+}
+
+async function getConvertedCacheDirectory(create: boolean): Promise<FileSystemDirectoryHandle | null> {
+  const workspace = await getWorkspaceHandleFromIndexedDB()
+  if (!workspace) return null
+
+  try {
+    const cache = await workspace.getDirectoryHandle('cache', { create })
+    return await cache.getDirectoryHandle('converted', { create })
+  } catch {
+    return null
+  }
+}
+
+async function pruneConvertedCache(maxBytes = CONVERTED_CACHE_MAX_BYTES): Promise<void> {
+  const cacheDir = await getConvertedCacheDirectory(false)
+  if (!cacheDir) return
+
+  const entries: Array<{ name: string; size: number; lastModified: number }> = []
+
+  for await (const [name, handle] of (cacheDir as IterableDirectoryHandle).entries()) {
+    if (handle.kind !== 'file') continue
+    try {
+      const file = await (handle as FileSystemFileHandle).getFile()
+      entries.push({
+        name,
+        size: file.size,
+        lastModified: file.lastModified,
+      })
+    } catch {
+      // Skip inaccessible cache entries.
+    }
+  }
+
+  let totalSize = entries.reduce((sum, entry) => sum + entry.size, 0)
+  if (totalSize <= maxBytes) return
+
+  entries.sort((a, b) => a.lastModified - b.lastModified)
+
+  for (const entry of entries) {
+    if (totalSize <= maxBytes) break
+    try {
+      await cacheDir.removeEntry(entry.name)
+      totalSize -= entry.size
+    } catch {
+      // Ignore deletion failures and continue pruning the remaining entries.
+    }
+  }
+}
+
+export async function cacheKey(file: File): Promise<string> {
+  const sampleSize = Math.min(file.size, CACHE_KEY_SAMPLE_BYTES)
+  const sample = await file.slice(0, sampleSize).arrayBuffer()
+  const metadata = new TextEncoder().encode(`${file.name}|${file.size}|${file.lastModified}|`)
+  const payload = new Uint8Array(metadata.byteLength + sample.byteLength)
+  payload.set(metadata, 0)
+  payload.set(new Uint8Array(sample), metadata.byteLength)
+  const digest = await crypto.subtle.digest('SHA-256', payload)
+  return bytesToHex(new Uint8Array(digest)).slice(0, 16)
+}
+
+export async function getConvertedCachePath(file: File): Promise<string> {
   const extension = getConvertedExtension(file)
-  return `${CACHE_DIR}/${cacheKey(file)}.${extension}`
+  const key = await cacheKey(file)
+  return `${CACHE_DIR}/${key}.${extension}`
 }
 
 export async function readConvertedFromCache(file: File): Promise<File | null> {
-  const path = getConvertedCachePath(file)
+  const path = await getConvertedCachePath(file)
   const bytes = await readBinaryFile(path)
   if (!bytes) return null
 
@@ -604,9 +718,10 @@ export async function readConvertedFromCache(file: File): Promise<File | null> {
 }
 
 export async function writeConvertedToCache(originalFile: File, convertedFile: File): Promise<void> {
-  const path = getConvertedCachePath(originalFile)
+  const path = await getConvertedCachePath(originalFile)
   const data = await convertedFile.arrayBuffer()
   await writeBinaryFile(path, data)
+  await pruneConvertedCache().catch(() => undefined)
 }
 
 export function attemptWavHeaderRepair(buffer: ArrayBuffer): ArrayBuffer | null {
@@ -623,7 +738,7 @@ export function attemptWavHeaderRepair(buffer: ArrayBuffer): ArrayBuffer | null 
   if (!headerZeroed) return null
 
   let hasData = false
-  for (let i = 60; i < Math.min(buffer.byteLength, 120); i += 1) {
+  for (let i = 60; i < Math.min(buffer.byteLength, 1024); i += 1) {
     if (view.getUint8(i) !== 0) {
       hasData = true
       break
