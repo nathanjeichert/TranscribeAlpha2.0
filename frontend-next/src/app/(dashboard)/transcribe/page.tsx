@@ -13,7 +13,6 @@ interface FormData {
   input_date: string
   input_time: string
   location: string
-  speaker_names: string
   speakers_expected: string
   transcription_model: 'assemblyai' | 'gemini'
   case_id: string
@@ -40,7 +39,6 @@ export default function TranscribePage() {
     input_date: '',
     input_time: '',
     location: '',
-    speaker_names: '',
     speakers_expected: '',
     transcription_model: 'assemblyai',
     case_id: '',
@@ -490,20 +488,6 @@ export default function TranscribePage() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Speaker Names (optional)</label>
-                <input
-                  type="text"
-                  name="speaker_names"
-                  value={formData.speaker_names}
-                  onChange={handleInputChange}
-                  className="input-field"
-                  placeholder="e.g., John Smith, Jane Doe, Attorney Williams"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Separate with commas. Leave blank for automatic detection.
-                </p>
-              </div>
-              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Number of Speakers (optional)</label>
                 <input
                   type="number"
@@ -635,7 +619,6 @@ export default function TranscribePage() {
                         input_date: '',
                         input_time: '',
                         location: '',
-                        speaker_names: '',
                         speakers_expected: '',
                         transcription_model: 'assemblyai',
                         case_id: formData.case_id,

@@ -213,7 +213,6 @@ async def transcribe(
     input_date: str = Form(""),
     input_time: str = Form(""),
     location: str = Form(""),
-    speaker_names: Optional[str] = Form(None),
     speakers_expected: Optional[int] = Form(None),
     transcription_model: str = Form("assemblyai"),
     case_id: Optional[str] = Form(None),
@@ -256,17 +255,6 @@ async def transcribe(
 
         if not temp_upload_path:
             raise HTTPException(status_code=400, detail="Unable to read uploaded file")
-
-        speaker_list: Optional[List[str]] = None
-        if speaker_names:
-            speaker_names = speaker_names.strip()
-            if speaker_names.startswith('[') and speaker_names.endswith(']'):
-                try:
-                    speaker_list = json.loads(speaker_names)
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=400, detail="Invalid JSON format for speaker names")
-            else:
-                speaker_list = [name.strip() for name in speaker_names.split(',') if name.strip()]
 
         if speakers_expected is not None and speakers_expected <= 0:
             raise HTTPException(status_code=400, detail="speakers_expected must be a positive integer")
@@ -388,7 +376,7 @@ async def transcribe(
                         audio_path,
                         audio_mime,
                         duration_seconds,
-                        speaker_list,
+                        None,
                     )
 
                     normalized_lines, normalized_duration = normalize_line_payloads(
