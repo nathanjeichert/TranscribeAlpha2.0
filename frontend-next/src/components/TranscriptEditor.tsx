@@ -179,6 +179,9 @@ export default function TranscriptEditor({
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const editInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
+  const programmaticScrollRef = useRef(false)
+  const scrollReleaseTimerRef = useRef<number | null>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const activeLineMarker = useRef<string | null>(null)
   // Skip resetting isDirty/history in SYNC EFFECT when we've just done a local update (e.g., resync)
@@ -187,6 +190,7 @@ export default function TranscriptEditor({
   const [renameFrom, setRenameFrom] = useState('')
   const [renameTo, setRenameTo] = useState('')
   const [renameFeedback, setRenameFeedback] = useState<string | null>(null)
+  const [showRenameModal, setShowRenameModal] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [history, setHistory] = useState<EditorLine[][]>([])
@@ -196,8 +200,7 @@ export default function TranscriptEditor({
 
   // Collapsible panel states
   const [showSettings, setShowSettings] = useState(false)
-  const [showTools, setShowTools] = useState(false)
-  const [showDownloads, setShowDownloads] = useState(false)
+  const [manualScrollOverride, setManualScrollOverride] = useState(false)
 
   // Refs for auto-save to avoid resetting timer on every edit
   const linesRef = useRef<EditorLine[]>(initialData?.lines ?? [])
@@ -279,6 +282,37 @@ export default function TranscriptEditor({
       }),
     [lines],
   )
+
+  const isLineVisibleInTranscript = useCallback((lineId: string) => {
+    const container = transcriptScrollRef.current
+    const row = lineRefs.current[lineId]
+    if (!container || !row) return false
+    const containerRect = container.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    return rowRect.top >= containerRect.top && rowRect.bottom <= containerRect.bottom
+  }, [])
+
+  const scrollTranscriptToLine = useCallback((lineId: string, behavior: ScrollBehavior = 'smooth') => {
+    const target = lineRefs.current[lineId]
+    if (!target) return
+    programmaticScrollRef.current = true
+    target.scrollIntoView({ block: 'center', behavior })
+    if (scrollReleaseTimerRef.current) {
+      window.clearTimeout(scrollReleaseTimerRef.current)
+    }
+    scrollReleaseTimerRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false
+      scrollReleaseTimerRef.current = null
+    }, behavior === 'smooth' ? 450 : 150)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (scrollReleaseTimerRef.current) {
+        window.clearTimeout(scrollReleaseTimerRef.current)
+      }
+    }
+  }, [])
 
   const fetchTranscript = useCallback(
     async (key?: string | null) => {
@@ -425,11 +459,8 @@ export default function TranscriptEditor({
       if (currentLineId && currentLineId !== activeLineMarker.current) {
         activeLineMarker.current = currentLineId
         setActiveLineId(currentLineId)
-        if (autoScroll) {
-          const target = lineRefs.current[currentLineId]
-          if (target) {
-            target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-          }
+        if (autoScroll && !manualScrollOverride) {
+          scrollTranscriptToLine(currentLineId)
         }
       }
     }
@@ -438,7 +469,7 @@ export default function TranscriptEditor({
     return () => {
       player.removeEventListener('timeupdate', handleTimeUpdate)
     }
-  }, [resolvedMediaUrl, isVideo, lineBoundaries, autoScroll])
+  }, [resolvedMediaUrl, isVideo, lineBoundaries, autoScroll, manualScrollOverride, scrollTranscriptToLine])
 
   const handleLineFieldChange = useCallback(
     (lineId: string, field: keyof EditorLine, value: string | number) => {
@@ -634,12 +665,12 @@ export default function TranscriptEditor({
     setSearchMatches(matches)
     if (matches.length > 0) {
       setSearchCurrentIndex(0)
-      const firstMatch = lineRefs.current[matches[0]]
-      if (firstMatch) firstMatch.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setManualScrollOverride(true)
+      scrollTranscriptToLine(matches[0])
     } else {
       setSearchCurrentIndex(-1)
     }
-  }, [lines])
+  }, [lines, scrollTranscriptToLine])
 
   const goToSearchResult = useCallback((direction: 'next' | 'prev') => {
     if (searchMatches.length === 0) return
@@ -651,15 +682,31 @@ export default function TranscriptEditor({
     }
     setSearchCurrentIndex(newIndex)
     const lineId = searchMatches[newIndex]
-    const el = lineRefs.current[lineId]
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }, [searchMatches, searchCurrentIndex])
+    setManualScrollOverride(true)
+    scrollTranscriptToLine(lineId)
+  }, [searchMatches, searchCurrentIndex, scrollTranscriptToLine])
 
   const clearSearch = useCallback(() => {
     setSearchQuery('')
     setSearchMatches([])
     setSearchCurrentIndex(-1)
   }, [])
+
+  const handleTranscriptScroll = useCallback(() => {
+    if (!autoScroll || programmaticScrollRef.current || !activeLineId) return
+    const activeVisible = isLineVisibleInTranscript(activeLineId)
+    setManualScrollOverride((prev) => {
+      if (!prev && !activeVisible) return true
+      if (prev && activeVisible) return false
+      return prev
+    })
+  }, [activeLineId, autoScroll, isLineVisibleInTranscript])
+
+  const handleReturnToCurrentLine = useCallback(() => {
+    if (!activeLineId) return
+    setManualScrollOverride(false)
+    scrollTranscriptToLine(activeLineId)
+  }, [activeLineId, scrollTranscriptToLine])
 
   useEffect(() => {
     try {
@@ -681,6 +728,12 @@ export default function TranscriptEditor({
       console.error('Failed to save auto-shift preference:', err)
     }
   }, [autoShiftNextLine])
+
+  useEffect(() => {
+    if (!autoScroll) {
+      setManualScrollOverride(false)
+    }
+  }, [autoScroll])
 
   const handleAddUtterance = useCallback(() => {
     setAddError(null)
@@ -1031,11 +1084,6 @@ export default function TranscriptEditor({
 
   const pdfData = pdfBase64 ?? sessionMeta?.pdf_base64 ?? docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
-  const viewerHtmlData = viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
-  const transcriptText = sessionMeta?.transcript ?? sessionMeta?.transcript_text ?? ''
-
-  const sessionInfo = sessionMeta?.title_data ?? {}
-  const expiresLabel = sessionMeta?.expires_at ? new Date(sessionMeta.expires_at).toLocaleString() : '—'
   const updatedLabel = sessionMeta?.updated_at ? new Date(sessionMeta.updated_at).toLocaleString() : '—'
 
   const isTypingInField = useCallback((target: EventTarget | null) => {
@@ -1134,7 +1182,31 @@ export default function TranscriptEditor({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button
+              className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+              onClick={() => pdfData && onDownload(pdfData, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')}
+              disabled={!pdfData}
+            >
+              Export PDF
+            </button>
+            {appVariant === 'oncue' ? (
+              <button
+                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                onClick={() => xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')}
+                disabled={!xmlData}
+              >
+                Export XML
+              </button>
+            ) : (
+              <button
+                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                onClick={handleDownloadViewer}
+                disabled={!activeMediaKey}
+              >
+                Export Player
+              </button>
+            )}
             <button
               className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium flex items-center gap-2"
               onClick={() => setShowSettings(!showSettings)}
@@ -1153,6 +1225,12 @@ export default function TranscriptEditor({
                 Edit History
               </button>
             )}
+            <button
+              className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium"
+              onClick={() => setShowRenameModal(true)}
+            >
+              Rename Speakers
+            </button>
             <button
               className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-sm font-medium disabled:opacity-50"
               onClick={handleResync}
@@ -1203,7 +1281,7 @@ export default function TranscriptEditor({
             </label>
           </div>
         )}
-        <div className="card-body space-y-6">
+        <div className="card-body space-y-4">
           {error && (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
               {error}
@@ -1230,323 +1308,260 @@ export default function TranscriptEditor({
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]">
-            <div className="space-y-3">
-              {/* Media Player */}
-              {resolvedMediaUrl ? (
-                <div className="rounded-xl bg-gray-900 p-3">
-                  {isVideo ? (
-                    <video
-                      key={resolvedMediaUrl}
-                      ref={videoRef}
-                      controls
-                      preload="metadata"
-                      className="w-full rounded-lg"
-                      src={resolvedMediaUrl}
-                      onError={() => { void handleMediaError() }}
-                    />
-                  ) : (
-                    <audio
-                      key={resolvedMediaUrl}
-                      ref={audioRef}
-                      controls
-                      preload="metadata"
-                      className="w-full"
-                      src={resolvedMediaUrl}
-                      onError={() => { void handleMediaError() }}
-                    />
-                  )}
-                </div>
+          {/* Media Player */}
+          {resolvedMediaUrl ? (
+            <div className="rounded-xl bg-gray-900 p-3">
+              {isVideo ? (
+                <video
+                  key={resolvedMediaUrl}
+                  ref={videoRef}
+                  controls
+                  preload="metadata"
+                  className="w-full rounded-lg"
+                  src={resolvedMediaUrl}
+                  onError={() => { void handleMediaError() }}
+                />
               ) : (
-                <div className="rounded-xl border-2 border-dashed border-gray-300 p-8 text-center">
-                  <svg className="w-8 h-8 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  </svg>
-                  <p className="text-sm font-medium text-gray-700">No media loaded</p>
-                  <p className="mt-1 text-sm text-gray-500">Import the source audio/video to enable playback, timing fixes, and clip creation.</p>
-                  {onRequestMediaImport && (
+                <audio
+                  key={resolvedMediaUrl}
+                  ref={audioRef}
+                  controls
+                  preload="metadata"
+                  className="w-full"
+                  src={resolvedMediaUrl}
+                  onError={() => { void handleMediaError() }}
+                />
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border-2 border-dashed border-gray-300 p-6 text-center">
+              <svg className="w-8 h-8 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              </svg>
+              <p className="text-sm text-gray-500">Import source audio/video to enable playback, clip creation, and timing correction.</p>
+              {onRequestMediaImport && (
+                <button
+                  type="button"
+                  onClick={onRequestMediaImport}
+                  className="mt-4 inline-flex items-center justify-center rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700"
+                >
+                  Import Media File
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="rounded-xl bg-gray-50 px-4 py-3 text-sm flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-5 text-gray-600">
+              <span>Lines <span className="font-medium text-gray-900">{lines.length}</span></span>
+              <span>Duration <span className="font-medium text-gray-900">{secondsToLabel(sessionMeta?.audio_duration ?? 0)}</span></span>
+              <span>Updated <span className="font-medium text-gray-900 text-xs">{updatedLabel}</span></span>
+            </div>
+            <span
+              className="text-xs text-primary-700 underline decoration-dotted cursor-help"
+              title={'Shortcuts:\nSpace - Play/Pause\nLeft/Right - Skip 5s\nDouble-click line - Play from line'}
+            >
+              Shortcuts
+            </span>
+          </div>
+
+          {manualScrollOverride && autoScroll && activeLineId && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                className="rounded-lg border border-primary-300 bg-white px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-50"
+                onClick={handleReturnToCurrentLine}
+              >
+                Return to current line
+              </button>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
+            <div className="border-b border-primary-200 px-5 py-3">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Search transcript... (Ctrl+F)"
+                  className="input w-full pr-20"
+                  value={searchQuery}
+                  onChange={(e) => performSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      goToSearchResult(e.shiftKey ? 'prev' : 'next')
+                    } else if (e.key === 'Escape') {
+                      clearSearch()
+                    }
+                  }}
+                />
+                {searchQuery && (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <span className="text-xs text-primary-500">
+                      {searchMatches.length > 0 ? `${searchCurrentIndex + 1}/${searchMatches.length}` : '0/0'}
+                    </span>
                     <button
                       type="button"
-                      onClick={onRequestMediaImport}
-                      className="mt-4 inline-flex items-center justify-center rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700"
+                      className="p-1 text-primary-400 hover:text-primary-600"
+                      onClick={() => goToSearchResult('prev')}
+                      title="Previous (Shift+Enter)"
                     >
-                      Import Media File
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                      </svg>
                     </button>
-                  )}
-                </div>
-              )}
-
-              {/* Quick Stats */}
-              <div className="rounded-xl bg-gray-50 p-4 text-sm space-y-2">
-                <div className="flex justify-between text-gray-600">
-                  <span>Lines</span>
-                  <span className="font-medium text-gray-900">{lines.length}</span>
-                </div>
-                <div className="flex justify-between text-gray-600">
-                  <span>Duration</span>
-                  <span className="font-medium text-gray-900">{secondsToLabel(sessionMeta?.audio_duration ?? 0)}</span>
-                </div>
-                <div className="flex justify-between text-gray-600">
-                  <span>Updated</span>
-                  <span className="font-medium text-gray-900 text-xs">{updatedLabel}</span>
-                </div>
-              </div>
-
-              {/* Collapsible: Tools */}
-              <div className="rounded-xl border border-gray-200 overflow-hidden">
-                <button
-                  onClick={() => setShowTools(!showTools)}
-                  className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
-                >
-                  <span>Speaker Names</span>
-                  <svg className={`w-4 h-4 text-gray-500 transition-transform ${showTools ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showTools && (
-                  <div className="p-4 border-t border-gray-200 bg-white space-y-3">
-                    <p className="text-sm text-gray-500">Find and replace speaker names</p>
-                    {renameFeedback && (
-                      <div className="rounded bg-primary-50 px-3 py-2 text-sm text-primary-700">{renameFeedback}</div>
-                    )}
-                    <form className="space-y-2" onSubmit={handleRenameSpeaker}>
-                      <input
-                        type="text"
-                        value={renameFrom}
-                        onChange={(e) => { setRenameFrom(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
-                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase"
-                        placeholder="Current name"
-                      />
-                      <input
-                        type="text"
-                        value={renameTo}
-                        onChange={(e) => { setRenameTo(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
-                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase"
-                        placeholder="New name"
-                      />
-                      <button type="submit" className="w-full py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700" disabled={!lines.length}>
-                        Rename All
-                      </button>
-                    </form>
-                  </div>
-                )}
-              </div>
-
-              {/* Collapsible: Downloads */}
-              <div className="rounded-xl border border-gray-200 overflow-hidden">
-                <button
-                  onClick={() => setShowDownloads(!showDownloads)}
-                  className="w-full px-4 py-3 flex items-center justify-between bg-white hover:bg-gray-50 text-sm font-medium text-gray-900"
-                >
-                  <span>Download Exports</span>
-                  <svg className={`w-4 h-4 text-gray-500 transition-transform ${showDownloads ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showDownloads && (
-                  <div className="p-4 border-t border-gray-200 bg-white space-y-2">
                     <button
-                      className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
-                      onClick={() => pdfData && onDownload(pdfData, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')}
-                      disabled={!pdfData}
+                      type="button"
+                      className="p-1 text-primary-400 hover:text-primary-600"
+                      onClick={() => goToSearchResult('next')}
+                      title="Next (Enter)"
                     >
-                      Download PDF
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
                     </button>
-                    {appVariant === 'oncue' ? (
-                      <button
-                        className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
-                        onClick={() => xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')}
-                        disabled={!xmlData}
-                      >
-                        Download OnCue XML
-                      </button>
-                    ) : (
-                      <button
-                        className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
-                        onClick={handleDownloadViewer}
-                        disabled={!activeMediaKey}
-                      >
-                        Download HTML Viewer
-                      </button>
-                    )}
-                    {transcriptText && (
-                      <button
-                        className="w-full py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50"
-                        onClick={() => onDownload(btoa(unescape(encodeURIComponent(transcriptText))), buildFilename('Transcript-Preview', '.txt'), 'text/plain')}
-                      >
-                        Download Text
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="p-1 text-primary-400 hover:text-primary-600"
+                      onClick={clearSearch}
+                      title="Clear"
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
                   </div>
                 )}
               </div>
             </div>
 
-            <div>
-              {/* Search Bar */}
-              <div className="mb-3 flex items-center gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    placeholder="Search transcript... (Ctrl+F)"
-                    className="input w-full pr-20"
-                    value={searchQuery}
-                    onChange={(e) => performSearch(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        goToSearchResult(e.shiftKey ? 'prev' : 'next')
-                      } else if (e.key === 'Escape') {
-                        clearSearch()
-                      }
-                    }}
-                  />
-                  {searchQuery && (
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                      <span className="text-xs text-primary-500">
-                        {searchMatches.length > 0 ? `${searchCurrentIndex + 1}/${searchMatches.length}` : '0/0'}
-                      </span>
-                      <button
-                        type="button"
-                        className="p-1 text-primary-400 hover:text-primary-600"
-                        onClick={() => goToSearchResult('prev')}
-                        title="Previous (Shift+Enter)"
-                      >
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        className="p-1 text-primary-400 hover:text-primary-600"
-                        onClick={() => goToSearchResult('next')}
-                        title="Next (Enter)"
-                      >
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        className="p-1 text-primary-400 hover:text-primary-600"
-                        onClick={clearSearch}
-                        title="Clear"
-                      >
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-primary-600">
+              <div>Pg:Ln</div>
+              <div>Speaker</div>
+              <div>Utterance</div>
+              <div className="text-right">Timing</div>
+            </div>
 
-              <div className="rounded-lg border border-primary-200 bg-white shadow-inner">
-                <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-primary-600">
-                  <div>Pg:Ln</div>
-                  <div>Speaker</div>
-                  <div>Utterance</div>
-                  <div className="text-right">Timing</div>
-                </div>
-                <div className="max-h-[72vh] overflow-y-auto">
-                  {loading ? (
-                    <div className="p-6 text-center text-primary-500">Loading editor…</div>
-                  ) : lines.length === 0 ? (
-                    <div className="p-6 text-center text-primary-500">No lines available. Import or transcribe to begin editing.</div>
-                  ) : (
-                    lines.map((line) => {
-                      const isActive = activeLineId === line.id
-                      const isSelected = selectedLineId === line.id
-                      const isSearchMatch = searchMatches.includes(line.id)
-                      const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === line.id
-                      const rowBackgroundClass = isSelected
-                        ? 'bg-primary-100 hover:bg-primary-100'
-                        : isCurrentSearchMatch
-                          ? 'bg-amber-300'
-                          : isSearchMatch
-                            ? 'bg-amber-100'
-                            : isActive
-                              ? 'bg-yellow-200'
-                              : 'bg-white hover:bg-primary-200'
-                      const rowClasses = [
-                        'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
-                        rowBackgroundClass,
-                        isSelected ? 'ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : '',
-                      ]
-                      const timingInputClass = line.timestamp_error
-                        ? 'w-28 rounded border border-red-400 bg-red-50 px-2 py-1.5 text-sm text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400'
-                        : 'w-28 rounded border border-primary-200 px-2 py-1.5 text-sm text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400'
-                      return (
-                        <div
-                          key={line.id}
-                          ref={(el) => {
-                            lineRefs.current[line.id] = el
-                          }}
-                          onClick={() => setSelectedLineId(line.id)}
-                          className={rowClasses.join(' ')}
-                        >
-                          <div className="text-sm font-mono text-primary-500">
-                            {line.page ?? '—'}:{line.line ?? '—'}
-                          </div>
-                          <div
-                            className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
-                            onDoubleClick={() => beginEdit(line, 'speaker')}
-                          >
-                            {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
-                              <input
-                                ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
-                                className="input text-sm uppercase"
-                                value={editingField.value}
-                                onChange={(event) =>
-                                  setEditingField((prev) =>
-                                    prev ? { ...prev, value: event.target.value.toUpperCase() } : prev,
-                                  )
-                                }
-                                onBlur={commitEdit}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') {
-                                    event.preventDefault()
-                                    commitEdit()
-                                  } else if (event.key === 'Escape') {
-                                    event.preventDefault()
-                                    cancelEdit()
-                                  }
-                                }}
-                              />
-                            ) : (
-                              <span className="uppercase">{line.speaker || '—'}</span>
-                            )}
-                          </div>
-                          <div
-                            className="min-w-0 cursor-text whitespace-pre-wrap text-primary-800 pr-6"
-                            onDoubleClick={() => beginEdit(line, 'text')}
-                          >
-                            {editingField && editingField.lineId === line.id && editingField.field === 'text' ? (
-                              <textarea
-                                ref={editInputRef as React.MutableRefObject<HTMLTextAreaElement | null>}
-                                className="textarea text-sm"
-                                rows={3}
-                                value={editingField.value}
-                                onChange={(event) =>
-                                  setEditingField((prev) => (prev ? { ...prev, value: event.target.value } : prev))
-                                }
-                                onBlur={commitEdit}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter' && !event.shiftKey) {
-                                    event.preventDefault()
-                                    commitEdit()
-                                  } else if (event.key === 'Escape') {
-                                    event.preventDefault()
-                                    cancelEdit()
-                                  }
-                                }}
-                              />
-                            ) : (
-                              <span>{line.text || '—'}</span>
-                            )}
-                          </div>
-                          <div className="flex items-center justify-end gap-5 text-sm text-primary-600">
-                            <div className="flex flex-col items-end gap-1 text-xs text-primary-500">
+            <div
+              ref={transcriptScrollRef}
+              className="h-[62vh] overflow-y-auto"
+              onScroll={handleTranscriptScroll}
+            >
+              {loading ? (
+                <div className="p-6 text-center text-primary-500">Loading editor…</div>
+              ) : lines.length === 0 ? (
+                <div className="p-6 text-center text-primary-500">No lines available.</div>
+              ) : (
+                lines.map((line) => {
+                  const isActive = activeLineId === line.id
+                  const isSelected = selectedLineId === line.id
+                  const isSearchMatch = searchMatches.includes(line.id)
+                  const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === line.id
+                  const rowBackgroundClass = isSelected
+                    ? 'bg-primary-100 hover:bg-primary-100'
+                    : isCurrentSearchMatch
+                      ? 'bg-amber-300'
+                      : isSearchMatch
+                        ? 'bg-amber-100'
+                        : isActive
+                          ? 'bg-yellow-200'
+                          : 'bg-white hover:bg-primary-200'
+                  const rowClasses = [
+                    'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
+                    rowBackgroundClass,
+                    isSelected ? 'ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : '',
+                  ]
+                  const timingInputClass = line.timestamp_error
+                    ? 'w-28 rounded border border-red-400 bg-red-50 px-2 py-1.5 text-sm text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400 text-right font-mono tabular-nums'
+                    : 'w-28 rounded border border-primary-200 px-2 py-1.5 text-sm text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400 text-right font-mono tabular-nums'
+                  return (
+                    <div
+                      key={line.id}
+                      ref={(el) => {
+                        lineRefs.current[line.id] = el
+                      }}
+                      onClick={() => setSelectedLineId(line.id)}
+                      onDoubleClick={() => playLine(line)}
+                      className={rowClasses.join(' ')}
+                    >
+                      <div className="text-sm font-mono text-primary-500">
+                        {line.page ?? '—'}:{line.line ?? '—'}
+                      </div>
+                      <div
+                        className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (!isSelected) {
+                            setSelectedLineId(line.id)
+                            return
+                          }
+                          beginEdit(line, 'speaker')
+                        }}
+                      >
+                        {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
+                          <input
+                            ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
+                            className="input text-sm uppercase"
+                            value={editingField.value}
+                            onChange={(event) =>
+                              setEditingField((prev) =>
+                                prev ? { ...prev, value: event.target.value.toUpperCase() } : prev,
+                              )
+                            }
+                            onBlur={commitEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault()
+                                commitEdit()
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault()
+                                cancelEdit()
+                              }
+                            }}
+                          />
+                        ) : (
+                          <span className="uppercase">{line.speaker || '—'}</span>
+                        )}
+                      </div>
+                      <div
+                        className="min-w-0 cursor-text whitespace-pre-wrap text-primary-800 pr-6"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (!isSelected) {
+                            setSelectedLineId(line.id)
+                            return
+                          }
+                          beginEdit(line, 'text')
+                        }}
+                      >
+                        {editingField && editingField.lineId === line.id && editingField.field === 'text' ? (
+                          <textarea
+                            ref={editInputRef as React.MutableRefObject<HTMLTextAreaElement | null>}
+                            className="textarea text-sm"
+                            rows={3}
+                            value={editingField.value}
+                            onChange={(event) =>
+                              setEditingField((prev) => (prev ? { ...prev, value: event.target.value } : prev))
+                            }
+                            onBlur={commitEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' && !event.shiftKey) {
+                                event.preventDefault()
+                                commitEdit()
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault()
+                                cancelEdit()
+                              }
+                            }}
+                          />
+                        ) : (
+                          <span>{line.text || '—'}</span>
+                        )}
+                      </div>
+                      <div className="flex flex-col items-end gap-2 text-sm text-primary-600">
+                        {isSelected ? (
+                          <>
+                            <div className="flex items-center gap-2 text-xs text-primary-500">
                               <span className="uppercase tracking-wide text-xs text-primary-400">Start</span>
                               <input
                                 type="number"
@@ -1560,7 +1575,7 @@ export default function TranscriptEditor({
                                 title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
                               />
                             </div>
-                            <div className="flex flex-col items-end gap-1 text-xs text-primary-500">
+                            <div className="flex items-center gap-2 text-xs text-primary-500">
                               <span className="uppercase tracking-wide text-xs text-primary-400">End</span>
                               <input
                                 type="number"
@@ -1573,31 +1588,80 @@ export default function TranscriptEditor({
                                 className={timingInputClass}
                                 title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
                               />
-                              {line.timestamp_error && (
-                                <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600">
-                                  Fix timing
-                                </span>
-                              )}
                             </div>
-                            <button
-                              type="button"
-                              className="rounded border border-primary-300 px-3 py-1.5 text-sm font-medium text-primary-700 hover:border-primary-500 hover:bg-primary-100"
-                              onClick={() => playLine(line)}
-                              disabled={!resolvedMediaUrl}
-                            >
-                              Play
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })
-                  )}
-                </div>
-              </div>
+                            {line.timestamp_error && (
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600">
+                                Fix timing
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="font-mono tabular-nums text-xs text-primary-600">
+                            {secondsToLabel(line.start)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      {showRenameModal && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-xl border border-gray-200">
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">Rename Speakers</h3>
+              <button
+                type="button"
+                className="rounded border border-gray-200 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={() => setShowRenameModal(false)}
+              >
+                Close
+              </button>
+            </div>
+            <form
+              className="p-4 space-y-3"
+              onSubmit={(event) => {
+                handleRenameSpeaker(event)
+              }}
+            >
+              {renameFeedback && (
+                <div className="rounded bg-primary-50 px-3 py-2 text-sm text-primary-700">{renameFeedback}</div>
+              )}
+              <input
+                type="text"
+                value={renameFrom}
+                onChange={(e) => { setRenameFrom(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase"
+                placeholder="Current name"
+              />
+              <input
+                type="text"
+                value={renameTo}
+                onChange={(e) => { setRenameTo(e.target.value.toUpperCase()); if (renameFeedback) setRenameFeedback(null) }}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase"
+                placeholder="New name"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="rounded border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => setShowRenameModal(false)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="rounded bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700" disabled={!lines.length}>
+                  Rename All
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Re-sync Loading Overlay - uses z-[9999] to ensure it's above everything */}
       {isResyncing && (
