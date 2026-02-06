@@ -1557,7 +1557,7 @@ export default function ViewerPage() {
   )
 
   return (
-    <div ref={viewerShellRef} className="h-full bg-stone-100 text-stone-900">
+    <div ref={viewerShellRef} className="h-full bg-gradient-to-b from-blue-50/55 via-stone-100 to-stone-200 text-stone-900">
       {titleCard?.visible && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/45">
           <div className="rounded-xl border border-stone-300 bg-stone-50/95 px-8 py-6 text-center text-stone-900 shadow-2xl">
@@ -1568,7 +1568,7 @@ export default function ViewerPage() {
       )}
 
       {!presentationMode && (
-        <div className="border-b border-gray-200 bg-white px-6 py-4">
+        <div className="border-b border-blue-100 bg-white/95 px-6 py-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <button
@@ -1596,17 +1596,17 @@ export default function ViewerPage() {
             </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center rounded-lg border border-gray-200 bg-white p-0.5">
+                <div className="flex items-center rounded-lg border border-blue-200 bg-blue-50/60 p-0.5">
                   <button
                     type="button"
-                    className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
+                    className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-blue-700 text-white shadow-sm' : 'text-blue-800 hover:bg-blue-100/80'}`}
                     onClick={() => setViewerMode('document')}
                   >
                     Doc
                   </button>
                   <button
                     type="button"
-                    className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
+                    className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-blue-700 text-white shadow-sm' : 'text-blue-800 hover:bg-blue-100/80'}`}
                     onClick={() => setViewerMode('caption')}
                   >
                     Caption
@@ -1619,6 +1619,16 @@ export default function ViewerPage() {
                 onClick={() => setShowToolsPanel((prev) => !prev)}
               >
                 {showToolsPanel ? 'Hide Tools' : 'Show Tools'}
+              </button>
+
+              <button
+                type="button"
+                className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-900 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={exportTranscriptPdf}
+                disabled={!transcript?.pdf_base64}
+                title={transcript?.pdf_base64 ? 'Download transcript PDF' : 'PDF is not available for this transcript'}
+              >
+                Download PDF
               </button>
 
               <div ref={exportMenuRef} className="relative">
@@ -1700,17 +1710,17 @@ export default function ViewerPage() {
                     presentationControlsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
                   }`}
                 >
-                  <div className="flex items-center rounded border border-stone-300 bg-white/95 p-0.5 shadow-sm">
+                  <div className="flex items-center rounded border border-blue-200 bg-white/95 p-0.5 shadow-sm">
                     <button
                       type="button"
-                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
+                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'document' ? 'bg-blue-700 text-white' : 'text-blue-800 hover:bg-blue-100/80'}`}
                       onClick={() => setViewerMode('document')}
                     >
                       Doc
                     </button>
                     <button
                       type="button"
-                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-stone-900 text-white' : 'text-stone-700 hover:bg-stone-100'}`}
+                      className={`rounded px-2.5 py-1 text-xs font-medium ${viewerMode === 'caption' ? 'bg-blue-700 text-white' : 'text-blue-800 hover:bg-blue-100/80'}`}
                       onClick={() => setViewerMode('caption')}
                     >
                       Caption
@@ -1727,12 +1737,12 @@ export default function ViewerPage() {
               )}
 
               {!presentationMode && (
-                <div className="border-b border-stone-300 bg-white px-4 py-3">
+                <div className="border-b border-blue-100 bg-white/95 px-4 py-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-sm font-medium text-stone-900">
                       {transcript?.title_data?.CASE_NAME || transcript?.title_data?.FILE_NAME || transcript?.media_key}
                     </div>
-                    <div className="text-xs text-stone-600">
+                    <div className="text-xs font-medium text-blue-800/80">
                       {formatClock(currentTime)} / {formatClock(duration || transcript?.audio_duration || 0)}
                     </div>
                   </div>
@@ -1742,7 +1752,7 @@ export default function ViewerPage() {
               <div className="min-h-0 flex-1 p-3">
                 {viewerMode === 'caption' ? (
                   <div className="flex h-full min-h-0 flex-col gap-3">
-                    <div className="relative min-h-0 flex-1 rounded-xl border border-stone-300 bg-stone-50">
+                    <div className="relative min-h-0 flex-1 rounded-xl border border-blue-200 bg-white">
                       {isVideo ? (
                         <video
                           ref={videoRef}
@@ -1754,18 +1764,18 @@ export default function ViewerPage() {
                           <audio
                             ref={audioRef}
                             {...playerSharedProps}
-                            className="w-full rounded-xl border border-stone-300 bg-white"
+                            className="w-full rounded-xl border border-blue-200 bg-white"
                           />
                         </div>
                       )}
                       {mediaStatusOverlay}
                     </div>
 
-                    <div className="shrink-0 max-h-[28vh] overflow-y-auto rounded-xl border border-stone-300 bg-white px-6 py-4 shadow-sm">
+                    <div className="shrink-0 max-h-[24vh] overflow-y-auto rounded-xl border border-stone-300 bg-[#fffef8] px-6 py-4 shadow-sm">
                       <div className="space-y-2" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
                         <div className="text-base text-stone-400">{captionWindow.prev2}</div>
                         <div className="text-lg text-stone-500">{captionWindow.prev1}</div>
-                        <div className="rounded border border-stone-300 bg-stone-100 px-3 py-2 text-2xl leading-snug text-stone-900">
+                        <div className="rounded border border-blue-200 bg-blue-50/45 px-3 py-2 text-2xl leading-snug text-stone-900">
                           {captionWindow.current}
                         </div>
                         <div className="text-lg text-stone-500">{captionWindow.next1}</div>
@@ -1797,14 +1807,14 @@ export default function ViewerPage() {
             </section>
 
             {isDocumentMode && (
-              <section className="relative flex min-h-0 flex-col bg-stone-100 text-stone-900">
+              <section className="relative flex min-h-0 flex-col bg-gradient-to-b from-blue-50/35 to-stone-100 text-stone-900">
                 {!presentationMode && (
                   <div className="px-4 pb-2 pt-3">
-                    <div className="rounded-xl border border-gray-200 bg-white p-2">
+                    <div className="rounded-xl border border-blue-100 bg-white p-2 shadow-sm">
                       <div className="flex items-center gap-2">
                         <input
                           ref={searchInputRef}
-                          className="h-9 flex-1 rounded border border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-500"
+                          className="h-9 flex-1 rounded border border-blue-200 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-500 focus:border-blue-400 focus:outline-none"
                           value={searchQuery}
                           onChange={(event) => setSearchQuery(event.target.value)}
                           onKeyDown={(event) => {
@@ -1815,15 +1825,18 @@ export default function ViewerPage() {
                           }}
                           placeholder="Search transcript"
                         />
-                        <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(-1)} disabled={!searchMatches.length}>
+                        <button type="button" className="btn-outline border-blue-200 px-2 py-1 text-xs text-blue-800 hover:bg-blue-50" onClick={() => goToSearchResult(-1)} disabled={!searchMatches.length}>
                           Prev
                         </button>
-                        <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => goToSearchResult(1)} disabled={!searchMatches.length}>
+                        <button type="button" className="btn-outline border-blue-200 px-2 py-1 text-xs text-blue-800 hover:bg-blue-50" onClick={() => goToSearchResult(1)} disabled={!searchMatches.length}>
                           Next
                         </button>
-                        <span className="min-w-[54px] text-right text-xs text-gray-500">
+                        <span className="min-w-[54px] text-right text-xs text-blue-700/80">
                           {searchMatches.length ? `${((searchCursor % searchMatches.length) + searchMatches.length) % searchMatches.length + 1}/${searchMatches.length}` : '0/0'}
                         </span>
+                      </div>
+                      <div className="mt-1.5 text-[11px] text-blue-700/75">
+                        Single-click selects a line. Double-click starts playback from that line.
                       </div>
                     </div>
                   </div>
@@ -1832,18 +1845,18 @@ export default function ViewerPage() {
                 <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto px-4 pb-6">
                   {showReturnToCurrent && activeLineId && (
                     <div className="sticky top-2 z-20 mb-2 flex justify-end">
-                      <button type="button" className="rounded border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800" onClick={returnToCurrentLine}>
+                      <button type="button" className="rounded border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-800" onClick={returnToCurrentLine}>
                         Return to current line
                       </button>
                     </div>
                   )}
 
                   {isLoading ? (
-                    <div className="rounded-xl border border-stone-300 bg-white px-4 py-6 text-sm text-stone-600">
+                    <div className="rounded-xl border border-blue-100 bg-white px-4 py-6 text-sm text-stone-600">
                       Loading transcript...
                     </div>
                   ) : groupedPages.length === 0 ? (
-                    <div className="rounded-xl border border-stone-300 bg-white px-4 py-6 text-sm text-stone-600">
+                    <div className="rounded-xl border border-blue-100 bg-white px-4 py-6 text-sm text-stone-600">
                       No transcript lines available.
                     </div>
                   ) : (
@@ -1851,59 +1864,66 @@ export default function ViewerPage() {
                       {groupedPages.map((pageBlock) => (
                         <div
                           key={pageBlock.page}
-                          className="mx-auto w-full max-w-[8.5in] rounded border border-stone-300 bg-white shadow-md"
+                          className="mx-auto w-full max-w-[8.5in] rounded-sm border border-stone-300 bg-[#fffef8] shadow-[0_8px_20px_rgba(15,23,42,0.14)]"
                         >
-                          <div className="border-b border-stone-200 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
-                            Page {pageBlock.page}
+                          <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50/85 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
+                            <span>Page {pageBlock.page}</span>
+                            <span className="text-[10px] tracking-[0.12em] text-blue-700/70">Transcript</span>
                           </div>
 
-                          <div className="divide-y divide-stone-200 px-2" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
-                            {pageBlock.lines.map((line) => {
-                              const active = activeLineId === line.id
-                              const selected = selectedLineId === line.id
-                              const match = searchMatchSet.has(line.id)
-                              const currentMatch = currentSearchLineId === line.id
-                              const lineDisplay = splitSpeakerPrefix(line)
+                          <div className="relative px-2 py-1" style={{ fontFamily: '"Courier New", Courier, monospace' }}>
+                            <div className="pointer-events-none absolute bottom-0 left-[68px] top-0 border-l border-blue-100/90" />
+                            <div className="divide-y divide-stone-200/80">
+                              {pageBlock.lines.map((line) => {
+                                const active = activeLineId === line.id
+                                const selected = selectedLineId === line.id
+                                const match = searchMatchSet.has(line.id)
+                                const currentMatch = currentSearchLineId === line.id
+                                const lineDisplay = splitSpeakerPrefix(line)
 
-                              const lineClasses = [
-                                'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-1.5 font-mono text-[15px] leading-8 text-stone-900 transition-colors hover:bg-stone-50',
-                                active ? 'bg-amber-100' : '',
-                                selected ? 'ring-1 ring-primary-400' : '',
-                                match ? 'bg-amber-50' : '',
-                                currentMatch ? 'outline outline-1 outline-amber-400' : '',
-                              ]
+                                const lineClasses = [
+                                  'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-3 py-0.5 font-mono text-[16px] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/40',
+                                  active ? 'bg-blue-50/70' : '',
+                                  selected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/90' : '',
+                                  match ? 'bg-amber-50' : '',
+                                  currentMatch ? 'outline outline-1 outline-amber-400' : '',
+                                ]
 
-                              return (
-                                <div
-                                  key={line.id}
-                                  ref={(node) => {
-                                    lineRefs.current[line.id] = node
-                                  }}
-                                  className={lineClasses.join(' ')}
-                                  onClick={() => {
-                                    setSelectedLineId(line.id)
-                                    seekToLine(line, true)
-                                  }}
-                                >
-                                  <div className="pt-0.5 text-right text-[11px] text-stone-500">
-                                    {line.line || '-'}
+                                return (
+                                  <div
+                                    key={line.id}
+                                    ref={(node) => {
+                                      lineRefs.current[line.id] = node
+                                    }}
+                                    className={lineClasses.join(' ')}
+                                    onClick={() => {
+                                      setSelectedLineId(line.id)
+                                    }}
+                                    onDoubleClick={() => {
+                                      setSelectedLineId(line.id)
+                                      seekToLine(line, true)
+                                    }}
+                                  >
+                                    <div className="pt-0.5 text-right text-[11px] font-medium text-blue-700/75">
+                                      {line.line || '-'}
+                                    </div>
+                                    <div className="whitespace-pre-wrap break-words">
+                                      {lineDisplay.speakerLabel ? (
+                                        <>
+                                          {lineDisplay.leading}
+                                          <span className="font-semibold text-stone-800">
+                                            {lineDisplay.speakerLabel}
+                                          </span>
+                                          {lineDisplay.trailing}
+                                        </>
+                                      ) : (
+                                        lineDisplay.lineText || line.text
+                                      )}
+                                    </div>
                                   </div>
-                                  <div className="whitespace-pre-wrap break-words">
-                                    {lineDisplay.speakerLabel ? (
-                                      <>
-                                        {lineDisplay.leading}
-                                        <span className="font-semibold text-stone-800">
-                                          {lineDisplay.speakerLabel}
-                                        </span>
-                                        {lineDisplay.trailing}
-                                      </>
-                                    ) : (
-                                      lineDisplay.lineText || line.text
-                                    )}
-                                  </div>
-                                </div>
-                              )
-                            })}
+                                )
+                              })}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -1915,25 +1935,25 @@ export default function ViewerPage() {
           </div>
 
           {toolsVisible && (
-            <aside className="flex h-full min-h-0 flex-col border-l border-gray-200 bg-white">
-              <div className="border-b border-gray-200 px-4 py-3">
+            <aside className="flex h-full min-h-0 flex-col border-l border-blue-100 bg-gradient-to-b from-white to-blue-50/35">
+              <div className="border-b border-blue-100 px-4 py-3">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold text-gray-900">Tools</div>
                   <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => setShowToolsPanel(false)}>
                     Hide
                   </button>
                 </div>
-                <div className="mt-3 flex items-center rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+                <div className="mt-3 flex items-center rounded-lg border border-blue-200 bg-blue-50/60 p-0.5">
                   <button
                     type="button"
-                    className={`flex-1 rounded px-2.5 py-1.5 text-xs font-medium ${activeToolsTab === 'clips' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:bg-white'}`}
+                    className={`flex-1 rounded px-2.5 py-1.5 text-xs font-medium ${activeToolsTab === 'clips' ? 'bg-blue-700 text-white shadow-sm' : 'text-blue-800 hover:bg-blue-100/80'}`}
                     onClick={() => setActiveToolsTab('clips')}
                   >
                     Clips
                   </button>
                   <button
                     type="button"
-                    className={`flex-1 rounded px-2.5 py-1.5 text-xs font-medium ${activeToolsTab === 'sequences' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:bg-white'}`}
+                    className={`flex-1 rounded px-2.5 py-1.5 text-xs font-medium ${activeToolsTab === 'sequences' ? 'bg-blue-700 text-white shadow-sm' : 'text-blue-800 hover:bg-blue-100/80'}`}
                     onClick={() => setActiveToolsTab('sequences')}
                   >
                     Sequences
