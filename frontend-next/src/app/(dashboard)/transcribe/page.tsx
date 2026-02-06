@@ -20,10 +20,7 @@ import {
 import { storeMediaBlob, storeMediaHandle } from '@/lib/mediaHandles'
 import {
   FFmpegCanceledError,
-  convertToPlayable,
-  detectCodec,
-  readConvertedFromCache,
-  writeConvertedToCache,
+  extractAudio,
 } from '@/lib/ffmpegWorker'
 
 interface FormData {
@@ -152,6 +149,7 @@ export default function TranscribePage() {
   const queueRef = useRef<QueueItem[]>([])
   const stopAfterCurrentRef = useRef(false)
   const skipNextPopstateRef = useRef(false)
+  const preparedAudioByItemRef = useRef<Map<string, File>>(new Map())
 
   useEffect(() => {
     queueRef.current = queue
@@ -290,6 +288,9 @@ export default function TranscribePage() {
       const currentHasProcessed = current.some((item) => item.status !== 'queued')
       const currentHasQueued = current.some((item) => item.status === 'queued')
       const baseQueue = currentHasProcessed && !currentHasQueued ? [] : current
+      if (baseQueue.length === 0) {
+        preparedAudioByItemRef.current.clear()
+      }
 
       const existingSignatures = new Set(baseQueue.map((item) => buildFileSignature(item.file)))
       let duplicateCount = 0
@@ -372,6 +373,9 @@ export default function TranscribePage() {
       const currentHasProcessed = current.some((item) => item.status !== 'queued')
       const currentHasQueued = current.some((item) => item.status === 'queued')
       const baseQueue = currentHasProcessed && !currentHasQueued ? [] : current
+      if (baseQueue.length === 0) {
+        preparedAudioByItemRef.current.clear()
+      }
 
       const remainingSlots = Math.max(MAX_BATCH_FILES - baseQueue.length, 0)
       if (remainingSlots <= 0) {
@@ -454,6 +458,9 @@ export default function TranscribePage() {
       const submitFormData = new FormData()
       submitFormData.append('file', item.file)
       submitFormData.append('transcription_model', formData.transcription_model)
+      if (appVariant === 'criminal' && item.originalFileName) {
+        submitFormData.append('source_filename', item.originalFileName)
+      }
 
       if (formData.case_name.trim()) submitFormData.append('case_name', formData.case_name.trim())
       if (formData.case_number.trim()) submitFormData.append('case_number', formData.case_number.trim())
@@ -588,59 +595,48 @@ export default function TranscribePage() {
     async (item: QueueItem): Promise<File> => {
       if (appVariant !== 'criminal') return item.file
 
+      const cachedAudio = preparedAudioByItemRef.current.get(item.id)
+      if (cachedAudio) {
+        updateQueueItem(item.id, {
+          status: 'transcribing',
+          stageText: 'Using prepared audio upload...',
+          error: '',
+        })
+        return cachedAudio
+      }
+
       updateQueueItem(item.id, {
         status: 'transcribing',
-        stageText: 'Inspecting media format...',
+        stageText: 'Extracting compressed mono audio for upload...',
         error: '',
       })
 
-      const codecInfo = await detectCodec(item.file)
-      if (!codecInfo.needsConversion) {
-        return item.file
-      }
-
-      const codecLabel = codecInfo.codecName || 'unsupported codec'
-      updateQueueItem(item.id, {
-        status: 'transcribing',
-        stageText: `Converting format (${codecLabel})...`,
-      })
-
-      const cached = await readConvertedFromCache(item.file)
-      if (cached) {
-        updateQueueItem(item.id, {
-          status: 'transcribing',
-          stageText: `Using cached converted media (${codecLabel}).`,
-        })
-        return cached
-      }
-
       try {
-        const converted = await convertToPlayable(item.file, (ratio) => {
+        const extractedAudio = await extractAudio(item.file, (ratio) => {
           updateQueueItem(item.id, {
             status: 'transcribing',
-            stageText: `Converting format (${codecLabel})... ${Math.round(ratio * 100)}%`,
+            stageText: `Extracting compressed mono audio for upload... ${Math.round(ratio * 100)}%`,
           })
         })
-        await writeConvertedToCache(item.file, converted)
+        preparedAudioByItemRef.current.set(item.id, extractedAudio)
         updateQueueItem(item.id, {
           status: 'transcribing',
-          stageText: 'Conversion complete. Preparing upload...',
+          stageText: 'Audio extraction complete. Preparing upload...',
         })
-        return converted
+        return extractedAudio
       } catch (error) {
         if (error instanceof FFmpegCanceledError) {
           throw {
-            message: 'Media conversion canceled.',
+            message: 'Audio extraction canceled.',
             retryable: false,
           } satisfies RequestFailure
         }
 
-        // Client-side conversion failed (e.g. G.729 not in WASM build).
-        // Fall back to sending the original file — the server has full
-        // ffmpeg and can handle the conversion before transcription.
+        // Fall back to sending original media when in-browser extraction fails.
+        // The backend can still convert before transcription.
         updateQueueItem(item.id, {
           status: 'transcribing',
-          stageText: `Browser conversion unavailable for ${codecLabel}. Sending original to server...`,
+          stageText: 'Audio extraction unavailable. Uploading original media...',
         })
         return item.file
       }
@@ -720,10 +716,9 @@ export default function TranscribePage() {
             if (appVariant === 'criminal' && data.media_key) {
               const effectiveCaseId = getEffectiveCaseId(freshItem)
               const titleData = { ...(data.title_data || {}) }
-              const usedConvertedUpload = uploadItem.file !== freshItem.file
-              const shouldPersistBlobFallback = !freshItem.fileHandle || usedConvertedUpload
+              const shouldPersistBlobFallback = !freshItem.fileHandle
               const mediaFilename = freshItem.originalFileName || freshItem.file.name
-              const mediaContentType = uploadItem.file.type || freshItem.file.type || 'application/octet-stream'
+              const mediaContentType = freshItem.file.type || 'application/octet-stream'
               if (freshItem.originalFileName) {
                 titleData.FILE_NAME = freshItem.originalFileName
               }
@@ -742,15 +737,15 @@ export default function TranscribePage() {
 
               try {
                 // Store file handle when available (picker flow), and persist a blob fallback
-                // when there is no handle or when we had to upload a converted playable file.
+                // when there is no handle.
                 if (freshItem.fileHandle) {
                   await storeMediaHandle(data.media_key, freshItem.fileHandle)
                 }
                 if (shouldPersistBlobFallback) {
                   await storeMediaBlob(
                     data.media_key,
-                    uploadItem.file,
-                    uploadItem.file.name || mediaFilename,
+                    freshItem.file,
+                    mediaFilename,
                     mediaContentType,
                   )
                 }
@@ -801,6 +796,8 @@ export default function TranscribePage() {
             })
           }
         }
+
+        preparedAudioByItemRef.current.delete(itemId)
 
         if (!succeeded) {
           // Continue with next file.
@@ -1012,6 +1009,7 @@ export default function TranscribePage() {
 
   const resetForNewBatch = () => {
     if (isProcessing) return
+    preparedAudioByItemRef.current.clear()
     setQueue([])
     setStep('upload')
     setShowAllResults(false)
@@ -1197,7 +1195,10 @@ export default function TranscribePage() {
                     {!isProcessing && (
                       <button
                         type="button"
-                        onClick={() => setQueue((prev) => prev.filter((entry) => entry.id !== item.id))}
+                        onClick={() => {
+                          preparedAudioByItemRef.current.delete(item.id)
+                          setQueue((prev) => prev.filter((entry) => entry.id !== item.id))
+                        }}
                         className="text-gray-400 hover:text-red-600 transition-colors"
                         title="Remove"
                       >

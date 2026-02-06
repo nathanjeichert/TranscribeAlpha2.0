@@ -398,6 +398,7 @@ async def transcribe(
     speakers_expected: Optional[int] = Form(None),
     transcription_model: str = Form("assemblyai"),
     case_id: Optional[str] = Form(None),
+    source_filename: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
 ):
     logger.info("Received transcription request for file: %s using model: %s", file.filename, transcription_model)
@@ -427,6 +428,7 @@ async def transcribe(
             )
 
     is_criminal = APP_VARIANT == "criminal"
+    display_filename = (source_filename or "").strip() or file.filename or "media"
     temp_upload_path = None
     try:
         temp_upload_path, file_size = await save_upload_to_tempfile(file)
@@ -451,14 +453,14 @@ async def transcribe(
             "DATE": input_date,
             "TIME": input_time,
             "LOCATION": location,
-            "FILE_NAME": file.filename,
+            "FILE_NAME": display_filename,
             "FILE_DURATION": "Calculating...",
             "MEDIA_ID": media_key,
         }
 
         # Upload media for editor playback (skip for criminal - media stays local)
         media_blob_name = None
-        media_content_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+        media_content_type = file.content_type or mimetypes.guess_type(file.filename or display_filename)[0]
         if not is_criminal:
             try:
                 media_blob_name = upload_preview_file_to_cloud_storage_from_path(
@@ -615,7 +617,7 @@ async def transcribe(
             "is_persistent": bool(case_id),
         }
 
-        media_filename = resolve_media_filename(title_data, media_blob_name, fallback=file.filename or "media.mp4")
+        media_filename = resolve_media_filename(title_data, media_blob_name, fallback=display_filename or "media.mp4")
         transcript_data.update(
             build_variant_exports(
                 APP_VARIANT,
