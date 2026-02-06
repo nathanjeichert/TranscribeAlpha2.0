@@ -54,6 +54,7 @@ export interface EditorSessionResponse {
   docx_base64?: string | null
   oncue_xml_base64?: string | null
   viewer_html_base64?: string | null
+  source_turns?: unknown[]
   transcript?: string | null
   transcript_text?: string | null
   clips?: ClipSummary[]
@@ -1093,9 +1094,12 @@ export default function TranscriptEditor({
           throw new Error('Media file not available. Please relink the media file first.')
         }
         const transcriptPayload = {
-          ...(sessionMeta ?? {}),
           media_key: activeMediaKey,
           lines,
+          audio_duration: sessionMeta?.audio_duration ?? 0,
+          title_data: sessionMeta?.title_data ?? {},
+          lines_per_page: sessionMeta?.lines_per_page ?? 25,
+          source_turns: sessionMeta?.source_turns,
         }
         const formData = new FormData()
         formData.append('media_file', mediaFile)
