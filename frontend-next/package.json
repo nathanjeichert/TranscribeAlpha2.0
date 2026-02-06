@@ -9,7 +9,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "npm run copy:ffmpeg-core"
+    "postinstall": "npm run copy:ffmpeg-core || true"
   },
   "dependencies": {
     "@ffmpeg/core": "^0.12.10",
