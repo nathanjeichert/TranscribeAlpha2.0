@@ -353,6 +353,12 @@ export default function ViewerPage() {
     if (saved === 'black-screen' || saved === 'title-card' || saved === 'continuous') return saved
     return 'black-screen'
   })
+  const [clipGapSeconds, setClipGapSeconds] = useState<number>(() => {
+    if (typeof window === 'undefined') return 3
+    const saved = localStorage.getItem('sequence-clip-gap')
+    const parsed = Number(saved)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3
+  })
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -620,6 +626,10 @@ export default function ViewerPage() {
   useEffect(() => {
     localStorage.setItem('sequence-pause-behavior', sequencePauseBehavior)
   }, [sequencePauseBehavior])
+
+  useEffect(() => {
+    localStorage.setItem('sequence-clip-gap', String(clipGapSeconds))
+  }, [clipGapSeconds])
 
   const clearPresentationUiTimer = useCallback(() => {
     if (presentationUiTimerRef.current) {
@@ -1445,9 +1455,9 @@ export default function ViewerPage() {
 
         await playRange(clip.start_time, clip.end_time, clip.clip_id)
 
-        // Small gap between clips in continuous mode
-        if (pauseMode === 'continuous') {
-          await sleep(1200)
+        // Gap between clips in continuous mode
+        if (pauseMode === 'continuous' && clipGapSeconds > 0) {
+          await sleep(clipGapSeconds * 1000)
         }
       }
 
@@ -1471,7 +1481,7 @@ export default function ViewerPage() {
       sequenceResumeRef.current = null
       await exitPresentationMode()
     }
-  }, [clips, currentMediaKey, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, sequencePauseBehavior, waitForCanPlay, waitForUserResume])
+  }, [clipGapSeconds, clips, currentMediaKey, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, sequencePauseBehavior, waitForCanPlay, waitForUserResume])
 
   const excerptLinesForClip = useCallback((record: ViewerTranscript, clip: ClipRecord) => {
     return record.lines.filter(
@@ -2386,6 +2396,24 @@ export default function ViewerPage() {
                           <option value="continuous">Play continuously</option>
                         </select>
                       </label>
+
+                      {sequencePauseBehavior === 'continuous' && (
+                        <label className="mb-3 block text-xs text-gray-700">
+                          <span className="mb-1 block font-medium">Gap between clips (seconds)</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="30"
+                            step="0.5"
+                            className="w-full rounded-lg border border-primary-300 bg-white px-2 py-1.5 text-xs shadow-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
+                            value={clipGapSeconds}
+                            onChange={(e) => {
+                              const val = Number(e.target.value)
+                              if (Number.isFinite(val) && val >= 0) setClipGapSeconds(val)
+                            }}
+                          />
+                        </label>
+                      )}
 
                       {sequenceState.phase !== 'idle' && (
                         <div className="mb-2 text-xs text-primary-700">
