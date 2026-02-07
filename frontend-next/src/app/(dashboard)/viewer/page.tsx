@@ -56,7 +56,10 @@ interface TitleCardState {
   visible: boolean
   title: string
   meta: string
+  subtitle?: string
 }
+
+type SequencePauseBehavior = 'black-screen' | 'title-card' | 'continuous'
 
 type SequenceState =
   | { phase: 'idle' }
@@ -334,6 +337,14 @@ export default function ViewerPage() {
 
   const [activeClipPlaybackId, setActiveClipPlaybackId] = useState<string | null>(null)
   const [presentationUiVisible, setPresentationUiVisible] = useState(false)
+  const [showBlackScreen, setShowBlackScreen] = useState(false)
+  const [waitingForResume, setWaitingForResume] = useState(false)
+  const [sequencePauseBehavior, setSequencePauseBehavior] = useState<SequencePauseBehavior>(() => {
+    if (typeof window === 'undefined') return 'black-screen'
+    const saved = localStorage.getItem('sequence-pause-behavior')
+    if (saved === 'black-screen' || saved === 'title-card' || saved === 'continuous') return saved
+    return 'black-screen'
+  })
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -352,6 +363,7 @@ export default function ViewerPage() {
   const presentationUiTimerRef = useRef<number | null>(null)
   const sequenceAbortRef = useRef(false)
   const clipFinishRef = useRef<(() => void) | null>(null)
+  const sequenceResumeRef = useRef<(() => void) | null>(null)
   const transcriptCacheRef = useRef<Record<string, ViewerTranscript>>({})
   const templateCacheRef = useRef<string | null>(null)
 
@@ -597,6 +609,10 @@ export default function ViewerPage() {
     })
   }, [sequences])
 
+  useEffect(() => {
+    localStorage.setItem('sequence-pause-behavior', sequencePauseBehavior)
+  }, [sequencePauseBehavior])
+
   const clearPresentationUiTimer = useCallback(() => {
     if (presentationUiTimerRef.current) {
       window.clearTimeout(presentationUiTimerRef.current)
@@ -765,6 +781,12 @@ export default function ViewerPage() {
     sequenceAbortRef.current = true
     stopClipPlaybackLoop()
     setTitleCard(null)
+    setShowBlackScreen(false)
+    setWaitingForResume(false)
+    if (sequenceResumeRef.current) {
+      sequenceResumeRef.current()
+      sequenceResumeRef.current = null
+    }
     setSequenceState({ phase: 'idle' })
     setPresentationMode(false)
     setPresentationUiVisible(false)
@@ -803,6 +825,13 @@ export default function ViewerPage() {
 
       if (event.code === 'Space') {
         event.preventDefault()
+        if (sequenceResumeRef.current) {
+          const resume = sequenceResumeRef.current
+          sequenceResumeRef.current = null
+          setWaitingForResume(false)
+          resume()
+          return
+        }
         if (player.paused) player.play().catch(() => {})
         else player.pause()
         return
@@ -866,6 +895,12 @@ export default function ViewerPage() {
       if (!document.fullscreenElement && presentationMode) {
         sequenceAbortRef.current = true
         stopClipPlaybackLoop()
+        setShowBlackScreen(false)
+        setWaitingForResume(false)
+        if (sequenceResumeRef.current) {
+          sequenceResumeRef.current()
+          sequenceResumeRef.current = null
+        }
         setPresentationMode(false)
         setPresentationUiVisible(false)
         clearPresentationUiTimer()
@@ -1111,7 +1146,7 @@ export default function ViewerPage() {
 
       const tick = () => {
         if (resolved) return
-        if (sequenceAbortRef.current || player.currentTime >= end) {
+        if (sequenceAbortRef.current || player.currentTime >= end || player.ended) {
           finish()
           return
         }
@@ -1299,6 +1334,20 @@ export default function ViewerPage() {
     })
   }, [getPlayerElement])
 
+  const waitForUserResume = useCallback((): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      if (sequenceAbortRef.current) {
+        resolve()
+        return
+      }
+      setWaitingForResume(true)
+      sequenceResumeRef.current = () => {
+        setWaitingForResume(false)
+        resolve()
+      }
+    })
+  }, [])
+
   const runSequencePresentation = useCallback(async (sequence: ClipSequenceRecord) => {
     if (!sequence.entries.length) {
       setSequenceError('Select clips before presenting this sequence.')
@@ -1312,6 +1361,31 @@ export default function ViewerPage() {
     try {
       const orderedEntries = [...sequence.entries].sort((a, b) => a.order - b.order)
       let activeTranscriptKey = currentMediaKey
+      const pauseMode = sequencePauseBehavior
+
+      // Pre-load transcript display names for title cards
+      const transcriptNames: Record<string, string> = {}
+      for (const entry of orderedEntries) {
+        const key = entry.source_media_key
+        if (transcriptNames[key] !== undefined) continue
+        const cached = transcriptCacheRef.current[key]
+        if (cached) {
+          transcriptNames[key] = cached.title_data?.FILE_NAME || cached.media_filename || ''
+        } else {
+          try {
+            const raw = await getTranscript(key)
+            if (raw) {
+              const normalized = normalizeTranscript(raw, key)
+              transcriptCacheRef.current[key] = normalized
+              transcriptNames[key] = normalized.title_data?.FILE_NAME || normalized.media_filename || ''
+            } else {
+              transcriptNames[key] = ''
+            }
+          } catch {
+            transcriptNames[key] = ''
+          }
+        }
+      }
 
       for (let clipIndex = 0; clipIndex < orderedEntries.length; clipIndex += 1) {
         if (sequenceAbortRef.current) break
@@ -1319,19 +1393,38 @@ export default function ViewerPage() {
         const clip = clips.find((item) => item.clip_id === entry.clip_id)
         if (!clip) continue
 
+        const mediaName = transcriptNames[clip.source_media_key] || ''
+
+        // --- Black screen pause (before title card) ---
+        if (pauseMode === 'black-screen') {
+          setShowBlackScreen(true)
+          setSequenceState({ phase: 'title-card', sequenceId: sequence.sequence_id, clipIndex })
+          await waitForUserResume()
+          setShowBlackScreen(false)
+          if (sequenceAbortRef.current) break
+        }
+
+        // --- Title card ---
         setSequenceState({ phase: 'title-card', sequenceId: sequence.sequence_id, clipIndex })
         setTitleCard({
           visible: true,
           title: clip.name,
           meta: `Clip ${clipIndex + 1} of ${orderedEntries.length} — ${formatRange(clip.start_time, clip.end_time)}`,
+          subtitle: mediaName || undefined,
         })
 
-        await sleep(3000)
-        if (sequenceAbortRef.current) break
+        if (pauseMode === 'title-card') {
+          await waitForUserResume()
+          if (sequenceAbortRef.current) break
+        } else {
+          await sleep(3000)
+          if (sequenceAbortRef.current) break
+        }
 
         setTitleCard(null)
         setSequenceState({ phase: 'transitioning', sequenceId: sequence.sequence_id, clipIndex })
 
+        // --- Load transcript/media if different recording ---
         if (clip.source_media_key !== activeTranscriptKey) {
           const loaded = await loadTranscriptByKey(clip.source_media_key, true)
           if (!loaded) continue
@@ -1343,7 +1436,11 @@ export default function ViewerPage() {
         setSequenceState({ phase: 'playing', sequenceId: sequence.sequence_id, clipIndex })
 
         await playRange(clip.start_time, clip.end_time, clip.clip_id)
-        await sleep(1200)
+
+        // Small gap between clips in continuous mode
+        if (pauseMode === 'continuous') {
+          await sleep(1200)
+        }
       }
 
       if (!sequenceAbortRef.current) {
@@ -1361,9 +1458,12 @@ export default function ViewerPage() {
       sequenceAbortRef.current = true
     } finally {
       setTitleCard(null)
+      setShowBlackScreen(false)
+      setWaitingForResume(false)
+      sequenceResumeRef.current = null
       await exitPresentationMode()
     }
-  }, [clips, currentMediaKey, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, waitForCanPlay])
+  }, [clips, currentMediaKey, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, sequencePauseBehavior, waitForCanPlay, waitForUserResume])
 
   const excerptLinesForClip = useCallback((record: ViewerTranscript, clip: ClipRecord) => {
     return record.lines.filter(
@@ -1608,11 +1708,43 @@ export default function ViewerPage() {
 
   return (
     <div ref={viewerShellRef} className="h-full bg-gradient-to-b from-blue-50/55 via-stone-100 to-stone-200 text-stone-900">
-      {titleCard?.visible && (
-        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/45">
+      {showBlackScreen && (
+        <div
+          className="fixed inset-0 z-50 flex cursor-pointer items-center justify-center bg-black"
+          onClick={() => {
+            if (sequenceResumeRef.current) {
+              const resume = sequenceResumeRef.current
+              sequenceResumeRef.current = null
+              setWaitingForResume(false)
+              resume()
+            }
+          }}
+        >
+          <div className="text-sm text-white/30 select-none">Press space to continue</div>
+        </div>
+      )}
+
+      {titleCard?.visible && !showBlackScreen && (
+        <div
+          className={`fixed inset-0 z-50 flex items-center justify-center bg-black/45 ${waitingForResume ? 'cursor-pointer' : 'pointer-events-none'}`}
+          onClick={() => {
+            if (sequenceResumeRef.current) {
+              const resume = sequenceResumeRef.current
+              sequenceResumeRef.current = null
+              setWaitingForResume(false)
+              resume()
+            }
+          }}
+        >
           <div className="rounded-xl border border-stone-300 bg-stone-50/95 px-8 py-6 text-center text-stone-900 shadow-2xl">
             <div className="text-2xl font-semibold">{titleCard.title}</div>
             <div className="mt-2 text-sm text-stone-700">{titleCard.meta}</div>
+            {titleCard.subtitle && (
+              <div className="mt-1 text-xs text-stone-500">{titleCard.subtitle}</div>
+            )}
+            {waitingForResume && (
+              <div className="mt-3 text-xs text-stone-400 select-none">Press space to continue</div>
+            )}
           </div>
         </div>
       )}
@@ -2231,6 +2363,19 @@ export default function ViewerPage() {
                       <div className="mb-3 flex items-center justify-between">
                         <h3 className="text-sm font-semibold text-gray-900">Sequences</h3>
                       </div>
+
+                      <label className="mb-3 block text-xs text-gray-700">
+                        <span className="mb-1 block font-medium">Between clips</span>
+                        <select
+                          className="w-full rounded-lg border border-primary-300 bg-white px-2 py-1.5 text-xs shadow-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
+                          value={sequencePauseBehavior}
+                          onChange={(e) => setSequencePauseBehavior(e.target.value as SequencePauseBehavior)}
+                        >
+                          <option value="black-screen">Pause on black screen</option>
+                          <option value="title-card">Pause on title card</option>
+                          <option value="continuous">Play continuously</option>
+                        </select>
+                      </label>
 
                       {sequenceState.phase !== 'idle' && (
                         <div className="mb-2 text-xs text-primary-700">
