@@ -1915,28 +1915,22 @@ export default function ViewerPage() {
                         <div
                           key={pageBlock.page}
                           className="relative mx-auto w-full max-w-[8.5in] bg-white shadow-[0_4px_24px_rgba(15,23,42,0.12)]"
-                          style={{ padding: '0.33in' }}
+                          style={{ padding: '24px' }}
                         >
                           {/* Double page border */}
                           <div
                             className="absolute inset-0 border border-stone-400 pointer-events-none"
-                            style={{ margin: '0.33in' }}
+                            style={{ margin: '8px' }}
                           />
                           <div
                             className="absolute inset-0 border border-stone-400 pointer-events-none"
-                            style={{ margin: 'calc(0.33in + 4px)' }}
+                            style={{ margin: '12px' }}
                           />
 
                           <div
                             className="relative font-mono"
-                            style={{
-                              fontFamily: '"Courier New", Courier, monospace',
-                              padding: 'calc(0.75in - 0.33in) calc(1in - 0.33in) calc(0.75in - 0.33in) calc(1in - 0.33in)',
-                            }}
+                            style={{ fontFamily: '"Courier New", Courier, monospace' }}
                           >
-                            <div className="pointer-events-none absolute top-0 bottom-0" style={{ left: 'calc(1in - 0.33in + 56px + 6px)' }}>
-                              <div className="h-full border-l border-stone-200/70" />
-                            </div>
                             <div>
                               {pageBlock.lines.map((line) => {
                                 const active = activeLineId === line.id
@@ -1946,8 +1940,8 @@ export default function ViewerPage() {
                                 const lineDisplay = splitSpeakerPrefix(line)
 
                                 const lineClasses = [
-                                  'group grid cursor-pointer grid-cols-[56px_minmax(0,1fr)] gap-3 px-1 font-mono text-[12pt] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/30',
-                                  active ? 'bg-amber-50/60' : '',
+                                  'group grid cursor-pointer grid-cols-[36px_minmax(0,1fr)] gap-2 px-1 font-mono text-[12pt] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/30',
+                                  active ? 'bg-amber-100/80' : '',
                                   selected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/70' : '',
                                   match ? 'bg-amber-50' : '',
                                   currentMatch ? 'outline outline-1 outline-amber-400' : '',
@@ -1990,7 +1984,7 @@ export default function ViewerPage() {
                             </div>
 
                             {/* Page number at bottom center */}
-                            <div className="mt-4 text-center text-[10px] tabular-nums text-stone-500 select-none">
+                            <div className="mt-2 text-center text-[10px] font-mono tabular-nums text-stone-500 select-none">
                               {pageBlock.page}
                             </div>
                           </div>
