@@ -75,10 +75,13 @@ const wizardSteps: Array<{ key: WizardStep; label: string }> = [
 
 const MAX_BATCH_FILES = 50
 const RESULTS_PREVIEW_LIMIT = 10
-const CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS = 3 * 60 * 1000
-const CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 128 * 1024 * 1024
+const CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS = 7 * 60 * 1000
+const CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 512 * 1024 * 1024
+const CRIMINAL_TRANSCRIBE_REQUEST_TIMEOUT_MS = 16 * 60 * 1000
 const CASE_USE_BATCH = '__batch__'
 const CASE_UNCATEGORIZED = '__uncategorized__'
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'm4v', 'webm'])
+const COMPRESSED_AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', 'wma'])
 
 const buildQueueId = () => `${Date.now()}_${Math.random().toString(16).slice(2)}`
 
@@ -95,6 +98,23 @@ const sanitizeFilenamePart = (value: string) => {
 const stripExtension = (filename: string) => filename.replace(/\.[^.]+$/, '')
 
 const buildFileSignature = (file: File) => `${file.name}::${file.size}::${file.lastModified}`
+const getFileExtension = (filename: string) => {
+  const dot = filename.lastIndexOf('.')
+  if (dot === -1) return ''
+  return filename.slice(dot + 1).toLowerCase()
+}
+const isLikelyVideoSource = (file: File) => {
+  if ((file.type || '').startsWith('video/')) return true
+  return VIDEO_EXTENSIONS.has(getFileExtension(file.name))
+}
+const isLikelyCompressedAudioSource = (file: File) => {
+  if ((file.type || '').startsWith('audio/')) {
+    const extension = getFileExtension(file.name)
+    if (!extension) return false
+    return COMPRESSED_AUDIO_EXTENSIONS.has(extension)
+  }
+  return COMPRESSED_AUDIO_EXTENSIONS.has(getFileExtension(file.name))
+}
 
 const statusLabel = (status: QueueItemStatus) => {
   if (status === 'queued') return 'Queued'
@@ -499,6 +519,7 @@ export default function TranscribePage() {
         const request = new XMLHttpRequest()
         request.open('POST', '/api/transcribe', true)
         request.responseType = 'json'
+        request.timeout = CRIMINAL_TRANSCRIBE_REQUEST_TIMEOUT_MS
 
         const authHeaders = getAuthHeaders()
         Object.entries(authHeaders).forEach(([key, value]) => {
@@ -572,7 +593,10 @@ export default function TranscribePage() {
             return
           }
 
-          const detail = responseData?.detail || 'Transcription failed'
+          let detail = responseData?.detail || 'Transcription failed'
+          if (request.status === 408) {
+            detail = 'Request timed out while uploading or processing media. This usually means the source file is too large for direct upload.'
+          }
           const failure: RequestFailure = {
             message: detail,
             retryable: isRetryableStatus(request.status),
@@ -588,6 +612,15 @@ export default function TranscribePage() {
           } satisfies RequestFailure)
         }
 
+        request.ontimeout = () => {
+          clearStageTimer()
+          reject({
+            message:
+              'Transcription request timed out. For large media, convert to MP3 first (Converter page or desktop FFmpeg) and retry.',
+            retryable: false,
+          } satisfies RequestFailure)
+        }
+
         request.send(submitFormData)
       })
     },
@@ -597,6 +630,15 @@ export default function TranscribePage() {
   const prepareUploadFile = useCallback(
     async (item: QueueItem): Promise<File> => {
       if (appVariant !== 'criminal') return item.file
+
+      if (!isLikelyVideoSource(item.file) && isLikelyCompressedAudioSource(item.file)) {
+        updateQueueItem(item.id, {
+          status: 'transcribing',
+          stageText: 'Using source audio upload...',
+          error: '',
+        })
+        return item.file
+      }
 
       const cachedAudio = preparedAudioByItemRef.current.get(item.id)
       if (cachedAudio) {

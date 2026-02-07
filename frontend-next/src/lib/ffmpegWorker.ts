@@ -55,6 +55,8 @@ const MIME_TYPE_BY_EXTENSION: Record<string, string> = {
 const CACHE_DIR = 'cache/converted'
 const CACHE_KEY_SAMPLE_BYTES = 64 * 1024
 const CONVERTED_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+const RESET_RUNTIME_AFTER_EXTRACT_BYTES = 200 * 1024 * 1024
+const WORKERFS_SIZE_THRESHOLD = 2 * 1024 * 1024 * 1024
 const WORKSPACE_IDB_KEY = 'workspace-dir-handle'
 
 let ffmpegInstance: FFmpeg | null = null
@@ -664,18 +666,28 @@ export async function extractAudio(
     const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const inputName = `audio-input.${inputExt}`
     const outputName = 'audio-output.mp3'
+    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+    const workerFSMount = '/input'
+    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
 
     const runExtractionAttempt = async (): Promise<File> => {
       const ffmpeg = await getFFmpeg()
       activeProgressCallback = onProgress ?? null
+      let mounted = false
+      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
       try {
-        await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+        if (useWorkerFS) {
+          await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
+          mounted = true
+        } else {
+          await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+        }
 
         const attempts: Array<{ label: string; args: string[] }> = [
           {
             label: 'libmp3lame',
             args: [
-              '-i', inputName,
+              '-i', effectiveInput,
               '-map', '0:a:0?',
               '-vn',
               '-sn',
@@ -690,7 +702,7 @@ export async function extractAudio(
           {
             label: 'default-mp3',
             args: [
-              '-i', inputName,
+              '-i', effectiveInput,
               '-map', '0:a:0?',
               '-vn',
               '-sn',
@@ -731,13 +743,22 @@ export async function extractAudio(
         throw lastError ?? new Error('Audio extraction failed')
       } finally {
         activeProgressCallback = null
-        await removeVirtualFile(ffmpeg, inputName)
+        if (mounted) {
+          try { await ffmpeg.unmount(workerFSMount) } catch { /* ignore unmount errors */ }
+        } else {
+          await removeVirtualFile(ffmpeg, inputName)
+        }
         await removeVirtualFile(ffmpeg, outputName)
       }
     }
 
     try {
-      return await runExtractionAttempt()
+      const extracted = await runExtractionAttempt()
+      if (sourceFile.size >= RESET_RUNTIME_AFTER_EXTRACT_BYTES) {
+        // Large jobs can leave wasm memory fragmented; recycle runtime between files.
+        resetFFmpegRuntime()
+      }
+      return extracted
     } catch (firstError) {
       if (firstError instanceof FFmpegCanceledError) throw firstError
       const normalized = normalizeError(firstError)
@@ -748,7 +769,11 @@ export async function extractAudio(
       resetFFmpegRuntime()
 
       try {
-        return await runExtractionAttempt()
+        const extracted = await runExtractionAttempt()
+        if (sourceFile.size >= RESET_RUNTIME_AFTER_EXTRACT_BYTES) {
+          resetFFmpegRuntime()
+        }
+        return extracted
       } catch (secondError) {
         if (secondError instanceof FFmpegCanceledError) throw secondError
         const finalError = normalizeError(secondError)

@@ -113,6 +113,7 @@ logger = logging.getLogger(__name__)
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 if ASSEMBLYAI_API_KEY and ASSEMBLYAI_AVAILABLE:
     aai.settings.api_key = ASSEMBLYAI_API_KEY
+    aai.settings.http_timeout = 300.0
     logger.info("AssemblyAI client initialized successfully")
 elif ASSEMBLYAI_AVAILABLE:
     logger.warning("ASSEMBLYAI_API_KEY environment variable not set")
