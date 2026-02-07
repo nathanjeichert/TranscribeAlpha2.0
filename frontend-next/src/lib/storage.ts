@@ -382,7 +382,7 @@ function buildTranscriptSummary(data: TranscriptData, caseId?: string | null): T
   const titleData = data.title_data || {}
   return {
     media_key: data.media_key,
-    title_label: titleData.CASE_NAME || titleData.FILE_NAME || data.media_key,
+    title_label: titleData.FILE_NAME || titleData.CASE_NAME || data.media_key,
     created_at: data.created_at,
     updated_at: data.updated_at,
     audio_duration: data.audio_duration,
@@ -566,7 +566,7 @@ export async function searchCaseTranscripts(
         const titleData = data.title_data || {}
         results.push({
           media_key: data.media_key,
-          title_label: titleData.CASE_NAME || titleData.FILE_NAME || data.media_key,
+          title_label: titleData.FILE_NAME || titleData.CASE_NAME || data.media_key,
           matches,
         })
       }

@@ -932,7 +932,7 @@ def build_snapshot_payload(
         "media_key": snapshot_media_key(session_data),
         "created_at": created_at,
         "title_data": title_data,
-        "title_label": title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or "",
+        "title_label": title_data.get("FILE_NAME") or title_data.get("CASE_NAME") or "",
         "audio_duration": audio_duration,
         "lines_per_page": lines_per_page,
         "lines": source_lines,

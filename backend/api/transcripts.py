@@ -653,7 +653,7 @@ async def transcribe(
             # If case_id provided, add transcript to case (makes it persistent)
             if case_id:
                 try:
-                    title_label = title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or media_key
+                    title_label = title_data.get("FILE_NAME") or title_data.get("CASE_NAME") or media_key
                     add_transcript_to_case(current_user["user_id"], case_id, media_key, title_label)
                     logger.info("Added transcript %s to case %s", media_key, case_id)
                 except Exception as case_err:

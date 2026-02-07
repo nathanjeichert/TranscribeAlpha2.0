@@ -192,7 +192,7 @@ def list_all_transcripts(user_id: str) -> List[dict]:
                     title_data = data.get("title_data", {})
                     transcripts.append({
                         "media_key": media_key,
-                        "title_label": title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or media_key,
+                        "title_label": title_data.get("FILE_NAME") or title_data.get("CASE_NAME") or media_key,
                         "updated_at": blob.updated.isoformat() if blob.updated else None,
                         "line_count": len(data.get("lines", [])),
                     })
@@ -825,7 +825,7 @@ def add_transcript_to_case(user_id: str, case_id: str, media_key: str, title_lab
         transcripts.append({
             "media_key": media_key,
             "added_at": now,
-            "title_label": title_label or transcript.get("title_data", {}).get("CASE_NAME") or media_key,
+            "title_label": title_label or transcript.get("title_data", {}).get("FILE_NAME") or transcript.get("title_data", {}).get("CASE_NAME") or media_key,
         })
 
         # Save updated transcripts list

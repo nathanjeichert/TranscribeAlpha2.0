@@ -293,7 +293,7 @@ async def add_transcript_to_case_endpoint(
 
         # Get title label
         title_data = transcript.get("title_data", {})
-        title_label = title_data.get("CASE_NAME") or title_data.get("FILE_NAME") or media_key
+        title_label = title_data.get("FILE_NAME") or title_data.get("CASE_NAME") or media_key
 
         # Add to case
         success = add_transcript_to_case(user_id, case_id, media_key, title_label)
