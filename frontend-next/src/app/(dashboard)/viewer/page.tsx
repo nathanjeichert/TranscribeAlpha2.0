@@ -114,6 +114,14 @@ const sanitizeFilename = (value: string) => {
   return cleaned || 'item'
 }
 
+const sanitizeDownloadStem = (value: string) => {
+  const cleaned = value
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned || 'transcript'
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => {
   window.setTimeout(resolve, ms)
 })
@@ -1647,8 +1655,10 @@ export default function ViewerPage() {
     for (let i = 0; i < bytes.length; i += 1) {
       array[i] = bytes.charCodeAt(i)
     }
-    downloadBlob(new Blob([array], { type: 'application/pdf' }), 'transcript.pdf')
-  }, [downloadBlob, transcript?.pdf_base64])
+    const mediaNameRaw = transcript.title_data?.FILE_NAME || transcript.media_filename || transcript.media_key || 'transcript'
+    const mediaBaseName = sanitizeDownloadStem(String(mediaNameRaw).replace(/\.[^.]+$/, ''))
+    downloadBlob(new Blob([array], { type: 'application/pdf' }), `${mediaBaseName} transcript.pdf`)
+  }, [downloadBlob, transcript?.media_filename, transcript?.media_key, transcript?.pdf_base64, transcript?.title_data])
 
   const noTranscript = !currentMediaKey
 

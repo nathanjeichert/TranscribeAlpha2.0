@@ -95,6 +95,14 @@ const sanitizeFilenamePart = (value: string) => {
   return sanitized || 'transcript'
 }
 
+const sanitizeDownloadStem = (value: string) => {
+  const sanitized = value
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return sanitized || 'transcript'
+}
+
 const stripExtension = (filename: string) => filename.replace(/\.[^.]+$/, '')
 
 const buildFileSignature = (file: File) => `${file.name}::${file.size}::${file.lastModified}`
@@ -956,6 +964,11 @@ export default function TranscribePage() {
   const buildItemFilename = useCallback(
     (item: QueueItem, extension: '.pdf' | '.xml' | '.html') => {
       const titleData = item.result?.title_data || {}
+      if (extension === '.pdf') {
+        const mediaName = titleData.FILE_NAME || item.originalFileName || item.file.name
+        const mediaBaseName = sanitizeDownloadStem(stripExtension(mediaName))
+        return `${mediaBaseName} transcript.pdf`
+      }
       const caseName = titleData.CASE_NAME || formData.case_name || stripExtension(item.file.name)
       const datePart = titleData.DATE || formData.input_date
       const sanitizedBase = sanitizeFilenamePart(caseName)

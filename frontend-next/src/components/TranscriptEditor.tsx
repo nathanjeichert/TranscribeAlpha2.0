@@ -142,6 +142,14 @@ function buildRenderedText(line: Pick<EditorLine, 'speaker' | 'text' | 'is_conti
   return `          ${speaker}:   ${text}`
 }
 
+function sanitizeDownloadStem(value: string): string {
+  const sanitized = value
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return sanitized || 'transcript'
+}
+
 function normalizeLineEntriesForArtifacts(lineEntries: EditorLine[], linesPerPage: number): EditorLine[] {
   const safeLinesPerPage = linesPerPage > 0 ? linesPerPage : 25
   return lineEntries.map((line, index) => {
@@ -1407,8 +1415,10 @@ export default function TranscriptEditor({
       return
     }
 
-    onDownload(pdfToDownload, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')
-  }, [buildFilename, canSave, handleSave, isCriminal, onDownload, pdfData, refreshCriminalArtifacts])
+    const mediaNameRaw = sessionMeta?.title_data?.FILE_NAME || sessionMeta?.media_filename || activeMediaKey || 'transcript'
+    const mediaBaseName = sanitizeDownloadStem(String(mediaNameRaw).replace(/\.[^.]+$/, ''))
+    onDownload(pdfToDownload, `${mediaBaseName} transcript.pdf`, 'application/pdf')
+  }, [activeMediaKey, canSave, handleSave, isCriminal, onDownload, pdfData, refreshCriminalArtifacts, sessionMeta])
 
   const isTypingInField = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return false
