@@ -19,6 +19,7 @@ import {
 } from '@/lib/storage'
 import { storeMediaBlob, storeMediaHandle } from '@/lib/mediaHandles'
 import {
+  cancelActiveFFmpegJob,
   FFmpegCanceledError,
   extractAudio,
 } from '@/lib/ffmpegWorker'
@@ -74,6 +75,8 @@ const wizardSteps: Array<{ key: WizardStep; label: string }> = [
 
 const MAX_BATCH_FILES = 50
 const RESULTS_PREVIEW_LIMIT = 10
+const CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS = 3 * 60 * 1000
+const CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 128 * 1024 * 1024
 const CASE_USE_BATCH = '__batch__'
 const CASE_UNCATEGORIZED = '__uncategorized__'
 
@@ -611,23 +614,52 @@ export default function TranscribePage() {
         error: '',
       })
 
+      let extractionTimedOut = false
       try {
-        const extractedAudio = await extractAudio(item.file, (ratio) => {
+        let timeoutId: number | null = null
+        try {
+          const extractionPromise = extractAudio(item.file, (ratio) => {
+            updateQueueItem(item.id, {
+              status: 'transcribing',
+              stageText: `Extracting compressed mono audio for upload... ${Math.round(ratio * 100)}%`,
+            })
+          })
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = window.setTimeout(() => {
+              extractionTimedOut = true
+              cancelActiveFFmpegJob()
+              reject(new Error('Audio extraction timed out in browser'))
+            }, CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS)
+          })
+          const extractedAudio = await Promise.race([extractionPromise, timeoutPromise])
+          preparedAudioByItemRef.current.set(item.id, extractedAudio)
           updateQueueItem(item.id, {
             status: 'transcribing',
-            stageText: `Extracting compressed mono audio for upload... ${Math.round(ratio * 100)}%`,
+            stageText: 'Audio extraction complete. Preparing upload...',
           })
-        })
-        preparedAudioByItemRef.current.set(item.id, extractedAudio)
-        updateQueueItem(item.id, {
-          status: 'transcribing',
-          stageText: 'Audio extraction complete. Preparing upload...',
-        })
-        return extractedAudio
+          return extractedAudio
+        } finally {
+          if (timeoutId) {
+            window.clearTimeout(timeoutId)
+          }
+        }
       } catch (error) {
-        if (error instanceof FFmpegCanceledError) {
+        if (error instanceof FFmpegCanceledError && !extractionTimedOut) {
           throw {
             message: 'Audio extraction canceled.',
+            retryable: false,
+          } satisfies RequestFailure
+        }
+
+        if (item.file.size > CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
+          const sizeMb = (item.file.size / (1024 * 1024)).toFixed(1)
+          const reason = extractionTimedOut
+            ? 'Audio extraction timed out in browser.'
+            : 'Audio extraction failed in browser.'
+          throw {
+            message:
+              `${reason} Skipping direct upload of the ${sizeMb} MB original file because it is likely to exceed server upload timeout. ` +
+              'Use the Converter page (or desktop FFmpeg) to create an MP3, then retry.',
             retryable: false,
           } satisfies RequestFailure
         }

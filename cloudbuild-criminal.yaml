@@ -33,6 +33,8 @@ steps:
       - '1'
       - '--max-instances'
       - '10'
+      - '--timeout'
+      - '900'
       - '--port'
       - '8080'
       - '--use-http2'

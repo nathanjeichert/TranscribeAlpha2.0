@@ -83,6 +83,20 @@ function runSerial<T>(operation: () => Promise<T>): Promise<T> {
   return next
 }
 
+function resetFFmpegRuntime(): void {
+  if (ffmpegInstance) {
+    try {
+      ffmpegInstance.terminate()
+    } catch {
+      // Ignore termination failures
+    }
+  }
+  ffmpegInstance = null
+  loadPromise = null
+  listenersAttached = false
+  activeProgressCallback = null
+}
+
 function getFileExtension(filename: string): string {
   const dotIndex = filename.lastIndexOf('.')
   if (dotIndex === -1) return ''
@@ -433,19 +447,7 @@ export async function getFFmpeg(): Promise<FFmpeg> {
 
 export function cancelActiveFFmpegJob(): void {
   terminatedByUser = true
-  activeProgressCallback = null
-
-  if (ffmpegInstance) {
-    try {
-      ffmpegInstance.terminate()
-    } catch {
-      // Ignore termination failures
-    }
-  }
-
-  ffmpegInstance = null
-  loadPromise = null
-  listenersAttached = false
+  resetFFmpegRuntime()
 }
 
 export async function detectCodec(file: File): Promise<CodecInfo> {
@@ -658,42 +660,103 @@ export async function extractAudio(
 ): Promise<File> {
   return runSerial(async () => {
     terminatedByUser = false
-    const ffmpeg = await getFFmpeg()
     const sourceFile = await maybeRepairWav(file)
     const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const inputName = `audio-input.${inputExt}`
     const outputName = 'audio-output.mp3'
 
-    activeProgressCallback = onProgress ?? null
+    const runExtractionAttempt = async (): Promise<File> => {
+      const ffmpeg = await getFFmpeg()
+      activeProgressCallback = onProgress ?? null
+      try {
+        await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+
+        const attempts: Array<{ label: string; args: string[] }> = [
+          {
+            label: 'libmp3lame',
+            args: [
+              '-i', inputName,
+              '-map', '0:a:0?',
+              '-vn',
+              '-sn',
+              '-dn',
+              '-ac', '1',
+              '-ar', '16000',
+              '-c:a', 'libmp3lame',
+              '-b:a', '96k',
+              outputName,
+            ],
+          },
+          {
+            label: 'default-mp3',
+            args: [
+              '-i', inputName,
+              '-map', '0:a:0?',
+              '-vn',
+              '-sn',
+              '-dn',
+              '-ac', '1',
+              '-ar', '16000',
+              '-b:a', '96k',
+              outputName,
+            ],
+          },
+        ]
+
+        let lastError: Error | null = null
+        for (const attempt of attempts) {
+          await removeVirtualFile(ffmpeg, outputName)
+          try {
+            const exitCode = await ffmpeg.exec(attempt.args)
+            if (exitCode !== 0) {
+              throw new Error(`Audio extraction failed (${attempt.label})`)
+            }
+            const outputData = await ffmpeg.readFile(outputName)
+            const bytes = toUint8Array(outputData)
+            if (bytes.byteLength === 0) {
+              throw new Error(`Audio extraction produced empty output (${attempt.label})`)
+            }
+            return new File([toBlobBuffer(bytes)], replaceExtension(file.name, '_audio.mp3'), {
+              type: 'audio/mpeg',
+            })
+          } catch (attemptError) {
+            if (terminatedByUser) {
+              terminatedByUser = false
+              throw new FFmpegCanceledError()
+            }
+            lastError = normalizeError(attemptError)
+          }
+        }
+
+        throw lastError ?? new Error('Audio extraction failed')
+      } finally {
+        activeProgressCallback = null
+        await removeVirtualFile(ffmpeg, inputName)
+        await removeVirtualFile(ffmpeg, outputName)
+      }
+    }
 
     try {
-      await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
-      const exitCode = await ffmpeg.exec([
-        '-i', inputName,
-        '-vn',
-        '-ac', '1',
-        '-ar', '16000',
-        '-b:a', '96k',
-        outputName,
-      ])
-      if (exitCode !== 0) {
-        throw new Error('Audio extraction failed')
+      return await runExtractionAttempt()
+    } catch (firstError) {
+      if (firstError instanceof FFmpegCanceledError) throw firstError
+      const normalized = normalizeError(firstError)
+      if (isOutOfMemoryError(normalized)) {
+        throw new Error('File too large for in-browser audio extraction. Split the file or use desktop FFmpeg.')
       }
-      const outputData = await ffmpeg.readFile(outputName)
-      const bytes = toUint8Array(outputData)
-      return new File([toBlobBuffer(bytes)], replaceExtension(file.name, '_audio.mp3'), {
-        type: 'audio/mpeg',
-      })
-    } catch (error) {
-      if (terminatedByUser) {
-        terminatedByUser = false
-        throw new FFmpegCanceledError()
+
+      resetFFmpegRuntime()
+
+      try {
+        return await runExtractionAttempt()
+      } catch (secondError) {
+        if (secondError instanceof FFmpegCanceledError) throw secondError
+        const finalError = normalizeError(secondError)
+        if (isOutOfMemoryError(finalError)) {
+          throw new Error('File too large for in-browser audio extraction. Split the file or use desktop FFmpeg.')
+        }
+        throw finalError
       }
-      throw normalizeError(error)
-    } finally {
-      activeProgressCallback = null
-      await removeVirtualFile(ffmpeg, inputName)
-      await removeVirtualFile(ffmpeg, outputName)
     }
   })
 }
