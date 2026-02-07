@@ -353,7 +353,7 @@ export default function CasesPage() {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap justify-end">
                       {assignModeEnabled && (
                         <>
                           <select
@@ -364,7 +364,7 @@ export default function CasesPage() {
                                 [transcript.media_key]: e.target.value,
                               }))
                             }
-                            className="input-field h-9 min-w-[180px] text-sm"
+                            className="input-field h-9 w-[16rem] md:w-[22rem] min-w-[220px] text-sm"
                           >
                             {cases.map((caseItem) => (
                               <option key={caseItem.case_id} value={caseItem.case_id}>

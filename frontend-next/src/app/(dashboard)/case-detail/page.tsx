@@ -553,7 +553,7 @@ export default function CaseDetailPage() {
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap justify-end">
                   {isEditing && (
                     <>
                       <select
@@ -564,7 +564,7 @@ export default function CaseDetailPage() {
                             [transcript.media_key]: e.target.value,
                           }))
                         }
-                        className="input-field h-9 min-w-[170px] text-sm"
+                        className="input-field h-9 w-[16rem] md:w-[22rem] min-w-[220px] text-sm"
                       >
                         <option value="uncategorized">Uncategorized</option>
                         {cases
