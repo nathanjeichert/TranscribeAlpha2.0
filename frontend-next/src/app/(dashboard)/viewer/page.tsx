@@ -351,6 +351,7 @@ export default function ViewerPage() {
   const clipRafRef = useRef<number | null>(null)
   const presentationUiTimerRef = useRef<number | null>(null)
   const sequenceAbortRef = useRef(false)
+  const clipFinishRef = useRef<(() => void) | null>(null)
   const transcriptCacheRef = useRef<Record<string, ViewerTranscript>>({})
   const templateCacheRef = useRef<string | null>(null)
 
@@ -455,6 +456,8 @@ export default function ViewerPage() {
       cancelAnimationFrame(clipRafRef.current)
       clipRafRef.current = null
     }
+    clipFinishRef.current?.()
+    clipFinishRef.current = null
     setActiveClipPlaybackId(null)
   }, [])
 
@@ -1077,6 +1080,7 @@ export default function ViewerPage() {
     const player = getPlayerElement()
     if (!player) return
 
+    sequenceAbortRef.current = false
     stopClipPlaybackLoop()
     player.currentTime = Math.max(0, start)
     setActiveClipPlaybackId(clipId || null)
@@ -1094,21 +1098,23 @@ export default function ViewerPage() {
         if (resolved) return
         resolved = true
         player.pause()
-        stopClipPlaybackLoop()
+        clipFinishRef.current = null
+        if (clipRafRef.current) {
+          cancelAnimationFrame(clipRafRef.current)
+          clipRafRef.current = null
+        }
+        setActiveClipPlaybackId(null)
         resolve()
       }
 
+      clipFinishRef.current = finish
+
       const tick = () => {
-        if (player.currentTime >= end || sequenceAbortRef.current) {
+        if (resolved) return
+        if (sequenceAbortRef.current || player.currentTime >= end) {
           finish()
           return
         }
-
-        if (player.paused) {
-          finish()
-          return
-        }
-
         clipRafRef.current = requestAnimationFrame(tick)
       }
 
@@ -1259,17 +1265,22 @@ export default function ViewerPage() {
   }, [effectiveCaseId, loadCaseArtifacts])
 
   const waitForCanPlay = useCallback(async () => {
-    await sleep(0)
+    await sleep(50)
     const player = getPlayerElement()
     if (!player) return
 
     if (player.readyState >= 2) return
 
     await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        cleanup()
+        reject(new Error('Media loading timed out.'))
+      }, 15000)
+
       const cleanup = () => {
+        window.clearTimeout(timer)
         player.removeEventListener('canplay', onReady)
         player.removeEventListener('error', onError)
-        player.removeEventListener('abort', onAbort)
       }
 
       const onReady = () => {
@@ -1280,17 +1291,11 @@ export default function ViewerPage() {
       const onError = () => {
         cleanup()
         const error = player.error
-        reject(new Error(`Media failed to load before playback (code ${error?.code ?? 'unknown'}).`))
-      }
-
-      const onAbort = () => {
-        cleanup()
-        reject(new Error('Media loading was aborted before playback could start.'))
+        reject(new Error(`Media failed to load (code ${error?.code ?? 'unknown'}).`))
       }
 
       player.addEventListener('canplay', onReady)
       player.addEventListener('error', onError)
-      player.addEventListener('abort', onAbort)
     })
   }, [getPlayerElement])
 
@@ -1306,6 +1311,7 @@ export default function ViewerPage() {
 
     try {
       const orderedEntries = [...sequence.entries].sort((a, b) => a.order - b.order)
+      let activeTranscriptKey = currentMediaKey
 
       for (let clipIndex = 0; clipIndex < orderedEntries.length; clipIndex += 1) {
         if (sequenceAbortRef.current) break
@@ -1317,7 +1323,7 @@ export default function ViewerPage() {
         setTitleCard({
           visible: true,
           title: clip.name,
-          meta: `${formatRange(clip.start_time, clip.end_time)} • ${clip.source_media_key}`,
+          meta: `Clip ${clipIndex + 1} of ${orderedEntries.length} — ${formatRange(clip.start_time, clip.end_time)}`,
         })
 
         await sleep(3000)
@@ -1326,10 +1332,14 @@ export default function ViewerPage() {
         setTitleCard(null)
         setSequenceState({ phase: 'transitioning', sequenceId: sequence.sequence_id, clipIndex })
 
-        const loaded = await loadTranscriptByKey(clip.source_media_key, true)
-        if (!loaded) continue
+        if (clip.source_media_key !== activeTranscriptKey) {
+          const loaded = await loadTranscriptByKey(clip.source_media_key, true)
+          if (!loaded) continue
+          await sleep(100)
+          await waitForCanPlay()
+          activeTranscriptKey = clip.source_media_key
+        }
 
-        await waitForCanPlay()
         setSequenceState({ phase: 'playing', sequenceId: sequence.sequence_id, clipIndex })
 
         await playRange(clip.start_time, clip.end_time, clip.clip_id)
@@ -1353,7 +1363,7 @@ export default function ViewerPage() {
       setTitleCard(null)
       await exitPresentationMode()
     }
-  }, [clips, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, waitForCanPlay])
+  }, [clips, currentMediaKey, enterPresentationMode, exitPresentationMode, loadTranscriptByKey, playRange, waitForCanPlay])
 
   const excerptLinesForClip = useCallback((record: ViewerTranscript, clip: ClipRecord) => {
     return record.lines.filter(
@@ -2201,9 +2211,6 @@ export default function ViewerPage() {
                                         <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => void exportClipPdf(clip)} disabled={exporting}>
                                           Export PDF
                                         </button>
-                                        <button type="button" className="btn-outline cursor-not-allowed px-2 py-1 text-xs opacity-60" disabled title="Available after ffmpeg worker merge">
-                                          Media Clip (Soon)
-                                        </button>
                                         <button type="button" className="btn-outline px-2 py-1 text-xs text-red-700" onClick={() => void removeClip(clip)}>
                                           Delete
                                         </button>
@@ -2328,7 +2335,7 @@ export default function ViewerPage() {
                                   />
 
                                   <select
-                                    className="input-field h-8 w-full text-xs"
+                                    className="w-full rounded-lg border border-primary-300 bg-white px-2 py-1.5 text-xs shadow-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-500"
                                     onChange={(event) => {
                                       const value = event.target.value
                                       if (value) {
