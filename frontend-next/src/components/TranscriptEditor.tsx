@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { buildMediaUrl, authenticatedFetch, getAuthHeaders } from '@/utils/auth'
+import { buildMediaUrl, authenticatedFetch } from '@/utils/auth'
 import { saveTranscript as localSaveTranscript } from '@/lib/storage'
 import { getMediaFile } from '@/lib/mediaHandles'
 
@@ -9,6 +9,7 @@ interface EditorLine {
   id: string
   speaker: string
   text: string
+  rendered_text?: string
   start: number
   end: number
   page?: number | null
@@ -41,6 +42,7 @@ export interface EditorSessionResponse {
   media_key?: string | null
   media_handle_id?: string | null
   media_blob_name?: string | null
+  media_filename?: string | null
   media_content_type?: string | null
   title_data: Record<string, string>
   audio_duration: number
@@ -111,6 +113,127 @@ interface LocalStorageTranscriptState {
 const STORAGE_KEY_PREFIX = 'transcript_state_'
 const AUTO_SHIFT_STORAGE_KEY = 'editor_auto_shift_next'
 const AUTO_SHIFT_PADDING_SECONDS = 0.01
+
+const escapeScriptBoundary = (value: string) => value.replace(/<\/script/gi, '<\\/script')
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize)
+    binary += String.fromCharCode(...Array.from(chunk))
+  }
+  return btoa(binary)
+}
+
+function utf8ToBase64(value: string): string {
+  return bytesToBase64(new TextEncoder().encode(value))
+}
+
+function buildRenderedText(line: Pick<EditorLine, 'speaker' | 'text' | 'is_continuation'>): string {
+  const speaker = (line.speaker || '').trim().replace(/:+$/, '')
+  const text = line.text || ''
+  if (line.is_continuation) return text
+  if (!speaker) return text
+  const compact = text.trimStart().toUpperCase()
+  if (compact.startsWith(`${speaker.toUpperCase()}:`)) {
+    return text
+  }
+  return `          ${speaker}:   ${text}`
+}
+
+function normalizeLineEntriesForArtifacts(lineEntries: EditorLine[], linesPerPage: number): EditorLine[] {
+  const safeLinesPerPage = linesPerPage > 0 ? linesPerPage : 25
+  return lineEntries.map((line, index) => {
+    const pageNumber = Number.isFinite(line.page as number)
+      ? Number(line.page)
+      : Math.floor(index / safeLinesPerPage) + 1
+    const lineNumber = Number.isFinite(line.line as number)
+      ? Number(line.line)
+      : (index % safeLinesPerPage) + 1
+    const start = Number.isFinite(line.start) ? Number(line.start) : 0
+    const rawEnd = Number.isFinite(line.end) ? Number(line.end) : start
+    return {
+      ...line,
+      id: line.id || `line-${index}`,
+      speaker: line.speaker || '',
+      text: line.text || '',
+      rendered_text: buildRenderedText(line),
+      start,
+      end: rawEnd >= start ? rawEnd : start,
+      page: pageNumber,
+      line: lineNumber,
+      pgln: Number.isFinite(line.pgln as number) ? Number(line.pgln) : (pageNumber * 100) + lineNumber,
+      is_continuation: Boolean(line.is_continuation),
+    }
+  })
+}
+
+function buildViewerPayloadFromLines(
+  lineEntries: EditorLine[],
+  titleData: Record<string, string>,
+  audioDuration: number,
+  linesPerPage: number,
+  mediaFilename: string,
+  mediaContentType: string,
+) {
+  const normalizedEntries = normalizeLineEntriesForArtifacts(lineEntries, linesPerPage)
+  const speakers = Array.from(
+    new Set(
+      normalizedEntries
+        .map((line) => line.speaker)
+        .filter((speaker) => speaker && speaker.trim().length > 0),
+    ),
+  )
+
+  const normalizedLines = normalizedEntries.map((line, index) => {
+    const pageNumber = Number(line.page)
+    const lineNumber = Number(line.line)
+    return {
+      id: line.id || `line-${index}`,
+      speaker: line.speaker || '',
+      text: line.text || '',
+      rendered_text: line.rendered_text || buildRenderedText(line),
+      start: Number.isFinite(line.start) ? line.start : 0,
+      end: Number.isFinite(line.end) ? line.end : (Number.isFinite(line.start) ? line.start : 0),
+      page_number: pageNumber,
+      line_number: lineNumber,
+      pgln: Number.isFinite(line.pgln as number) ? Number(line.pgln) : (pageNumber * 100) + lineNumber,
+      is_continuation: Boolean(line.is_continuation),
+    }
+  })
+
+  const pageMap = new Map<number, number[]>()
+  normalizedLines.forEach((line, idx) => {
+    if (!pageMap.has(line.page_number)) pageMap.set(line.page_number, [])
+    pageMap.get(line.page_number)?.push(idx)
+  })
+
+  const pages = Array.from(pageMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([pageNumber, lineIndexes]) => ({
+      page_number: pageNumber,
+      line_indexes: lineIndexes,
+      pgln_start: lineIndexes.length ? normalizedLines[lineIndexes[0]].pgln : 101,
+      pgln_end: lineIndexes.length ? normalizedLines[lineIndexes[lineIndexes.length - 1]].pgln : 101,
+    }))
+
+  return {
+    meta: {
+      title: titleData || {},
+      duration_seconds: Number.isFinite(audioDuration) ? audioDuration : 0,
+      lines_per_page: linesPerPage > 0 ? linesPerPage : 25,
+      speakers,
+    },
+    media: {
+      filename: mediaFilename,
+      content_type: mediaContentType || 'video/mp4',
+      relative_path: mediaFilename,
+    },
+    lines: normalizedLines,
+    pages,
+  }
+}
 
 function saveToLocalStorage(mediaKey: string, state: LocalStorageTranscriptState) {
   try {
@@ -210,6 +333,7 @@ export default function TranscriptEditor({
   const linesRef = useRef<EditorLine[]>(initialData?.lines ?? [])
   const isDirtyRef = useRef(false)
   const sessionMetaRef = useRef<EditorSessionResponse | null>(initialData ?? null)
+  const viewerTemplateCacheRef = useRef<string | null>(null)
 
   // Rev AI Re-sync State
   const [isResyncing, setIsResyncing] = useState(false)
@@ -450,6 +574,27 @@ export default function TranscriptEditor({
     }
   }, [editingLineId, editingFieldName]) // Only run when lineId or field changes, not when value changes
 
+  const hasPendingInlineEdit = useMemo(() => {
+    if (!editingField) return false
+    const line = lines.find((entry) => entry.id === editingField.lineId)
+    if (!line) return false
+    const currentValue = editingField.field === 'speaker' ? line.speaker : line.text
+    return currentValue !== editingField.value
+  }, [editingField, lines])
+
+  const materializeLinesForSave = useCallback((): EditorLine[] => {
+    if (!editingField || !hasPendingInlineEdit) return lines
+    return lines.map((line) =>
+      line.id === editingField.lineId
+        ? {
+          ...line,
+          [editingField.field]: editingField.value,
+          ...(editingField.field === 'speaker' || editingField.field === 'text' ? { rendered_text: undefined } : null),
+        }
+        : line,
+    )
+  }, [editingField, hasPendingInlineEdit, lines])
+
   useEffect(() => {
     const player = resolvedMediaUrl ? (isVideo ? videoRef.current : audioRef.current) : null
     if (!player) return
@@ -502,6 +647,7 @@ export default function TranscriptEditor({
             ? {
               ...line,
               [field]: normalizedValue,
+              ...(field === 'speaker' || field === 'text' ? { rendered_text: undefined } : null),
               ...(field === 'start' || field === 'end' ? { timestamp_error: false } : null),
             }
             : line,
@@ -886,7 +1032,7 @@ export default function TranscriptEditor({
         prev.map((line) => {
           if (line.speaker.trim().toUpperCase() === normalizedSource) {
             changes += 1
-            return { ...line, speaker: normalizedTarget }
+            return { ...line, speaker: normalizedTarget, rendered_text: undefined }
           }
           return line
         }),
@@ -921,6 +1067,101 @@ export default function TranscriptEditor({
     setIsDirty(true)
   }, [future, cloneLines, lines])
 
+  const getViewerTemplate = useCallback(async () => {
+    if (viewerTemplateCacheRef.current) return viewerTemplateCacheRef.current
+    const response = await authenticatedFetch('/api/viewer-template')
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}))
+      throw new Error(detail?.detail || 'Failed to fetch viewer template')
+    }
+    const template = await response.text()
+    viewerTemplateCacheRef.current = template
+    return template
+  }, [])
+
+  const buildCriminalArtifacts = useCallback(
+    async (
+      sourceLines: EditorLine[],
+      sourceSessionMeta: EditorSessionResponse,
+      mediaKeyForSave: string,
+    ): Promise<{ lineEntries: EditorLine[]; pdfBase64: string; viewerHtmlBase64: string }> => {
+      const linesPerPage = sourceSessionMeta.lines_per_page ?? 25
+      const titleData = sourceSessionMeta.title_data ?? {}
+      const lineEntries = normalizeLineEntriesForArtifacts(sourceLines, linesPerPage)
+
+      const pdfResponse = await authenticatedFetch('/api/format-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title_data: titleData,
+          line_entries: lineEntries,
+          lines_per_page: linesPerPage,
+        }),
+      })
+      if (!pdfResponse.ok) {
+        const detail = await pdfResponse.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Failed to regenerate PDF')
+      }
+      const pdfBytes = new Uint8Array(await pdfResponse.arrayBuffer())
+      const pdfBase64 = bytesToBase64(pdfBytes)
+
+      const template = await getViewerTemplate()
+      const mediaContentType = sourceSessionMeta.media_content_type || effectiveMediaType || 'video/mp4'
+      const mediaFilename =
+        sourceSessionMeta.media_filename ||
+        sourceSessionMeta.media_blob_name ||
+        sourceSessionMeta.title_data?.FILE_NAME ||
+        `${mediaKeyForSave}.${mediaContentType.startsWith('audio/') ? 'wav' : 'mp4'}`
+      const viewerPayload = buildViewerPayloadFromLines(
+        lineEntries,
+        titleData,
+        sourceSessionMeta.audio_duration ?? 0,
+        linesPerPage,
+        mediaFilename,
+        mediaContentType,
+      )
+      const transcriptJson = escapeScriptBoundary(JSON.stringify(viewerPayload))
+      const viewerHtml = template.replace('__TRANSCRIPT_JSON__', transcriptJson)
+      if (viewerHtml === template) {
+        throw new Error('Standalone viewer template missing transcript placeholder')
+      }
+      const viewerHtmlBase64 = utf8ToBase64(viewerHtml)
+      return { lineEntries, pdfBase64, viewerHtmlBase64 }
+    },
+    [effectiveMediaType, getViewerTemplate],
+  )
+
+  const refreshCriminalArtifacts = useCallback(async (): Promise<EditorSaveResponse | null> => {
+    if (!isCriminal || !activeMediaKey || !sessionMeta) return null
+    setSaving(true)
+    setError(null)
+    try {
+      const artifacts = await buildCriminalArtifacts(lines, sessionMeta, activeMediaKey)
+      const refreshedData: EditorSaveResponse = {
+        ...sessionMeta,
+        lines: artifacts.lineEntries,
+        pdf_base64: artifacts.pdfBase64,
+        viewer_html_base64: artifacts.viewerHtmlBase64,
+        updated_at: new Date().toISOString(),
+      }
+      await localSaveTranscript(
+        activeMediaKey,
+        refreshedData as unknown as Record<string, unknown>,
+        (sessionMeta as unknown as Record<string, unknown>)?.case_id as string | undefined,
+      )
+      setSessionMeta(refreshedData)
+      setLines(refreshedData.lines || [])
+      onSessionChange(refreshedData)
+      onSaveComplete(refreshedData)
+      return refreshedData
+    } catch (err: any) {
+      setError(err.message || 'Failed to refresh exports')
+      return null
+    } finally {
+      setSaving(false)
+    }
+  }, [activeMediaKey, buildCriminalArtifacts, isCriminal, lines, onSaveComplete, onSessionChange, sessionMeta])
+
   const handleSave = useCallback(async (): Promise<EditorSaveResponse | null> => {
     if (!activeMediaKey) {
       setError('No media key available to save.')
@@ -936,12 +1177,15 @@ export default function TranscriptEditor({
 
     try {
       let data: EditorSaveResponse
+      const linesToSave = materializeLinesForSave()
 
       if (isCriminal) {
-        // Criminal variant: save to local workspace
+        const artifacts = await buildCriminalArtifacts(linesToSave, sessionMeta, activeMediaKey)
         const updatedData = {
           ...sessionMeta,
-          lines,
+          lines: artifacts.lineEntries,
+          pdf_base64: artifacts.pdfBase64,
+          viewer_html_base64: artifacts.viewerHtmlBase64,
           title_data: sessionMeta?.title_data ?? {},
           audio_duration: sessionMeta?.audio_duration ?? 0,
           lines_per_page: sessionMeta?.lines_per_page ?? 25,
@@ -958,7 +1202,7 @@ export default function TranscriptEditor({
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            lines,
+            lines: linesToSave,
             title_data: sessionMeta?.title_data ?? {},
             is_manual_save: true,
             audio_duration: sessionMeta?.audio_duration ?? 0,
@@ -977,7 +1221,7 @@ export default function TranscriptEditor({
       }
 
       setSessionMeta(data)
-      setLines(data.lines || [])
+      setLines(data.lines || linesToSave)
       setActiveMediaKey(data.media_key ?? activeMediaKey)
       setIsDirty(false)
       setActiveLineId(null)
@@ -1012,63 +1256,38 @@ export default function TranscriptEditor({
     } finally {
       setSaving(false)
     }
-  }, [activeMediaKey, isCriminal, lines, sessionMeta, onSaveComplete, onSessionChange])
-
-  const regenerateViewerHtml = useCallback(async () => {
-    if (!activeMediaKey) return null
-    if (isCriminal) {
-      // Criminal variant: viewer regeneration deferred to local generation (Agent 2)
-      return sessionMeta?.viewer_html_base64 ?? null
-    }
-    try {
-      const response = await authenticatedFetch(
-        `/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}/regenerate-viewer`,
-        { method: 'POST' },
-      )
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}))
-        throw new Error(detail?.detail || 'Failed to regenerate HTML viewer')
-      }
-      const data = await response.json()
-      if (data?.viewer_html_base64) {
-        setSessionMeta((prev) => {
-          if (!prev) return prev
-          const next = {
-            ...prev,
-            viewer_html_base64: data.viewer_html_base64,
-            updated_at: data.updated_at ?? prev.updated_at,
-          }
-          onSessionChange(next)
-          return next
-        })
-      }
-      return data?.viewer_html_base64 ?? null
-    } catch (err: any) {
-      setError(err.message || 'Failed to regenerate HTML viewer')
-      return null
-    }
-  }, [activeMediaKey, isCriminal, onSessionChange, sessionMeta?.viewer_html_base64])
+  }, [
+    activeMediaKey,
+    buildCriminalArtifacts,
+    isCriminal,
+    materializeLinesForSave,
+    onSaveComplete,
+    onSessionChange,
+    sessionMeta,
+  ])
 
   const handleDownloadViewer = useCallback(async () => {
     if (!isCriminal) return
-    let htmlData = viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
-    if (isDirty) {
-      const saved = await handleSave()
-      if (!saved?.viewer_html_base64) {
-        return
-      }
-      htmlData = saved.viewer_html_base64
-    } else {
-      const refreshed = await regenerateViewerHtml()
-      htmlData = refreshed ?? htmlData
-    }
+    const saved = hasPendingInlineEdit || isDirty ? await handleSave() : await refreshCriminalArtifacts()
+    const htmlData = saved?.viewer_html_base64 ?? viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
     if (!htmlData) {
       setError('HTML viewer export is not available for this transcript.')
       return
     }
     const mediaBaseName = (sessionMeta?.title_data?.FILE_NAME || activeMediaKey || 'transcript')?.replace(/\.[^.]+$/, '')
     onDownload(htmlData, buildFilename(mediaBaseName + ' transcript', '.html'), 'text/html')
-  }, [activeMediaKey, buildFilename, handleSave, isCriminal, isDirty, onDownload, regenerateViewerHtml, sessionMeta, viewerHtmlBase64])
+  }, [
+    activeMediaKey,
+    buildFilename,
+    handleSave,
+    hasPendingInlineEdit,
+    isCriminal,
+    isDirty,
+    onDownload,
+    refreshCriminalArtifacts,
+    sessionMeta,
+    viewerHtmlBase64,
+  ])
 
   const handleResync = useCallback(async () => {
     if (!activeMediaKey) {
@@ -1172,7 +1391,24 @@ export default function TranscriptEditor({
 
   const pdfData = pdfBase64 ?? sessionMeta?.pdf_base64 ?? docxBase64 ?? sessionMeta?.docx_base64 ?? ''
   const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
+  const canSave = isDirty || hasPendingInlineEdit
   const updatedLabel = sessionMeta?.updated_at ? new Date(sessionMeta.updated_at).toLocaleString() : '—'
+
+  const handleDownloadPdf = useCallback(async () => {
+    let pdfToDownload = pdfData
+
+    if (isCriminal) {
+      const saved = canSave ? await handleSave() : await refreshCriminalArtifacts()
+      pdfToDownload = saved?.pdf_base64 ?? pdfToDownload
+    }
+
+    if (!pdfToDownload) {
+      setError('PDF export is not available for this transcript.')
+      return
+    }
+
+    onDownload(pdfToDownload, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')
+  }, [buildFilename, canSave, handleSave, isCriminal, onDownload, pdfData, refreshCriminalArtifacts])
 
   const isTypingInField = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return false
@@ -1185,7 +1421,7 @@ export default function TranscriptEditor({
       const wantsSave = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's'
       if (wantsSave) {
         event.preventDefault()
-        if (!saving && sessionMeta && isDirty) {
+        if (!saving && sessionMeta && canSave) {
           void handleSave()
         }
         return
@@ -1225,7 +1461,7 @@ export default function TranscriptEditor({
 
     window.addEventListener('keydown', handleKeydown)
     return () => window.removeEventListener('keydown', handleKeydown)
-  }, [handleSave, isDirty, isTypingInField, isVideo, saving, sessionMeta])
+  }, [canSave, handleSave, isTypingInField, isVideo, saving, sessionMeta])
 
   return (
     <div className="space-y-6 relative">
@@ -1273,8 +1509,8 @@ export default function TranscriptEditor({
           <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
               className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-              onClick={() => pdfData && onDownload(pdfData, buildFilename('Transcript-Edited', '.pdf'), 'application/pdf')}
-              disabled={!pdfData}
+              onClick={handleDownloadPdf}
+              disabled={saving || !sessionMeta || (isCriminal ? !activeMediaKey : !pdfData)}
             >
               Export PDF
             </button>
@@ -1339,9 +1575,9 @@ export default function TranscriptEditor({
             <button
               className="px-4 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-sm font-medium disabled:opacity-50"
               onClick={handleSave}
-              disabled={saving || !sessionMeta || !isDirty}
+              disabled={saving || !sessionMeta || !canSave}
             >
-              {saving ? 'Saving...' : isDirty ? 'Save Changes' : 'Saved'}
+              {saving ? 'Saving...' : canSave ? 'Save Changes' : 'Saved'}
             </button>
           </div>
         </div>
