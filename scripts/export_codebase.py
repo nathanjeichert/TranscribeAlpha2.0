@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import argparse
-import os
+import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List, Set, Tuple
+from typing import Iterable, List, Optional, Set
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +62,57 @@ PART_SPECS = {
         "frontend-next/src/utils/auth.ts",
     ],
 }
+
+
+def run_git(args: List[str], *, check: bool = True, input_text: Optional[str] = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *args],
+        check=check,
+        capture_output=True,
+        text=True,
+        input=input_text,
+    )
+
+
+def load_origin_main_paths() -> Set[str]:
+    try:
+        result = run_git(["ls-tree", "-r", "--name-only", "origin/main"])
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        message = "Failed to list files from origin/main."
+        if stderr:
+            message = f"{message} {stderr}"
+        raise RuntimeError(message) from exc
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def find_git_ignored_paths(paths: Iterable[str]) -> Set[str]:
+    path_list = [path for path in paths if path]
+    if not path_list:
+        return set()
+    input_text = "".join(f"{path}\n" for path in path_list)
+    result = run_git(["check-ignore", "--stdin", "--no-index"], check=False, input_text=input_text)
+    if result.returncode not in {0, 1}:
+        stderr = (result.stderr or "").strip()
+        message = "Failed to evaluate .gitignore patterns."
+        if stderr:
+            message = f"{message} {stderr}"
+        raise RuntimeError(message)
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def filter_files_by_git_rules(files: Iterable[Path]) -> List[Path]:
+    origin_main_paths = load_origin_main_paths()
+    rel_path_to_file: dict[str, Path] = {}
+    for path in files:
+        rel_path_to_file[path.relative_to(REPO_ROOT).as_posix()] = path
+    ignored_paths = find_git_ignored_paths(rel_path_to_file.keys())
+    filtered = [
+        path
+        for rel_path, path in rel_path_to_file.items()
+        if rel_path in origin_main_paths and rel_path not in ignored_paths
+    ]
+    return sorted(filtered, key=lambda path: path.relative_to(REPO_ROOT).as_posix())
 
 
 def is_binary_bytes(data: bytes) -> bool:
@@ -136,7 +187,7 @@ def collect_files(args: argparse.Namespace, output_path: Path) -> List[Path]:
             files.add(main_py)
 
     files = {path for path in files if path.resolve() != output_path.resolve()}
-    return sorted(files, key=lambda path: path.relative_to(REPO_ROOT).as_posix())
+    return filter_files_by_git_rules(files)
 
 
 def write_export(output_path: Path, files: List[Path]) -> int:
@@ -197,7 +248,11 @@ def main() -> int:
     args = parser.parse_args()
     output_path = Path(args.output).expanduser()
 
-    files = collect_files(args, output_path)
+    try:
+        files = collect_files(args, output_path)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     if not files:
         print("No files matched the selected filters.", file=sys.stderr)
         return 1
