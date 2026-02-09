@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
-import { authenticatedFetch } from '@/utils/auth'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import {
@@ -20,13 +19,12 @@ interface TranscriptListItem {
   title_label: string
   updated_at?: string | null
   line_count?: number
-  expires_at?: string | null
 }
 
 export default function CasesPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { cases, uncategorizedCount, refreshCases, setActiveMediaKey, appVariant } = useDashboard()
+  const { cases, uncategorizedCount, refreshCases, setActiveMediaKey } = useDashboard()
 
   const [activeTab, setActiveTab] = useState<'cases' | 'uncategorized'>('cases')
   const [uncategorizedTranscripts, setUncategorizedTranscripts] = useState<TranscriptListItem[]>([])
@@ -51,29 +49,21 @@ export default function CasesPage() {
   const loadUncategorized = useCallback(async () => {
     setLoadingUncategorized(true)
     try {
-      if (appVariant === 'criminal') {
-        const items = await localListUncategorized()
-        setUncategorizedTranscripts(
-          items.map((t: TranscriptSummary) => ({
-            media_key: t.media_key,
-            title_label: t.title_label,
-            updated_at: t.updated_at,
-            line_count: t.line_count,
-          })),
-        )
-      } else {
-        const response = await authenticatedFetch('/api/transcripts/uncategorized')
-        if (response.ok) {
-          const data = await response.json()
-          setUncategorizedTranscripts(data.transcripts || [])
-        }
-      }
+      const items = await localListUncategorized()
+      setUncategorizedTranscripts(
+        items.map((t: TranscriptSummary) => ({
+          media_key: t.media_key,
+          title_label: t.title_label,
+          updated_at: t.updated_at,
+          line_count: t.line_count,
+        })),
+      )
     } catch (err) {
       console.error('Failed to load uncategorized transcripts:', err)
     } finally {
       setLoadingUncategorized(false)
     }
-  }, [appVariant])
+  }, [])
 
   useEffect(() => {
     if (activeTab === 'uncategorized') {
@@ -94,29 +84,20 @@ export default function CasesPage() {
     setCreatingCase(true)
     setError('')
     try {
-      if (appVariant === 'criminal') {
-        const caseId = crypto.randomUUID()
-        const now = new Date().toISOString()
-        await localCreateCase({
-          case_id: caseId,
-          name: newCaseName.trim(),
-          description: newCaseDescription.trim(),
-          created_at: now,
-          updated_at: now,
-        })
-      } else {
-        const response = await authenticatedFetch('/api/cases', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newCaseName.trim(), description: newCaseDescription.trim() }),
-        })
-        if (!response.ok) throw new Error('Failed to create case')
-      }
+      const caseId = crypto.randomUUID()
+      const now = new Date().toISOString()
+      await localCreateCase({
+        case_id: caseId,
+        name: newCaseName.trim(),
+        description: newCaseDescription.trim(),
+        created_at: now,
+        updated_at: now,
+      })
       await refreshCases()
       setShowNewCaseModal(false)
       setNewCaseName('')
       setNewCaseDescription('')
-    } catch (err) {
+    } catch {
       setError('Failed to create case')
     } finally {
       setCreatingCase(false)
@@ -128,18 +109,7 @@ export default function CasesPage() {
     setDeletingUncategorizedTranscript(true)
     setError('')
     try {
-      if (appVariant === 'criminal') {
-        await localDeleteTranscript(uncategorizedDeleteTarget.media_key)
-      } else {
-        const response = await authenticatedFetch(
-          `/api/transcripts/by-key/${encodeURIComponent(uncategorizedDeleteTarget.media_key)}`,
-          { method: 'DELETE' }
-        )
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to delete transcript')
-        }
-      }
+      await localDeleteTranscript(uncategorizedDeleteTarget.media_key)
       setUncategorizedDeleteTarget(null)
       await loadUncategorized()
       await refreshCases()
@@ -164,20 +134,7 @@ export default function CasesPage() {
     setAssigningTranscript(mediaKey)
     setError('')
     try {
-      if (appVariant === 'criminal') {
-        await localMoveTranscriptToCase(mediaKey, targetCaseId)
-      } else {
-        const response = await authenticatedFetch(`/api/cases/${targetCaseId}/transcripts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ media_key: mediaKey }),
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to assign transcript to case')
-        }
-      }
-
+      await localMoveTranscriptToCase(mediaKey, targetCaseId)
       await loadUncategorized()
       await refreshCases()
     } catch (err: any) {
@@ -192,17 +149,8 @@ export default function CasesPage() {
     return new Date(dateStr).toLocaleDateString()
   }
 
-  const getDaysUntilExpiry = (expiresAt?: string | null) => {
-    if (!expiresAt) return null
-    const now = new Date()
-    const expiry = new Date(expiresAt)
-    const diff = Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-    return diff > 0 ? diff : 0
-  }
-
   return (
     <div className="p-8 max-w-6xl mx-auto">
-      {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Cases</h1>
@@ -219,7 +167,6 @@ export default function CasesPage() {
         </button>
       </div>
 
-      {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-gray-200">
         <button
           onClick={() => {
@@ -249,7 +196,6 @@ export default function CasesPage() {
         </button>
       </div>
 
-      {/* Cases Grid */}
       {activeTab === 'cases' && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {cases.length === 0 ? (
@@ -296,7 +242,6 @@ export default function CasesPage() {
         </div>
       )}
 
-      {/* Uncategorized Transcripts */}
       {activeTab === 'uncategorized' && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100">
           {loadingUncategorized ? (
@@ -314,16 +259,9 @@ export default function CasesPage() {
           ) : (
             <div className="divide-y divide-gray-100">
               <div className="p-4 bg-amber-50 border-b border-amber-100 flex items-center justify-between gap-3">
-                {appVariant !== 'criminal' && (
-                  <p className="text-sm text-amber-800">
-                    <strong>Note:</strong> Uncategorized transcripts expire after 30 days.
-                  </p>
-                )}
-                {appVariant === 'criminal' && (
-                  <p className="text-sm text-amber-800">
-                    Assign transcripts to a case for better organization.
-                  </p>
-                )}
+                <p className="text-sm text-amber-800">
+                  Assign transcripts to a case for better organization.
+                </p>
                 <button
                   onClick={() => setAssignModeEnabled((prev) => !prev)}
                   disabled={cases.length === 0}
@@ -333,90 +271,79 @@ export default function CasesPage() {
                   {assignModeEnabled ? 'Done' : 'Assign to Case'}
                 </button>
               </div>
-              {uncategorizedTranscripts.map((transcript) => {
-                const daysLeft = getDaysUntilExpiry(transcript.expires_at)
-                return (
-                  <div
-                    key={transcript.media_key}
-                    className="p-4 flex items-center justify-between hover:bg-gray-50"
-                  >
-                    <div className="flex items-center gap-4 flex-1 min-w-0">
-                      <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-900 truncate">{transcript.title_label}</p>
-                        <p className="text-sm text-gray-500">
-                          {transcript.line_count || 0} lines • Updated {formatDate(transcript.updated_at)}
-                        </p>
-                      </div>
+              {uncategorizedTranscripts.map((transcript) => (
+                <div
+                  key={transcript.media_key}
+                  className="p-4 flex items-center justify-between hover:bg-gray-50"
+                >
+                  <div className="flex items-center gap-4 flex-1 min-w-0">
+                    <div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
                     </div>
-                    <div className="flex items-center gap-3 flex-wrap justify-end">
-                      {assignModeEnabled && (
-                        <>
-                          <select
-                            value={getAssignmentTarget(transcript.media_key)}
-                            onChange={(e) =>
-                              setAssignmentTargets((prev) => ({
-                                ...prev,
-                                [transcript.media_key]: e.target.value,
-                              }))
-                            }
-                            className="input-field h-9 w-[16rem] md:w-[22rem] min-w-[220px] text-sm"
-                          >
-                            {cases.map((caseItem) => (
-                              <option key={caseItem.case_id} value={caseItem.case_id}>
-                                {caseItem.name}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={() => handleAssignToCase(transcript.media_key)}
-                            disabled={assigningTranscript === transcript.media_key || cases.length === 0}
-                            className="btn-primary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {assigningTranscript === transcript.media_key ? 'Assigning...' : 'Assign'}
-                          </button>
-                        </>
-                      )}
-                      {appVariant !== 'criminal' && daysLeft !== null && (
-                        <span className={`text-sm px-2 py-1 rounded ${
-                          daysLeft <= 7 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
-                        }`}>
-                          {daysLeft} days left
-                        </span>
-                      )}
-                      <button
-                        onClick={() => {
-                          setActiveMediaKey(transcript.media_key)
-                          guardedPush(router, routes.editor(transcript.media_key))
-                        }}
-                        className="btn-outline text-sm px-3 py-1"
-                      >
-                        Open
-                      </button>
-                      <button
-                        onClick={() => setUncategorizedDeleteTarget(transcript)}
-                        disabled={deletingUncategorizedTranscript}
-                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Delete transcript permanently"
-                      >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{transcript.title_label}</p>
+                      <p className="text-sm text-gray-500">
+                        {transcript.line_count || 0} lines • Updated {formatDate(transcript.updated_at)}
+                      </p>
                     </div>
                   </div>
-                )
-              })}
+                  <div className="flex items-center gap-3 flex-wrap justify-end">
+                    {assignModeEnabled && (
+                      <>
+                        <select
+                          value={getAssignmentTarget(transcript.media_key)}
+                          onChange={(e) =>
+                            setAssignmentTargets((prev) => ({
+                              ...prev,
+                              [transcript.media_key]: e.target.value,
+                            }))
+                          }
+                          className="input-field h-9 w-[16rem] md:w-[22rem] min-w-[220px] text-sm"
+                        >
+                          {cases.map((caseItem) => (
+                            <option key={caseItem.case_id} value={caseItem.case_id}>
+                              {caseItem.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => handleAssignToCase(transcript.media_key)}
+                          disabled={assigningTranscript === transcript.media_key || cases.length === 0}
+                          className="btn-primary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {assigningTranscript === transcript.media_key ? 'Assigning...' : 'Assign'}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => {
+                        setActiveMediaKey(transcript.media_key)
+                        guardedPush(router, routes.editor(transcript.media_key))
+                      }}
+                      className="btn-outline text-sm px-3 py-1"
+                    >
+                      Open
+                    </button>
+                    <button
+                      onClick={() => setUncategorizedDeleteTarget(transcript)}
+                      disabled={deletingUncategorizedTranscript}
+                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Delete transcript permanently"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                        <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
       )}
 
-      {/* Uncategorized Transcript Delete Modal */}
       {uncategorizedDeleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg rounded-2xl border border-gray-100 bg-white shadow-2xl">
@@ -458,7 +385,6 @@ export default function CasesPage() {
         </div>
       )}
 
-      {/* New Case Modal */}
       {showNewCaseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">

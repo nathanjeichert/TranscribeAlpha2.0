@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
-import { authenticatedFetch } from '@/utils/auth'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import {
@@ -54,31 +53,27 @@ export default function CaseDetailPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const caseId = searchParams.get('id') ?? ''
-  const { cases, refreshCases, setActiveMediaKey, appVariant } = useDashboard()
+  const { cases, refreshCases, setActiveMediaKey } = useDashboard()
 
   const [caseMeta, setCaseMeta] = useState<CaseMeta | null>(null)
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // Edit mode
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Delete modal
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [deleteTranscripts, setDeleteTranscripts] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  // Search
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [showSearchResults, setShowSearchResults] = useState(false)
 
-  // Reassign transcripts (edit mode)
   const [reassignTargets, setReassignTargets] = useState<Record<string, string>>({})
   const [reassigningTranscript, setReassigningTranscript] = useState<string | null>(null)
   const [transcriptDeleteTarget, setTranscriptDeleteTarget] = useState<TranscriptItem | null>(null)
@@ -90,52 +85,42 @@ export default function CaseDetailPage() {
       setIsLoading(false)
       return
     }
+
     setIsLoading(true)
     setError('')
+
     try {
-      if (appVariant === 'criminal') {
-        const caseDetail = await localGetCase(caseId)
-        if (!caseDetail) throw new Error('Case not found')
-        setCaseMeta({
-          case_id: caseDetail.case_id,
-          name: caseDetail.name,
-          description: caseDetail.description,
-          created_at: caseDetail.created_at,
-          updated_at: caseDetail.updated_at,
-          transcript_count: caseDetail.transcript_count,
-        })
-        const caseTranscripts = await localListTranscriptsInCase(caseId)
-        setTranscripts(
-          caseTranscripts.map((t) => ({
-            media_key: t.media_key,
-            title_label: t.title_label,
-            updated_at: t.updated_at,
-            line_count: t.line_count,
-            audio_duration: t.audio_duration,
-          })),
-        )
-        setEditName(caseDetail.name)
-        setEditDescription(caseDetail.description || '')
-      } else {
-        const response = await authenticatedFetch(`/api/cases/${caseId}`)
-        if (!response.ok) {
-          if (response.status === 404) {
-            throw new Error('Case not found')
-          }
-          throw new Error('Failed to load case')
-        }
-        const data = await response.json()
-        setCaseMeta(data.case)
-        setTranscripts(data.transcripts || [])
-        setEditName(data.case.name)
-        setEditDescription(data.case.description || '')
-      }
+      const caseDetail = await localGetCase(caseId)
+      if (!caseDetail) throw new Error('Case not found')
+
+      setCaseMeta({
+        case_id: caseDetail.case_id,
+        name: caseDetail.name,
+        description: caseDetail.description,
+        created_at: caseDetail.created_at,
+        updated_at: caseDetail.updated_at,
+        transcript_count: caseDetail.transcript_count,
+      })
+
+      const caseTranscripts = await localListTranscriptsInCase(caseId)
+      setTranscripts(
+        caseTranscripts.map((t) => ({
+          media_key: t.media_key,
+          title_label: t.title_label,
+          updated_at: t.updated_at,
+          line_count: t.line_count,
+          audio_duration: t.audio_duration,
+        })),
+      )
+
+      setEditName(caseDetail.name)
+      setEditDescription(caseDetail.description || '')
     } catch (err: any) {
       setError(err?.message || 'Failed to load case')
     } finally {
       setIsLoading(false)
     }
-  }, [caseId, appVariant])
+  }, [caseId])
 
   useEffect(() => {
     loadCase()
@@ -152,26 +137,13 @@ export default function CaseDetailPage() {
     if (!editName.trim() || !caseId) return
     setSaving(true)
     try {
-      if (appVariant === 'criminal') {
-        await localUpdateCase(caseId, { name: editName.trim(), description: editDescription.trim() })
-        setCaseMeta((prev) =>
-          prev ? { ...prev, name: editName.trim(), description: editDescription.trim(), updated_at: new Date().toISOString() } : prev,
-        )
-        setIsEditing(false)
-        refreshCases()
-      } else {
-        const response = await authenticatedFetch(`/api/cases/${caseId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: editName.trim(), description: editDescription.trim() }),
-        })
-        if (!response.ok) throw new Error('Failed to update case')
-        const data = await response.json()
-        setCaseMeta(data.case)
-        setIsEditing(false)
-        refreshCases()
-      }
-    } catch (err) {
+      await localUpdateCase(caseId, { name: editName.trim(), description: editDescription.trim() })
+      setCaseMeta((prev) =>
+        prev ? { ...prev, name: editName.trim(), description: editDescription.trim(), updated_at: new Date().toISOString() } : prev,
+      )
+      setIsEditing(false)
+      refreshCases()
+    } catch {
       setError('Failed to update case')
     } finally {
       setSaving(false)
@@ -182,18 +154,10 @@ export default function CaseDetailPage() {
     if (!caseId) return
     setDeleting(true)
     try {
-      if (appVariant === 'criminal') {
-        await localDeleteCase(caseId, deleteTranscripts)
-      } else {
-        const response = await authenticatedFetch(
-          `/api/cases/${caseId}?delete_transcripts=${deleteTranscripts}`,
-          { method: 'DELETE' }
-        )
-        if (!response.ok) throw new Error('Failed to delete case')
-      }
+      await localDeleteCase(caseId, deleteTranscripts)
       await refreshCases()
       guardedPush(router, routes.cases())
-    } catch (err) {
+    } catch {
       setError('Failed to delete case')
       setDeleting(false)
     }
@@ -214,33 +178,10 @@ export default function CaseDetailPage() {
     setReassigningTranscript(mediaKey)
     setError('')
     try {
-      if (appVariant === 'criminal') {
-        if (target === 'uncategorized') {
-          await localMoveTranscriptToCase(mediaKey, 'uncategorized')
-        } else {
-          await localMoveTranscriptToCase(mediaKey, target)
-        }
+      if (target === 'uncategorized') {
+        await localMoveTranscriptToCase(mediaKey, 'uncategorized')
       } else {
-        if (target === 'uncategorized') {
-          const response = await authenticatedFetch(
-            `/api/cases/${caseId}/transcripts/${encodeURIComponent(mediaKey)}`,
-            { method: 'DELETE' }
-          )
-          if (!response.ok) {
-            const detail = await response.json().catch(() => ({}))
-            throw new Error(detail?.detail || 'Failed to move transcript to uncategorized')
-          }
-        } else {
-          const response = await authenticatedFetch(`/api/cases/${target}/transcripts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ media_key: mediaKey }),
-          })
-          if (!response.ok) {
-            const detail = await response.json().catch(() => ({}))
-            throw new Error(detail?.detail || 'Failed to reassign transcript')
-          }
-        }
+        await localMoveTranscriptToCase(mediaKey, target)
       }
 
       await loadCase()
@@ -256,18 +197,7 @@ export default function CaseDetailPage() {
     if (!transcriptDeleteTarget) return
     setDeletingStoredTranscript(true)
     try {
-      if (appVariant === 'criminal') {
-        await localDeleteTranscript(transcriptDeleteTarget.media_key)
-      } else {
-        const response = await authenticatedFetch(
-          `/api/transcripts/by-key/${encodeURIComponent(transcriptDeleteTarget.media_key)}`,
-          { method: 'DELETE' }
-        )
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to delete transcript')
-        }
-      }
+      await localDeleteTranscript(transcriptDeleteTarget.media_key)
       setTranscriptDeleteTarget(null)
       await loadCase()
       refreshCases()
@@ -283,18 +213,9 @@ export default function CaseDetailPage() {
     setSearching(true)
     setShowSearchResults(true)
     try {
-      if (appVariant === 'criminal') {
-        const results = await localSearchCaseTranscripts(caseId, searchQuery)
-        setSearchResults(results)
-      } else {
-        const response = await authenticatedFetch(
-          `/api/cases/${caseId}/search?q=${encodeURIComponent(searchQuery)}`
-        )
-        if (!response.ok) throw new Error('Search failed')
-        const data = await response.json()
-        setSearchResults(data.results || [])
-      }
-    } catch (err) {
+      const results = await localSearchCaseTranscripts(caseId, searchQuery)
+      setSearchResults(results)
+    } catch {
       setSearchResults([])
     } finally {
       setSearching(false)
@@ -343,14 +264,12 @@ export default function CaseDetailPage() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
-      {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm text-gray-500 mb-6">
         <Link href={routes.cases()} className="hover:text-primary-600">Cases</Link>
         <span>/</span>
         <span className="text-gray-900">{caseMeta?.name}</span>
       </div>
 
-      {/* Header */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
         {isEditing ? (
           <div className="space-y-4">
@@ -415,7 +334,6 @@ export default function CaseDetailPage() {
         </div>
       )}
 
-      {/* Search */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-6">
         <div className="flex gap-3">
           <div className="relative flex-1">
@@ -453,7 +371,6 @@ export default function CaseDetailPage() {
         </div>
       </div>
 
-      {/* Search Results */}
       {showSearchResults && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-6">
           <div className="p-4 border-b border-gray-100">
@@ -500,7 +417,6 @@ export default function CaseDetailPage() {
         </div>
       )}
 
-      {/* Transcripts */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100">
         <div className="p-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900">Transcripts</h2>
@@ -619,7 +535,6 @@ export default function CaseDetailPage() {
         )}
       </div>
 
-      {/* Transcript Delete Modal */}
       {transcriptDeleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg rounded-2xl border border-gray-100 bg-white shadow-2xl">
@@ -661,7 +576,6 @@ export default function CaseDetailPage() {
         </div>
       )}
 
-      {/* Delete Modal */}
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
@@ -685,7 +599,7 @@ export default function CaseDetailPage() {
                     <p className="text-sm text-amber-700">
                       {deleteTranscripts
                         ? 'Transcripts will be permanently deleted'
-                        : 'Transcripts will be moved to uncategorized (30-day expiry)'}
+                        : 'Transcripts will be moved to uncategorized'}
                     </p>
                   </div>
                 </label>

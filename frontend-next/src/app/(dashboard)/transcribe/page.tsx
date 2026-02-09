@@ -4,7 +4,7 @@ import JSZip from 'jszip'
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { authenticatedFetch, getAuthHeaders } from '@/utils/auth'
+import { getAuthHeaders } from '@/utils/auth'
 import { useDashboard } from '@/context/DashboardContext'
 import { routes } from '@/utils/routes'
 import {
@@ -166,7 +166,7 @@ export default function TranscribePage() {
   const [pageError, setPageError] = useState('')
   const [pageNotice, setPageNotice] = useState('')
   const [showAllResults, setShowAllResults] = useState(false)
-  const [zipBusy, setZipBusy] = useState<'pdf' | 'variant' | null>(null)
+  const [zipBusy, setZipBusy] = useState<'pdf' | 'xml' | 'html' | null>(null)
 
   const [showNewCaseModal, setShowNewCaseModal] = useState(false)
   const [newCaseName, setNewCaseName] = useState('')
@@ -380,7 +380,6 @@ export default function TranscribePage() {
   }, [])
 
   const handleOpenFilePicker = useCallback(async () => {
-    if (appVariant !== 'criminal') return
     try {
       const handles: FileSystemFileHandle[] = await (window as any).showOpenFilePicker({
         multiple: true,
@@ -430,7 +429,7 @@ export default function TranscribePage() {
     } catch {
       // User cancelled the file picker
     }
-  }, [appVariant, createQueueItem])
+  }, [createQueueItem])
 
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
@@ -438,29 +437,17 @@ export default function TranscribePage() {
     setPageError('')
 
     try {
-      if (appVariant === 'criminal') {
-        const newCaseId = crypto.randomUUID()
-        const now = new Date().toISOString()
-        await localCreateCase({
-          case_id: newCaseId,
-          name: newCaseName.trim(),
-          description: newCaseDescription.trim(),
-          created_at: now,
-          updated_at: now,
-        })
-        await refreshCases()
-        setFormData((prev) => ({ ...prev, case_id: newCaseId }))
-      } else {
-        const response = await authenticatedFetch('/api/cases', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newCaseName.trim(), description: newCaseDescription.trim() }),
-        })
-        if (!response.ok) throw new Error('Failed to create case')
-        const data = await response.json()
-        await refreshCases()
-        setFormData((prev) => ({ ...prev, case_id: data.case.case_id }))
-      }
+      const newCaseId = crypto.randomUUID()
+      const now = new Date().toISOString()
+      await localCreateCase({
+        case_id: newCaseId,
+        name: newCaseName.trim(),
+        description: newCaseDescription.trim(),
+        created_at: now,
+        updated_at: now,
+      })
+      await refreshCases()
+      setFormData((prev) => ({ ...prev, case_id: newCaseId }))
       setShowNewCaseModal(false)
       setNewCaseName('')
       setNewCaseDescription('')
@@ -489,7 +476,7 @@ export default function TranscribePage() {
       const submitFormData = new FormData()
       submitFormData.append('file', item.file)
       submitFormData.append('transcription_model', formData.transcription_model)
-      if (appVariant === 'criminal' && item.originalFileName) {
+      if (item.originalFileName) {
         submitFormData.append('source_filename', item.originalFileName)
       }
 
@@ -500,8 +487,7 @@ export default function TranscribePage() {
       if (formData.location.trim()) submitFormData.append('location', formData.location.trim())
 
       const effectiveCaseId = getEffectiveCaseId(item)
-      // Criminal variant: don't send case_id to backend (backend doesn't persist)
-      if (effectiveCaseId && appVariant !== 'criminal') {
+      if (effectiveCaseId) {
         submitFormData.append('case_id', effectiveCaseId)
       }
 
@@ -516,7 +502,7 @@ export default function TranscribePage() {
 
       return submitFormData
     },
-    [appVariant, formData, getEffectiveCaseId],
+    [formData, getEffectiveCaseId],
   )
 
   const transcribeOneItem = useCallback(
@@ -637,8 +623,6 @@ export default function TranscribePage() {
 
   const prepareUploadFile = useCallback(
     async (item: QueueItem): Promise<File> => {
-      if (appVariant !== 'criminal') return item.file
-
       if (!isLikelyVideoSource(item.file) && isLikelyCompressedAudioSource(item.file)) {
         updateQueueItem(item.id, {
           status: 'transcribing',
@@ -723,7 +707,7 @@ export default function TranscribePage() {
         return item.file
       }
     },
-    [appVariant, updateQueueItem],
+    [updateQueueItem],
   )
 
   const runQueue = useCallback(
@@ -794,8 +778,8 @@ export default function TranscribePage() {
               : { ...freshItem, file: fileForUpload }
             const data = await transcribeOneItem(uploadItem)
 
-            // Criminal variant: save transcript + playable media source to local workspace.
-            if (appVariant === 'criminal' && data.media_key) {
+            // Local-first for all variants: save transcript + playable media source to workspace.
+            if (data.media_key) {
               const effectiveCaseId = getEffectiveCaseId(freshItem)
               const titleData = { ...(data.title_data || {}) }
               const shouldPersistBlobFallback = !freshItem.fileHandle
@@ -914,7 +898,6 @@ export default function TranscribePage() {
       stopAfterCurrentRef.current = false
     },
     [
-      appVariant,
       getEffectiveCaseId,
       isProcessing,
       refreshCases,
@@ -978,7 +961,7 @@ export default function TranscribePage() {
   )
 
   const handleDownloadBatchZip = useCallback(
-    async (kind: 'pdf' | 'variant') => {
+    async (kind: 'pdf' | 'xml' | 'html') => {
       const completed = queueRef.current.filter((item) => item.status === 'done' && item.result)
       if (!completed.length) {
         setPageError('No completed transcripts available to download.')
@@ -1028,12 +1011,12 @@ export default function TranscribePage() {
             continue
           }
 
-          if (appVariant === 'oncue') {
+          if (kind === 'xml') {
             if (!payload.oncue_xml_base64) continue
             const filename = reserveUniqueName(buildItemFilename(item, '.xml'))
             zip.file(filename, payload.oncue_xml_base64, { base64: true })
             addedCount += 1
-          } else {
+          } else if (kind === 'html') {
             if (!payload.viewer_html_base64) continue
             const filename = reserveUniqueName(buildItemFilename(item, '.html'))
             zip.file(filename, payload.viewer_html_base64, { base64: true })
@@ -1042,7 +1025,9 @@ export default function TranscribePage() {
         }
 
         if (addedCount === 0) {
-          setPageError(kind === 'pdf' ? 'No PDF files available to bundle.' : `No ${appVariant === 'oncue' ? 'XML' : 'HTML'} files available to bundle.`)
+          if (kind === 'pdf') setPageError('No PDF files available to bundle.')
+          if (kind === 'xml') setPageError('No XML files available to bundle.')
+          if (kind === 'html') setPageError('No HTML files available to bundle.')
           return
         }
 
@@ -1054,7 +1039,9 @@ export default function TranscribePage() {
         anchor.download =
           kind === 'pdf'
             ? `transcribealpha-pdfs-${stamp}.zip`
-            : `transcribealpha-${appVariant === 'oncue' ? 'xml' : 'html'}-${stamp}.zip`
+            : kind === 'xml'
+              ? `transcribealpha-xml-${stamp}.zip`
+              : `transcribealpha-html-${stamp}.zip`
         document.body.appendChild(anchor)
         anchor.click()
         document.body.removeChild(anchor)
@@ -1065,7 +1052,7 @@ export default function TranscribePage() {
         setZipBusy(null)
       }
     },
-    [appVariant, buildItemFilename],
+    [buildItemFilename],
   )
 
   const hasQueue = queue.length > 0
@@ -1209,15 +1196,13 @@ export default function TranscribePage() {
               </div>
             </label>
 
-            {appVariant === 'criminal' && (
-              <button
-                type="button"
-                onClick={handleOpenFilePicker}
-                className="mt-3 w-full py-2.5 text-sm font-medium text-primary-700 bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100 transition-colors"
-              >
-                Browse Files (preserves file access for playback)
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleOpenFilePicker}
+              className="mt-3 w-full py-2.5 text-sm font-medium text-primary-700 bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100 transition-colors"
+            >
+              Browse Files (preserves file access for playback)
+            </button>
           </div>
 
           {queue.length > 0 && (
@@ -1329,7 +1314,7 @@ export default function TranscribePage() {
                 onChange={(event) => setFormData((prev) => ({ ...prev, case_id: event.target.value }))}
                 className="input-field flex-1"
               >
-                <option value="">{appVariant === 'criminal' ? 'No case (uncategorized)' : 'No case (expires in 30 days)'}</option>
+                <option value="">No case (uncategorized)</option>
                 {cases.map((c) => (
                   <option key={c.case_id} value={c.case_id}>
                     {c.name}
@@ -1657,16 +1642,45 @@ export default function TranscribePage() {
                 >
                   {zipBusy === 'pdf' ? 'Building PDF ZIP...' : 'Download All PDFs (.zip)'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleDownloadBatchZip('variant')}
-                  disabled={zipBusy !== null}
-                  className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {zipBusy === 'variant'
-                    ? `Building ${appVariant === 'oncue' ? 'XML' : 'HTML'} ZIP...`
-                    : `Download All ${appVariant === 'oncue' ? 'OnCue XML' : 'HTML Viewer'} (.zip)`}
-                </button>
+                {appVariant === 'oncue' ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadBatchZip('xml')}
+                      disabled={zipBusy !== null}
+                      className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {zipBusy === 'xml' ? 'Building XML ZIP...' : 'Download All OnCue XML (.zip)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadBatchZip('html')}
+                      disabled={zipBusy !== null}
+                      className="btn-outline px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {zipBusy === 'html' ? 'Building HTML ZIP...' : 'Download All HTML Viewer (.zip)'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadBatchZip('html')}
+                      disabled={zipBusy !== null}
+                      className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {zipBusy === 'html' ? 'Building HTML ZIP...' : 'Download All HTML Viewer (.zip)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadBatchZip('xml')}
+                      disabled={zipBusy !== null}
+                      className="btn-outline px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {zipBusy === 'xml' ? 'Building XML ZIP...' : 'Download All OnCue XML (.zip)'}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1738,29 +1752,55 @@ export default function TranscribePage() {
                           </button>
 
                           {appVariant === 'oncue' ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!result.oncue_xml_base64) return
-                                downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
-                              }}
-                              disabled={!result.oncue_xml_base64}
-                              className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              Download OnCue XML
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!result.oncue_xml_base64) return
+                                  downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
+                                }}
+                                disabled={!result.oncue_xml_base64}
+                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Download OnCue XML
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!result.viewer_html_base64) return
+                                  downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
+                                }}
+                                disabled={!result.viewer_html_base64}
+                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Download HTML Viewer
+                              </button>
+                            </>
                           ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!result.viewer_html_base64) return
-                                downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
-                              }}
-                              disabled={!result.viewer_html_base64}
-                              className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              Download HTML Viewer
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!result.viewer_html_base64) return
+                                  downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
+                                }}
+                                disabled={!result.viewer_html_base64}
+                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Download HTML Viewer
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!result.oncue_xml_base64) return
+                                  downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
+                                }}
+                                disabled={!result.oncue_xml_base64}
+                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Download OnCue XML
+                              </button>
+                            </>
                           )}
 
                           {effectiveCaseId && (

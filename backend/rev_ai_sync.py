@@ -1,19 +1,10 @@
 import copy
-import os
 import time
 import logging
 import requests
 import re
-import tempfile
-from datetime import timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from difflib import SequenceMatcher
-
-from google.cloud import storage
-from google import auth
-from google.auth.transport import requests as google_requests
-from google.auth import compute_engine
-from google.auth.compute_engine import credentials as compute_credentials
 
 # Import models with fallback pattern
 try:
@@ -30,9 +21,6 @@ logger = logging.getLogger(__name__)
 
 # Rev AI Alignment API (separate from speech-to-text API)
 REV_AI_ALIGNMENT_BASE_URL = "https://api.rev.ai/alignment/v1"
-
-# Cloud Storage bucket for temporary files
-BUCKET_NAME = "transcribealpha-uploads-1750110926"
 
 ALIGNMENT_SPLIT_RE = re.compile(r"[-–—/\\\\]")
 ALIGNMENT_CLEAN_RE = re.compile(r"[^\w]+", re.UNICODE)
@@ -59,103 +47,8 @@ class RevAIAligner:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
-        self.storage_client = storage.Client()
-
-        # Get credentials for signing URLs on Cloud Run
-        self._signing_credentials = None
-        self._service_account_email = None
-        self._init_signing_credentials()
-
-    def _init_signing_credentials(self):
-        """Initialize credentials for signing URLs using IAM signBlob API."""
-        try:
-            # Get default credentials
-            credentials, project = auth.default()
-
-            # Refresh credentials to ensure token is valid
-            auth_req = google_requests.Request()
-            credentials.refresh(auth_req)
-
-            # On Cloud Run, we need to get the service account email from metadata server
-            # The credentials.service_account_email may just return "default"
-            try:
-                import urllib.request
-                metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
-                req = urllib.request.Request(metadata_url, headers={"Metadata-Flavor": "Google"})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    self._service_account_email = response.read().decode('utf-8').strip()
-                logger.info("Got service account email from metadata: %s", self._service_account_email)
-            except Exception as meta_err:
-                logger.warning("Could not get SA email from metadata: %s", meta_err)
-                # Fallback to credentials attribute
-                if hasattr(credentials, 'service_account_email'):
-                    self._service_account_email = credentials.service_account_email
-
-            self._signing_credentials = credentials
-            logger.info("Initialized signing credentials for: %s", self._service_account_email)
-        except Exception as e:
-            logger.warning("Could not initialize signing credentials: %s", e)
-
-    def _create_signed_url(self, blob_name: str, expiration_minutes: int = 15) -> str:
-        """Create a signed URL for a Cloud Storage blob using IAM signBlob API."""
-        bucket = self.storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-
-        # Use IAM-based signing which works with Compute Engine credentials
-        if self._service_account_email:
-            url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(minutes=expiration_minutes),
-                method="GET",
-                service_account_email=self._service_account_email,
-                access_token=self._signing_credentials.token,
-            )
-        else:
-            # Fallback - try regular signing (works if running with service account key)
-            url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(minutes=expiration_minutes),
-                method="GET"
-            )
-
-        logger.info("Generated signed URL for %s (expires in %d min)", blob_name, expiration_minutes)
-        return url
-
-    def _upload_text_to_gcs(self, text: str, filename: str) -> str:
-        """Upload transcript text to Cloud Storage and return blob name."""
-        bucket = self.storage_client.bucket(BUCKET_NAME)
-        blob_name = f"rev_ai_temp/{filename}"
-        blob = bucket.blob(blob_name)
-
-        blob.upload_from_string(text, content_type="text/plain")
-        logger.info("Uploaded transcript to GCS: %s", blob_name)
-
-        return blob_name
-
-    def _upload_audio_to_gcs(self, audio_path: str) -> str:
-        """Upload audio file to Cloud Storage and return blob name."""
-        bucket = self.storage_client.bucket(BUCKET_NAME)
-        filename = os.path.basename(audio_path)
-        blob_name = f"rev_ai_temp/{int(time.time())}_{filename}"
-        blob = bucket.blob(blob_name)
-
-        blob.upload_from_filename(audio_path)
-        logger.info("Uploaded audio to GCS: %s", blob_name)
-
-        return blob_name
-
-    def _cleanup_gcs_blob(self, blob_name: str):
-        """Delete a temporary blob from Cloud Storage."""
-        try:
-            bucket = self.storage_client.bucket(BUCKET_NAME)
-            blob = bucket.blob(blob_name)
-            blob.delete()
-            logger.info("Cleaned up GCS blob: %s", blob_name)
-        except Exception as e:
-            logger.warning("Failed to cleanup GCS blob %s: %s", blob_name, e)
-
-    def submit_alignment_job(self, audio_url: str, transcript_url: str, metadata: str = "") -> str:
-        """Submit alignment job to Rev AI using URLs."""
+    def submit_alignment_job(self, audio_url: str, transcript_text: str, metadata: str = "") -> str:
+        """Submit alignment job to Rev AI using an audio URL and transcript text."""
         url = f"{REV_AI_ALIGNMENT_BASE_URL}/jobs"
 
         payload = {
@@ -163,7 +56,7 @@ class RevAIAligner:
                 "url": audio_url
             },
             "source_transcript_config": {
-                "url": transcript_url
+                "transcript_text": transcript_text
             }
         }
 
@@ -172,7 +65,7 @@ class RevAIAligner:
 
         logger.info("Submitting alignment job to Rev AI: %s", url)
         logger.info("Audio URL: %s...", audio_url[:100])
-        logger.info("Transcript URL: %s...", transcript_url[:100])
+        logger.info("Transcript text length: %d", len(transcript_text))
 
         response = requests.post(url, headers=self.headers, json=payload)
 
@@ -226,7 +119,6 @@ class RevAIAligner:
     def align_transcript(
         self,
         turns: List[dict],
-        audio_file_path: Optional[str] = None,
         audio_url: Optional[str] = None,
         source_turns: Optional[List[dict]] = None,
     ) -> List[dict]:
@@ -272,31 +164,16 @@ class RevAIAligner:
 
         logger.info("Prepared %d words for alignment from %d turns", len(plain_text_words), len(turns))
 
-        # Track blobs for cleanup
-        temp_blobs = []
+        if not audio_url:
+            raise ValueError("audio_url is required for Rev AI alignment")
 
+        # Step 2: Submit job with text + media URL
         try:
-            # Step 2: Upload transcript text to GCS
-            transcript_blob_name = self._upload_text_to_gcs(
-                full_text_for_api,
-                f"transcript_{int(time.time())}.txt"
-            )
-            temp_blobs.append(transcript_blob_name)
-            transcript_url = self._create_signed_url(transcript_blob_name)
-
-            # Handle audio - either use existing URL or upload file
-            if audio_url:
-                final_audio_url = audio_url
-            elif audio_file_path and os.path.exists(audio_file_path):
-                audio_blob_name = self._upload_audio_to_gcs(audio_file_path)
-                temp_blobs.append(audio_blob_name)
-                final_audio_url = self._create_signed_url(audio_blob_name)
-            else:
-                raise ValueError("Either audio_url or audio_file_path must be provided")
+            final_audio_url = audio_url
 
             # Submit job
             logger.info("Submitting alignment job with %d words", len(plain_text_words))
-            job_id = self.submit_alignment_job(final_audio_url, transcript_url)
+            job_id = self.submit_alignment_job(final_audio_url, full_text_for_api)
             logger.info("Alignment job submitted: %s", job_id)
 
             # Wait for result
@@ -519,8 +396,5 @@ class RevAIAligner:
                 logger.info("Sample first word: text='%s', start=%.1f ms", first_word.get('text'), first_word.get('start'))
 
             return updated_turns
-
-        finally:
-            # Cleanup temporary GCS blobs
-            for blob_name in temp_blobs:
-                self._cleanup_gcs_blob(blob_name)
+        except Exception:
+            raise

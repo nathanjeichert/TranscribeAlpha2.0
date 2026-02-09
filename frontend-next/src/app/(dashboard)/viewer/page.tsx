@@ -293,7 +293,7 @@ export default function ViewerPage() {
   const queryMediaKey = searchParams.get('key')
   const queryCaseId = searchParams.get('case')
 
-  const { activeMediaKey, setActiveMediaKey, appVariant } = useDashboard()
+  const { activeMediaKey, setActiveMediaKey } = useDashboard()
 
   const [currentMediaKey, setCurrentMediaKey] = useState<string | null>(null)
   const [transcript, setTranscript] = useState<ViewerTranscript | null>(null)
@@ -495,8 +495,6 @@ export default function ViewerPage() {
   }, [])
 
   const loadMediaForTranscript = useCallback(async (record: ViewerTranscript) => {
-    if (appVariant !== 'criminal') return
-
     revokeMediaUrl()
     setMediaLoading(true)
 
@@ -511,15 +509,9 @@ export default function ViewerPage() {
       setMediaAvailable(false)
     }
     setMediaLoading(false)
-  }, [appVariant, revokeMediaUrl])
+  }, [revokeMediaUrl])
 
   const loadCaseArtifacts = useCallback(async (caseId: string) => {
-    if (appVariant !== 'criminal') {
-      setClips([])
-      setSequences([])
-      return
-    }
-
     setClipsLoading(true)
     try {
       const [caseClips, caseSequences] = await Promise.all([
@@ -531,14 +523,9 @@ export default function ViewerPage() {
     } finally {
       setClipsLoading(false)
     }
-  }, [appVariant])
+  }, [])
 
   const loadTranscriptByKey = useCallback(async (mediaKey: string, silent = false) => {
-    if (appVariant !== 'criminal') {
-      if (!silent) setIsLoading(false)
-      return null
-    }
-
     if (!silent) {
       setIsLoading(true)
       setError('')
@@ -572,7 +559,7 @@ export default function ViewerPage() {
     } finally {
       if (!silent) setIsLoading(false)
     }
-  }, [appVariant, loadMediaForTranscript, setActiveMediaKey])
+  }, [loadMediaForTranscript, setActiveMediaKey])
 
   useEffect(() => {
     if (queryMediaKey) {
@@ -585,33 +572,22 @@ export default function ViewerPage() {
   }, [queryMediaKey, activeMediaKey])
 
   useEffect(() => {
-    if (appVariant !== 'criminal') {
-      setIsLoading(false)
-      return
-    }
-
     if (!currentMediaKey) {
       setIsLoading(false)
       return
     }
 
     loadTranscriptByKey(currentMediaKey)
-  }, [appVariant, currentMediaKey, loadTranscriptByKey])
+  }, [currentMediaKey, loadTranscriptByKey])
 
   useEffect(() => {
-    if (appVariant !== 'criminal') {
-      setClips([])
-      setSequences([])
-      return
-    }
-
     if (!effectiveCaseId) {
       setClips([])
       setSequences([])
       return
     }
     loadCaseArtifacts(effectiveCaseId)
-  }, [appVariant, effectiveCaseId, loadCaseArtifacts])
+  }, [effectiveCaseId, loadCaseArtifacts])
 
   useEffect(() => {
     setSequenceNameDrafts((prev) => {
@@ -1671,16 +1647,6 @@ export default function ViewerPage() {
   }, [downloadBlob, transcript?.media_filename, transcript?.media_key, transcript?.pdf_base64, transcript?.title_data])
 
   const noTranscript = !currentMediaKey
-
-  if (appVariant !== 'criminal') {
-    return (
-      <div className="mx-auto max-w-3xl p-8">
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
-          Viewer is available in the criminal variant only.
-        </div>
-      </div>
-    )
-  }
 
   if (noTranscript) {
     return (

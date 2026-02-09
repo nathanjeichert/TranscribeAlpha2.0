@@ -10,28 +10,21 @@ import { confirmQueueNavigation, isQueueNavigationGuardActive } from '@/utils/na
 const SIDEBAR_COLLAPSED_KEY = 'dashboard_sidebar_collapsed'
 
 function WorkspaceGate({ children }: { children: React.ReactNode }) {
-  const { appVariant, variantResolved, refreshCases, refreshRecentTranscripts } = useDashboard()
+  const { variantResolved, refreshCases, refreshRecentTranscripts } = useDashboard()
   const [ready, setReady] = useState(false)
   const [checking, setChecking] = useState(true)
   const [showSetup, setShowSetup] = useState(false)
   const [multiTabWarning, setMultiTabWarning] = useState(false)
 
-  // Multi-tab detection for criminal variant
+  // Multi-tab detection for all variants.
   useEffect(() => {
-    if (appVariant !== 'criminal') return
+    if (!variantResolved) return
     const cleanup = setupMultiTabDetection(() => setMultiTabWarning(true))
     return cleanup
-  }, [appVariant])
+  }, [variantResolved])
 
   const checkWorkspace = useCallback(async () => {
-    // Don't make any decisions until we know the real variant
     if (!variantResolved) return
-
-    if (appVariant !== 'criminal') {
-      setReady(true)
-      setChecking(false)
-      return
-    }
 
     const configured = await isWorkspaceConfigured()
     if (configured) {
@@ -45,14 +38,13 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
     }
     setShowSetup(true)
     setChecking(false)
-  }, [appVariant, refreshCases, refreshRecentTranscripts, variantResolved])
+  }, [refreshCases, refreshRecentTranscripts, variantResolved])
 
   useEffect(() => {
     checkWorkspace()
   }, [checkWorkspace])
 
-  if (!variantResolved || (appVariant !== 'criminal' && !variantResolved)) {
-    // Still loading config — show spinner
+  if (!variantResolved) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <div className="text-center">
@@ -65,8 +57,6 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
       </div>
     )
   }
-
-  if (appVariant !== 'criminal') return <>{children}</>
 
   if (checking) {
     return (

@@ -12,7 +12,8 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 | Frontend | Next.js 14 + TypeScript + Tailwind CSS |
 | Transcription | AssemblyAI (slam-1) or Gemini 3.0 Pro |
 | Timestamp Alignment | Rev AI Forced Alignment API |
-| Deployment | Google Cloud Run + Cloud Storage |
+| Storage Model | Local-first (File System Access API + IndexedDB) |
+| Deployment | Google Cloud Run (backend proxy) |
 | HTTP Server | Hypercorn (HTTP/2 support) |
 
 ## App Variants
@@ -21,15 +22,15 @@ This codebase supports **two deployment variants** controlled by the `APP_VARIAN
 
 | Variant | Value | Export Formats | Target Users |
 |---------|-------|----------------|--------------|
-| **OnCue** | `oncue` (default) | PDF + OnCue XML | Legal software integration |
-| **Criminal** | `criminal` | PDF + HTML Viewer | DA/PD offices |
+| **OnCue** | `oncue` (default) | PDF + OnCue XML + HTML Viewer | Legal software integration |
+| **Criminal** | `criminal` | PDF + HTML Viewer + OnCue XML | DA/PD offices |
 
 **What differs between variants:**
-- `oncue`: Generates OnCue XML for proprietary legal software import
-- `criminal`: Generates standalone HTML viewer with embedded media player
+- Export action priority/labeling (`oncue` emphasizes XML first; `criminal` emphasizes HTML viewer first)
 
 **What stays the same:**
-- All features (transcription, editor, Gemini refinement, Rev AI resync, clips)
+- All features (transcription, editor, Gemini refinement, Rev AI resync, clips, cases)
+- Local workspace + IndexedDB persistence model
 - PDF export formatting
 - Branding ("TranscribeAlpha")
 - Lines per page (25)
@@ -40,22 +41,18 @@ This codebase supports **two deployment variants** controlled by the `APP_VARIAN
 TranscribeAlpha/
 ├── backend/                    # Python backend (FastAPI)
 │   ├── server.py              # FastAPI app wiring (routers, middleware, static files)
-│   ├── config.py              # Env-driven constants (CORS, TTLs, APP_VARIANT)
+│   ├── config.py              # Env-driven constants (CORS, APP_VARIANT, environment)
 │   ├── models.py              # Pydantic models (TranscriptTurn, WordTimestamp, Gemini structs)
 │   ├── transcript_formatting.py # PDF/XML generation + line timing helpers
 │   ├── transcript_utils.py    # Session serialization + viewer HTML generation
 │   ├── word_legacy.py         # Deprecated Word/DOCX helpers (legacy import path)
-│   ├── storage.py             # Cloud Storage ops + snapshots/sessions persistence
-│   ├── media_processing.py    # ffmpeg helpers, clip extraction, audio prep
+│   ├── storage.py             # Temp upload helper for stateless endpoints
 │   ├── gemini.py              # Gemini transcription + refine flow
 │   ├── api/                   # FastAPI routers
 │   │   ├── auth.py            # Auth endpoints
-│   │   ├── transcripts.py     # Transcribe/import/save/resync endpoints
-│   │   ├── media.py           # Media upload/streaming endpoints
-│   │   ├── clips.py           # Clip creation/lookup endpoints
-│   │   ├── cases.py           # Cases CRUD + transcript assignment
+│   │   ├── transcripts.py     # Stateless ASR/refine/export/resync endpoints
 │   │   └── health.py          # Health + cleanup endpoints
-│   ├── viewer/                # HTML viewer module (criminal variant)
+│   ├── viewer/                # HTML viewer module (shared by both variants)
 │   │   ├── __init__.py        # render_viewer_html() function
 │   │   └── template.html      # Standalone HTML viewer template
 │   ├── transcriber.py         # AssemblyAI integration + media probing
@@ -73,13 +70,13 @@ TranscribeAlpha/
 │   │   │       ├── page.tsx         # Dashboard home (quick-start)
 │   │   │       ├── transcribe/      # Wizard transcription flow
 │   │   │       ├── editor/          # Transcript editor (?key=)
-│   │   │       ├── clip-creator/    # Clip extraction (?key=)
+│   │   │       ├── viewer/          # Transcript viewer + clips/sequences (?key=)
+│   │   │       ├── converter/       # Local media converter
 │   │   │       ├── cases/           # Cases list
 │   │   │       ├── case-detail/     # Case detail page (?id=...)
 │   │   │       └── settings/        # App settings
 │   │   ├── components/        # React components
 │   │   │   ├── TranscriptEditor.tsx  # Line-by-line editor
-│   │   │   ├── ClipCreator.tsx       # Video clip extraction
 │   │   │   ├── MediaMissingBanner.tsx # Media re-import banner
 │   │   │   ├── AuthProvider.tsx      # Auth context
 │   │   │   ├── LoginModal.tsx        # Login UI
@@ -119,23 +116,20 @@ ENV APP_VARIANT=${APP_VARIANT}
 APP_VARIANT = os.getenv("APP_VARIANT", "oncue")
 ```
 
-**API conditional logic (transcripts.py):**
+**API export logic (transcripts.py):**
 ```python
-if APP_VARIANT == "criminal":
-    # Generate HTML viewer
-    transcript_data["viewer_html_base64"] = ...
-else:
-    # Generate OnCue XML
-    transcript_data["oncue_xml_base64"] = ...
+# Always generate both export formats
+transcript_data["oncue_xml_base64"] = ...
+transcript_data["viewer_html_base64"] = ...
 ```
 
 **Frontend detection:**
 - Frontend fetches `/api/config` on mount to determine variant
-- Conditionally shows "Download OnCue XML" vs "Download HTML Viewer" button
+- Uses variant only to prioritize export actions/labels in UI
 
-### HTML Viewer (Criminal Variant)
+### HTML Viewer (Shared)
 
-The HTML viewer (`backend/viewer/template.html`) is designed to match PDF transcript formatting:
+The HTML viewer (`backend/viewer/template.html`) is designed to match PDF transcript formatting for both variants:
 - Font: Courier New 12pt
 - Line spacing: 2.0 (double-spaced)
 - First-line indent: 1 inch for speaker lines
@@ -150,32 +144,31 @@ kept intentionally thin to wire middleware, include routers, and mount the stati
 
 | Module | Responsibility | Should Contain |
 |--------|----------------|----------------|
-| `server.py` | HTTP app wiring | Router inclusion, middleware, startup cleanup, static mount |
+| `server.py` | HTTP app wiring | Router inclusion, middleware, static mount |
 | `backend/api/*.py` | HTTP layer | Endpoints and request/response handling |
 | `transcriber.py` | Core transcription logic | AssemblyAI integration, media probing, transcription flow |
 | `transcript_formatting.py` | Transcript rendering | PDF/XML generation, line timing rules |
-| `transcript_utils.py` | Transcript/session helpers | Line normalization, snapshot payloads, viewer HTML generation |
-| `storage.py` | Persistence layer | GCS ops, snapshots, session storage |
-| `media_processing.py` | Media utilities | ffmpeg conversion, clip extraction, audio prep |
+| `transcript_utils.py` | Transcript/session helpers | Line normalization, export payload generation, viewer HTML generation |
+| `storage.py` | Upload helper | Temporary file handling for stateless endpoints |
 | `gemini.py` | Gemini flows | ASR and refinement logic |
 | `rev_ai_sync.py` | Forced alignment | Rev AI API calls, timestamp correction |
 | `auth.py` | Authentication | JWT, Secret Manager, user verification |
-| `viewer/` | HTML viewer | Template rendering for criminal variant |
+| `viewer/` | HTML viewer | Template rendering for shared viewer export |
 
 ### Transcription Pipeline
 
 The transcription flow uses ASR timestamps first, with optional Rev AI alignment later:
 
 ```
-Audio/Video → ASR (AssemblyAI or Gemini) → PDF + (OnCue XML or HTML Viewer)
-                         ↘ Rev AI Alignment (re-sync + legacy DOCX import only)
+Audio/Video → ASR (AssemblyAI or Gemini) → PDF + OnCue XML + HTML Viewer
+                         ↘ Rev AI Alignment (re-sync only)
 ```
 
 1. **ASR Stage**: AssemblyAI or Gemini extracts text + word timestamps
-2. **Artifact Generation**: PDF and OnCue XML (or HTML viewer) generated from shared line entries
-3. **Alignment Stage (optional)**: Rev AI forced alignment re-syncs edited transcripts or aligns legacy DOCX imports
+2. **Artifact Generation**: PDF + OnCue XML + HTML viewer generated from shared line entries
+3. **Alignment Stage (optional)**: Rev AI forced alignment re-syncs edited transcripts
 
-If `REV_AI_API_KEY` is not configured, re-sync and legacy DOCX import alignment are skipped.
+If `REV_AI_API_KEY` is not configured, re-sync is skipped.
 The alignment step preserves original text (punctuation, capitalization) while only updating timestamps.
 
 **Line timing rules**
@@ -194,7 +187,8 @@ The frontend uses a dashboard layout with a persistent sidebar:
 - `/` - Dashboard home (quick-start landing page)
 - `/transcribe` - 3-step wizard flow (Upload → Configure → Transcribe)
 - `/editor?key=` - Transcript editor (loads by media_key)
-- `/clip-creator?key=` - Clip extraction tool
+- `/viewer?key=` - Transcript viewer + clips/sequences tool
+- `/converter` - Local media converter
 - `/cases` - Cases list
 - `/case-detail/?id=` - Case detail with transcript list
 - `/settings` - App settings
@@ -212,19 +206,16 @@ Cases are folders for organizing transcripts:
 **Storage Structure:**
 ```
 cases/
-  {user_id}/
-    index.json                    # Quick list of all user's cases
-    {case_id}/
-      meta.json                   # Case metadata (name, description)
-      transcripts.json            # List of {media_key, added_at, title_label}
+  {case_id}/
+    meta.json                     # Case metadata (name, description)
+    transcripts/
+      {media_key}.json            # Full transcript payload + exports
+uncategorized/
+  {media_key}.json                # Transcripts not assigned to a case
 ```
 
-**TTL Rules:**
-| Condition | Behavior |
-|-----------|----------|
-| Transcript in a case | No expiration (persistent) |
-| Transcript uncategorized | 30-day TTL |
-| Media files | Standard cleanup policy |
+Media handles are persisted in IndexedDB and relinked via File System Access handles.
+There is no backend TTL cleanup for cases, transcripts, or media.
 
 **Case-Wide Search:**
 - Searches across all transcripts in a case
@@ -250,28 +241,17 @@ except ImportError:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/config` | GET | Returns app variant and feature flags |
-| `/api/transcribe` | POST | Main transcription (file → PDF + XML/HTML) |
-| `/api/upload-preview` | POST | Upload media for preview |
-| `/api/media/{file_id}` | GET | Stream media files |
+| `/api/viewer-template` | GET | Returns standalone HTML viewer template |
+| `/api/convert` | POST | Stateless ffmpeg conversion to browser-playable media |
+| `/api/format-pdf` | POST | Stateless PDF regeneration from line entries |
+| `/api/transcribe` | POST | Main transcription (file → PDF + XML + HTML) |
+| `/api/resync` | POST | Re-align transcript with audio (Rev AI, multipart) |
+| `/api/gemini-refine` | POST | Gemini refinement pass (multipart) |
 | `/api/auth/login` | POST | User authentication |
 | `/api/auth/refresh` | POST | Refresh access token |
 | `/api/auth/logout` | POST | Logout (client deletes tokens) |
 | `/api/auth/me` | GET | Current user info |
-| `/api/transcripts` | GET | List transcripts for the current user |
-| `/api/transcripts/by-key/{media_key}` | GET/PUT | Load/save transcript session |
-| `/api/transcripts/by-key/{media_key}/history` | GET | List snapshots for a transcript |
-| `/api/transcripts/by-key/{media_key}/restore/{snapshot_id}` | POST | Restore a snapshot |
-| `/api/transcripts/import` | POST | Import XML/HTML or legacy DOCX with media |
-| `/api/transcripts/by-key/{media_key}/gemini-refine` | POST | Gemini refine pass |
-| `/api/transcripts/uncategorized` | GET | List transcripts not in any case |
-| `/api/resync` | POST | Re-align transcript with audio (Rev AI) |
-| `/api/clips/*` | Various | Clip creation/management |
-| `/api/cases` | GET/POST | List user's cases / Create new case |
-| `/api/cases/{case_id}` | GET/PUT/DELETE | Get/update/delete case |
-| `/api/cases/{case_id}/transcripts` | POST | Assign transcript to case |
-| `/api/cases/{case_id}/transcripts/{media_key}` | DELETE | Remove transcript from case |
-| `/api/cases/{case_id}/search` | GET | Search text + speakers in case |
-| `/health` | GET | Health check + cleanup trigger |
+| `/health` | GET | Health check |
 
 ## Development Guidelines
 
@@ -374,7 +354,7 @@ docker run -p 8080:8080 \
 - Deprecated behavior notes live in `docs/word-export-deprecated.md`
 - New export changes should target the PDF pipeline, not DOCX generation
 
-### Modify HTML Viewer (Criminal Variant)
+### Modify HTML Viewer
 - Edit `backend/viewer/template.html`
 - Viewer payload built in `backend/transcript_utils.py` → `build_viewer_payload()`
 
@@ -386,10 +366,8 @@ docker run -p 8080:8080 \
 ```python
 from config import APP_VARIANT
 
-if APP_VARIANT == "criminal":
-    # Criminal-specific code
-else:
-    # OnCue-specific code (default)
+# Keep variant branching limited to export emphasis/default UI ordering.
+primary_export = "xml" if APP_VARIANT == "oncue" else "viewer"
 ```
 
 ### Add User Management Script
@@ -405,7 +383,7 @@ else:
 | CORS errors | Check `ENVIRONMENT` variable |
 | Auth failures | Verify `JWT_SECRET_KEY` and Secret Manager access |
 | Large file upload fails | Ensure HTTP/2 is enabled |
-| Wrong export format | Check `APP_VARIANT` env var |
+| Wrong export priority | Check `APP_VARIANT` env var and `/api/config` response |
 
 ## Testing Checklist
 
@@ -413,11 +391,11 @@ After any change, verify:
 1. `curl https://your-app.run.app/health` returns 200
 2. `curl https://your-app.run.app/api/config` returns correct variant
 3. File upload completes without error
-4. Transcript download works (PDF + XML for oncue, PDF + HTML for criminal)
+4. Transcript download works (PDF + XML + HTML viewer for both variants)
 5. Editor loads and saves correctly
 6. Media playback functions
-7. History modal shows snapshots after edits
+7. Workspace gate appears when no local workspace is configured
 
 ---
 
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-09*

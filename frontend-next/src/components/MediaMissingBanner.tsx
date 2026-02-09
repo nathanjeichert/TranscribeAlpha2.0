@@ -2,14 +2,11 @@
 
 interface MediaMissingBannerProps {
   mediaKey: string
-  appVariant?: 'oncue' | 'criminal'
   mediaFilename?: string
   onReimport: () => void
 }
 
-export default function MediaMissingBanner({ mediaKey, appVariant = 'oncue', mediaFilename, onReimport }: MediaMissingBannerProps) {
-  const isCriminal = appVariant === 'criminal'
-
+export default function MediaMissingBanner({ mediaKey, mediaFilename, onReimport }: MediaMissingBannerProps) {
   return (
     <div className="bg-amber-50 border-b border-amber-200 px-6 py-3">
       <div className="flex items-center justify-between max-w-7xl mx-auto">
@@ -21,12 +18,10 @@ export default function MediaMissingBanner({ mediaKey, appVariant = 'oncue', med
           </div>
           <div>
             <p className="font-medium text-amber-800">
-              {isCriminal ? 'Media file not found' : 'Media file unavailable'}
+              Media file not found
             </p>
             <p className="text-sm text-amber-600">
-              {isCriminal
-                ? `${mediaFilename || 'The media file'} is not linked. Locate the file on your computer to enable playback.`
-                : 'The original media has expired. Re-import to enable playback and clip creation.'}
+              {(mediaFilename || 'The media file')} is not linked. Locate the file on your computer to enable playback.
             </p>
           </div>
         </div>
@@ -34,7 +29,7 @@ export default function MediaMissingBanner({ mediaKey, appVariant = 'oncue', med
           onClick={onReimport}
           className="px-4 py-2 bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium text-sm rounded-lg transition-colors"
         >
-          {isCriminal ? 'Locate File' : 'Re-import Media'}
+          Locate File
         </button>
       </div>
     </div>

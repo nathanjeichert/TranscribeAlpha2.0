@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { buildMediaUrl, authenticatedFetch } from '@/utils/auth'
+import { authenticatedFetch } from '@/utils/auth'
 import { saveTranscript as localSaveTranscript } from '@/lib/storage'
 import { getMediaFile } from '@/lib/mediaHandles'
 
@@ -98,19 +98,6 @@ const secondsToLabel = (seconds: number) => {
     .padStart(3, '0')}`
 }
 
-// localStorage helpers for cross-page state persistence
-interface LocalStorageTranscriptState {
-  mediaKey: string
-  lines: EditorLine[]
-  titleData: Record<string, string>
-  mediaBlobName?: string | null
-  mediaContentType?: string | null
-  audioDuration: number
-  linesPerPage: number
-  lastSaved: string
-}
-
-const STORAGE_KEY_PREFIX = 'transcript_state_'
 const AUTO_SHIFT_STORAGE_KEY = 'editor_auto_shift_next'
 const AUTO_SHIFT_PADDING_SECONDS = 0.01
 
@@ -243,34 +230,66 @@ function buildViewerPayloadFromLines(
   }
 }
 
-function saveToLocalStorage(mediaKey: string, state: LocalStorageTranscriptState) {
-  try {
-    localStorage.setItem(
-      `${STORAGE_KEY_PREFIX}${mediaKey}`,
-      JSON.stringify(state)
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function buildOncueXmlFromLineEntries(
+  lineEntries: EditorLine[],
+  titleData: Record<string, string>,
+  audioDuration: number,
+  linesPerPage: number,
+): string {
+  const filename = (titleData.FILE_NAME || 'audio.mp3').trim() || 'audio.mp3'
+  const mediaId =
+    (titleData.MEDIA_ID || '').trim() ||
+    filename.replace(/\.[^/.]+$/, '') ||
+    'deposition'
+  const dateAttr = titleData.DATE ? ` date="${escapeXmlAttribute(titleData.DATE)}"` : ''
+  const sortedEntries = [...lineEntries].sort((a, b) => {
+    const pageA = Number(a.page ?? 1)
+    const pageB = Number(b.page ?? 1)
+    if (pageA !== pageB) return pageA - pageB
+    const lineA = Number(a.line ?? 1)
+    const lineB = Number(b.line ?? 1)
+    return lineA - lineB
+  })
+  const lastPgln = sortedEntries.length
+    ? Number(sortedEntries[sortedEntries.length - 1].pgln ?? 101)
+    : 101
+
+  const parts: string[] = []
+  parts.push('<onCue xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">')
+  parts.push(
+    `<deposition mediaId="${escapeXmlAttribute(mediaId)}" linesPerPage="${Math.max(1, linesPerPage)}"${dateAttr}>`,
+  )
+  parts.push(
+    `<depoVideo ID="1" filename="${escapeXmlAttribute(filename)}" startTime="0" stopTime="${Math.round(
+      Math.max(0, audioDuration),
+    )}" firstPGLN="101" lastPGLN="${lastPgln}" startTuned="no" stopTuned="no">`,
+  )
+
+  for (const entry of sortedEntries) {
+    const page = Number(entry.page ?? 1)
+    const line = Number(entry.line ?? 1)
+    const pgln = Number(entry.pgln ?? (page * 100) + line)
+    const start = Number(entry.start ?? 0)
+    const end = Number(entry.end ?? start)
+    const rendered = entry.rendered_text || buildRenderedText(entry)
+    parts.push(
+      `<depoLine prefix="" text="${escapeXmlAttribute(rendered)}" page="${page}" line="${line}" pgLN="${pgln}" videoID="1" videoStart="${start.toFixed(
+        2,
+      )}" videoStop="${end.toFixed(2)}" isEdited="no" isSynched="yes" isRedacted="no" />`,
     )
-  } catch (err) {
-    console.error('Failed to save to localStorage:', err)
   }
-}
 
-function loadFromLocalStorage(mediaKey: string): LocalStorageTranscriptState | null {
-  try {
-    const data = localStorage.getItem(`${STORAGE_KEY_PREFIX}${mediaKey}`)
-    if (!data) return null
-    return JSON.parse(data)
-  } catch (err) {
-    console.error('Failed to load from localStorage:', err)
-    return null
-  }
-}
-
-function clearLocalStorage(mediaKey: string) {
-  try {
-    localStorage.removeItem(`${STORAGE_KEY_PREFIX}${mediaKey}`)
-  } catch (err) {
-    console.error('Failed to clear localStorage:', err)
-  }
+  parts.push('</depoVideo></deposition></onCue>')
+  return parts.join('')
 }
 
 export default function TranscriptEditor({
@@ -293,7 +312,6 @@ export default function TranscriptEditor({
   isGeminiBusy,
   geminiError,
 }: TranscriptEditorProps) {
-  const isCriminal = appVariant === 'criminal'
   const [lines, setLines] = useState<EditorLine[]>(initialData?.lines ?? [])
   const [sessionMeta, setSessionMeta] = useState<EditorSessionResponse | null>(initialData ?? null)
   const [loading, setLoading] = useState(false)
@@ -347,36 +365,11 @@ export default function TranscriptEditor({
   const [isResyncing, setIsResyncing] = useState(false)
   const [resyncError, setResyncError] = useState<string | null>(null)
 
-  const baseMediaUrl = useMemo(() => {
-    if (mediaUrl) return mediaUrl
-    if (sessionMeta?.media_blob_name) {
-      return `/api/media/${sessionMeta.media_blob_name}`
-    }
-    return undefined
-  }, [mediaUrl, sessionMeta])
+  const baseMediaUrl = useMemo(() => mediaUrl || undefined, [mediaUrl])
 
   useEffect(() => {
-    let isActive = true
-    const resolveMedia = async () => {
-      if (!baseMediaUrl) {
-        if (isActive) setResolvedMediaUrl(undefined)
-        return
-      }
-      if (isCriminal) {
-        // Criminal: mediaUrl is already a blob URL or direct path
-        if (isActive) setResolvedMediaUrl(baseMediaUrl)
-        return
-      }
-      const resolved = await buildMediaUrl(baseMediaUrl)
-      if (isActive) {
-        setResolvedMediaUrl(resolved)
-      }
-    }
-    void resolveMedia()
-    return () => {
-      isActive = false
-    }
-  }, [baseMediaUrl, isCriminal])
+    setResolvedMediaUrl(baseMediaUrl)
+  }, [baseMediaUrl])
 
   const effectiveMediaType = useMemo(
     () => mediaType ?? sessionMeta?.media_content_type ?? undefined,
@@ -390,22 +383,8 @@ export default function TranscriptEditor({
 
   const handleMediaError = useCallback(async () => {
     if (!baseMediaUrl) return
-    // Criminal: blob URLs don't expire, nothing to refresh
-    if (isCriminal) return
-    const currentPlayer = isVideo ? videoRef.current : audioRef.current
-    const resumeTime = currentPlayer?.currentTime ?? 0
-    const wasPaused = currentPlayer?.paused ?? true
-    const refreshed = await buildMediaUrl(baseMediaUrl, true)
-    setResolvedMediaUrl(refreshed)
-    setTimeout(() => {
-      const nextPlayer = isVideo ? videoRef.current : audioRef.current
-      if (!nextPlayer) return
-      nextPlayer.currentTime = resumeTime
-      if (!wasPaused) {
-        nextPlayer.play().catch(() => {})
-      }
-    }, 0)
-  }, [baseMediaUrl, isCriminal, isVideo])
+    setResolvedMediaUrl(baseMediaUrl)
+  }, [baseMediaUrl])
 
   // Keep refs in sync with state for auto-save interval
   useEffect(() => { linesRef.current = lines }, [lines])
@@ -457,83 +436,6 @@ export default function TranscriptEditor({
     }
   }, [])
 
-  const fetchTranscript = useCallback(
-    async (key?: string | null) => {
-      // Criminal variant always receives initialData from the editor page; never fetch from API
-      if (isCriminal) return
-
-      const targetKey = key || activeMediaKey || initialMediaKey
-      if (!targetKey) {
-        setError('No media key provided')
-        return
-      }
-
-      setLoading(true)
-      setError(null)
-
-      try {
-        // Try loading from server first
-        const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(targetKey)}`)
-
-        if (!response.ok) {
-          if (response.status === 404) {
-            // Try localStorage fallback
-            const cached = loadFromLocalStorage(targetKey)
-            if (cached) {
-              setLines(cached.lines)
-              setSessionMeta({
-                title_data: cached.titleData,
-                audio_duration: cached.audioDuration,
-                lines_per_page: cached.linesPerPage,
-                lines: cached.lines,
-                media_blob_name: cached.mediaBlobName,
-                media_content_type: cached.mediaContentType,
-              } as EditorSessionResponse)
-              setActiveMediaKey(targetKey)
-              setError('Loaded from local cache. Save to sync with server.')
-              setLoading(false)
-              return
-            }
-          }
-
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to load transcript')
-        }
-
-        const data: EditorSessionResponse = await response.json()
-        setSessionMeta(data)
-        setLines(data.lines || [])
-        setActiveMediaKey(targetKey)
-        setHistory([])
-        setFuture([])
-        setIsDirty(false)
-        setActiveLineId(null)
-        setSelectedLineId(null)
-        setEditingField(null)
-        activeLineMarker.current = null
-        onSessionChange(data)
-
-        // Save to localStorage for offline access
-        saveToLocalStorage(targetKey, {
-          mediaKey: targetKey,
-          lines: data.lines || [],
-          titleData: data.title_data ?? {},
-          mediaBlobName: data.media_blob_name,
-          mediaContentType: data.media_content_type,
-          audioDuration: data.audio_duration,
-          linesPerPage: data.lines_per_page,
-          lastSaved: new Date().toISOString(),
-        })
-
-      } catch (err: any) {
-        setError(err.message || 'Failed to load transcript')
-      } finally {
-        setLoading(false)
-      }
-    },
-    [activeMediaKey, isCriminal, initialMediaKey, onSessionChange],
-  )
-
   useEffect(() => {
     if (!initialData) return
     setSessionMeta(initialData)
@@ -560,13 +462,6 @@ export default function TranscriptEditor({
     activeLineMarker.current = null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData, initialMediaKey])
-
-  useEffect(() => {
-    if (initialData || sessionMeta) return
-    if (initialMediaKey || activeMediaKey) {
-      fetchTranscript(initialMediaKey || activeMediaKey)
-    }
-  }, [initialData, sessionMeta, initialMediaKey, activeMediaKey, fetchTranscript])
 
   // Track the current editing session to avoid re-selecting text on every keystroke
   const editingLineId = editingField?.lineId
@@ -713,28 +608,6 @@ export default function TranscriptEditor({
     [resolvedMediaUrl, isVideo],
   )
 
-  // beforeunload handler for cross-page persistence (skip for criminal - data is in workspace)
-  useEffect(() => {
-    if (isCriminal) return
-    const handleBeforeUnload = () => {
-      if (activeMediaKey && sessionMeta) {
-        saveToLocalStorage(activeMediaKey, {
-          mediaKey: activeMediaKey,
-          lines,
-          titleData: sessionMeta.title_data ?? {},
-          mediaBlobName: sessionMeta.media_blob_name,
-          mediaContentType: sessionMeta.media_content_type,
-          audioDuration: sessionMeta.audio_duration,
-          linesPerPage: sessionMeta.lines_per_page,
-          lastSaved: new Date().toISOString(),
-        })
-      }
-    }
-
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [activeMediaKey, isCriminal, lines, sessionMeta])
-
   useEffect(() => {
     if (!activeMediaKey) return
 
@@ -748,46 +621,17 @@ export default function TranscriptEditor({
         const now = Date.now()
         if (now - lastSnapshotRef.current < 5000) return  // Debounce
 
-        if (isCriminal) {
-          // Criminal: save directly to local workspace
-          const dataToSave = {
-            ...currentSessionMeta,
-            lines: linesRef.current,
-            updated_at: new Date().toISOString(),
-          }
-          await localSaveTranscript(
-            activeMediaKey,
-            dataToSave as unknown as Record<string, unknown>,
-            (currentSessionMeta as unknown as Record<string, unknown>).case_id as string || undefined,
-          )
-        } else {
-          // Oncue: auto-save to API
-          await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              lines: linesRef.current,
-              title_data: currentSessionMeta.title_data ?? {},
-              is_manual_save: false,
-              audio_duration: currentSessionMeta.audio_duration,
-              lines_per_page: currentSessionMeta.lines_per_page,
-              media_blob_name: currentSessionMeta.media_blob_name,
-              media_content_type: currentSessionMeta.media_content_type,
-            }),
-          })
-
-          // Also save to localStorage for oncue
-          saveToLocalStorage(activeMediaKey, {
-            mediaKey: activeMediaKey,
-            lines: linesRef.current,
-            titleData: currentSessionMeta.title_data ?? {},
-            mediaBlobName: currentSessionMeta.media_blob_name,
-            mediaContentType: currentSessionMeta.media_content_type,
-            audioDuration: currentSessionMeta.audio_duration,
-            linesPerPage: currentSessionMeta.lines_per_page,
-            lastSaved: new Date().toISOString(),
-          })
+        const caseId = (currentSessionMeta as unknown as Record<string, unknown>).case_id
+        const dataToSave = {
+          ...currentSessionMeta,
+          lines: linesRef.current,
+          updated_at: new Date().toISOString(),
         }
+        await localSaveTranscript(
+          activeMediaKey,
+          dataToSave as unknown as Record<string, unknown>,
+          typeof caseId === 'string' && caseId ? caseId : undefined,
+        )
 
         lastSnapshotRef.current = now
         setSnapshotError(null)
@@ -798,7 +642,7 @@ export default function TranscriptEditor({
     }, 60000)  // 60 seconds
 
     return () => clearInterval(interval)
-  }, [activeMediaKey, isCriminal])  // Only reset interval when media key changes
+  }, [activeMediaKey])  // Only reset interval when media key changes
 
   const cloneLines = useCallback((source: EditorLine[]) => source.map((line) => ({ ...line })), [])
 
@@ -1087,12 +931,12 @@ export default function TranscriptEditor({
     return template
   }, [])
 
-  const buildCriminalArtifacts = useCallback(
+  const buildLocalArtifacts = useCallback(
     async (
       sourceLines: EditorLine[],
       sourceSessionMeta: EditorSessionResponse,
       mediaKeyForSave: string,
-    ): Promise<{ lineEntries: EditorLine[]; pdfBase64: string; viewerHtmlBase64: string }> => {
+    ): Promise<{ lineEntries: EditorLine[]; pdfBase64: string; viewerHtmlBase64: string; oncueXmlBase64: string }> => {
       const linesPerPage = sourceSessionMeta.lines_per_page ?? 25
       const titleData = sourceSessionMeta.title_data ?? {}
       const lineEntries = normalizeLineEntriesForArtifacts(sourceLines, linesPerPage)
@@ -1134,31 +978,41 @@ export default function TranscriptEditor({
         throw new Error('Standalone viewer template missing transcript placeholder')
       }
       const viewerHtmlBase64 = utf8ToBase64(viewerHtml)
-      return { lineEntries, pdfBase64, viewerHtmlBase64 }
+      const oncueXml = buildOncueXmlFromLineEntries(
+        lineEntries,
+        titleData,
+        sourceSessionMeta.audio_duration ?? 0,
+        linesPerPage,
+      )
+      const oncueXmlBase64 = utf8ToBase64(oncueXml)
+      return { lineEntries, pdfBase64, viewerHtmlBase64, oncueXmlBase64 }
     },
     [effectiveMediaType, getViewerTemplate],
   )
 
-  const refreshCriminalArtifacts = useCallback(async (): Promise<EditorSaveResponse | null> => {
-    if (!isCriminal || !activeMediaKey || !sessionMeta) return null
+  const refreshArtifacts = useCallback(async (): Promise<EditorSaveResponse | null> => {
+    if (!activeMediaKey || !sessionMeta) return null
     setSaving(true)
     setError(null)
     try {
-      const artifacts = await buildCriminalArtifacts(lines, sessionMeta, activeMediaKey)
+      const artifacts = await buildLocalArtifacts(lines, sessionMeta, activeMediaKey)
+      const caseId = (sessionMeta as unknown as Record<string, unknown>).case_id
       const refreshedData: EditorSaveResponse = {
         ...sessionMeta,
         lines: artifacts.lineEntries,
         pdf_base64: artifacts.pdfBase64,
         viewer_html_base64: artifacts.viewerHtmlBase64,
+        oncue_xml_base64: artifacts.oncueXmlBase64,
         updated_at: new Date().toISOString(),
       }
       await localSaveTranscript(
         activeMediaKey,
         refreshedData as unknown as Record<string, unknown>,
-        (sessionMeta as unknown as Record<string, unknown>)?.case_id as string | undefined,
+        typeof caseId === 'string' && caseId ? caseId : undefined,
       )
       setSessionMeta(refreshedData)
       setLines(refreshedData.lines || [])
+      setIsDirty(false)
       onSessionChange(refreshedData)
       onSaveComplete(refreshedData)
       return refreshedData
@@ -1168,7 +1022,7 @@ export default function TranscriptEditor({
     } finally {
       setSaving(false)
     }
-  }, [activeMediaKey, buildCriminalArtifacts, isCriminal, lines, onSaveComplete, onSessionChange, sessionMeta])
+  }, [activeMediaKey, buildLocalArtifacts, lines, onSaveComplete, onSessionChange, sessionMeta])
 
   const handleSave = useCallback(async (): Promise<EditorSaveResponse | null> => {
     if (!activeMediaKey) {
@@ -1184,52 +1038,28 @@ export default function TranscriptEditor({
     setError(null)
 
     try {
-      let data: EditorSaveResponse
       const linesToSave = materializeLinesForSave()
-
-      if (isCriminal) {
-        const artifacts = await buildCriminalArtifacts(linesToSave, sessionMeta, activeMediaKey)
-        const updatedData = {
-          ...sessionMeta,
-          lines: artifacts.lineEntries,
-          pdf_base64: artifacts.pdfBase64,
-          viewer_html_base64: artifacts.viewerHtmlBase64,
-          title_data: sessionMeta?.title_data ?? {},
-          audio_duration: sessionMeta?.audio_duration ?? 0,
-          lines_per_page: sessionMeta?.lines_per_page ?? 25,
-          updated_at: new Date().toISOString(),
-        }
-        await localSaveTranscript(
-          activeMediaKey,
-          updatedData as unknown as Record<string, unknown>,
-          (sessionMeta as unknown as Record<string, unknown>)?.case_id as string | undefined,
-        )
-        data = updatedData as EditorSaveResponse
-      } else {
-        const response = await authenticatedFetch(`/api/transcripts/by-key/${encodeURIComponent(activeMediaKey)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            lines: linesToSave,
-            title_data: sessionMeta?.title_data ?? {},
-            is_manual_save: true,
-            audio_duration: sessionMeta?.audio_duration ?? 0,
-            lines_per_page: sessionMeta?.lines_per_page ?? 25,
-            media_blob_name: sessionMeta?.media_blob_name,
-            media_content_type: sessionMeta?.media_content_type,
-          }),
-        })
-
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Failed to save')
-        }
-
-        data = await response.json()
+      const artifacts = await buildLocalArtifacts(linesToSave, sessionMeta, activeMediaKey)
+      const caseId = (sessionMeta as unknown as Record<string, unknown>).case_id
+      const data: EditorSaveResponse = {
+        ...sessionMeta,
+        lines: artifacts.lineEntries,
+        pdf_base64: artifacts.pdfBase64,
+        viewer_html_base64: artifacts.viewerHtmlBase64,
+        oncue_xml_base64: artifacts.oncueXmlBase64,
+        title_data: sessionMeta?.title_data ?? {},
+        audio_duration: sessionMeta?.audio_duration ?? 0,
+        lines_per_page: sessionMeta?.lines_per_page ?? 25,
+        updated_at: new Date().toISOString(),
       }
+      await localSaveTranscript(
+        activeMediaKey,
+        data as unknown as Record<string, unknown>,
+        typeof caseId === 'string' && caseId ? caseId : undefined,
+      )
 
       setSessionMeta(data)
-      setLines(data.lines || linesToSave)
+      setLines(data.lines || artifacts.lineEntries)
       setActiveMediaKey(data.media_key ?? activeMediaKey)
       setIsDirty(false)
       setActiveLineId(null)
@@ -1238,20 +1068,6 @@ export default function TranscriptEditor({
       activeLineMarker.current = null
       setHistory([])
       setFuture([])
-
-      // Save to localStorage (skip for criminal - data is in workspace)
-      if (!isCriminal) {
-        saveToLocalStorage(data.media_key ?? activeMediaKey, {
-          mediaKey: data.media_key ?? activeMediaKey!,
-          lines: data.lines || [],
-          titleData: data.title_data ?? {},
-          mediaBlobName: data.media_blob_name,
-          mediaContentType: data.media_content_type,
-          audioDuration: data.audio_duration,
-          linesPerPage: data.lines_per_page,
-          lastSaved: new Date().toISOString(),
-        })
-      }
 
       onSaveComplete(data)
       onSessionChange(data)
@@ -1266,8 +1082,7 @@ export default function TranscriptEditor({
     }
   }, [
     activeMediaKey,
-    buildCriminalArtifacts,
-    isCriminal,
+    buildLocalArtifacts,
     materializeLinesForSave,
     onSaveComplete,
     onSessionChange,
@@ -1275,8 +1090,7 @@ export default function TranscriptEditor({
   ])
 
   const handleDownloadViewer = useCallback(async () => {
-    if (!isCriminal) return
-    const saved = hasPendingInlineEdit || isDirty ? await handleSave() : await refreshCriminalArtifacts()
+    const saved = hasPendingInlineEdit || isDirty ? await handleSave() : await refreshArtifacts()
     const htmlData = saved?.viewer_html_base64 ?? viewerHtmlBase64 ?? sessionMeta?.viewer_html_base64 ?? ''
     if (!htmlData) {
       setError('HTML viewer export is not available for this transcript.')
@@ -1289,12 +1103,32 @@ export default function TranscriptEditor({
     buildFilename,
     handleSave,
     hasPendingInlineEdit,
-    isCriminal,
     isDirty,
     onDownload,
-    refreshCriminalArtifacts,
+    refreshArtifacts,
     sessionMeta,
     viewerHtmlBase64,
+  ])
+
+  const handleDownloadXml = useCallback(async () => {
+    const saved = hasPendingInlineEdit || isDirty ? await handleSave() : await refreshArtifacts()
+    const xmlToDownload = saved?.oncue_xml_base64 ?? xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
+    if (!xmlToDownload) {
+      setError('XML export is not available for this transcript.')
+      return
+    }
+    const mediaNameRaw = sessionMeta?.title_data?.FILE_NAME || sessionMeta?.media_filename || activeMediaKey || 'transcript'
+    const mediaBaseName = sanitizeDownloadStem(String(mediaNameRaw).replace(/\.[^.]+$/, ''))
+    onDownload(xmlToDownload, `${mediaBaseName} transcript.xml`, 'application/xml')
+  }, [
+    activeMediaKey,
+    handleSave,
+    hasPendingInlineEdit,
+    isDirty,
+    onDownload,
+    refreshArtifacts,
+    sessionMeta,
+    xmlBase64,
   ])
 
   const handleResync = useCallback(async () => {
@@ -1311,54 +1145,31 @@ export default function TranscriptEditor({
     setResyncError(null)
 
     try {
-      let data: Record<string, unknown>
-
-      if (isCriminal) {
-        // Criminal: upload media file + transcript as multipart to /api/resync-local
-        const mediaSourceId = sessionMeta?.media_handle_id || activeMediaKey
-        const mediaFile = await getMediaFile(mediaSourceId)
-        if (!mediaFile) {
-          throw new Error('Media file not available. Please relink the media file first.')
-        }
-        const transcriptPayload = {
-          media_key: activeMediaKey,
-          lines,
-          audio_duration: sessionMeta?.audio_duration ?? 0,
-          title_data: sessionMeta?.title_data ?? {},
-          lines_per_page: sessionMeta?.lines_per_page ?? 25,
-          source_turns: sessionMeta?.source_turns,
-        }
-        const formData = new FormData()
-        formData.append('media_file', mediaFile)
-        formData.append('transcript_data', JSON.stringify(transcriptPayload))
-        const response = await authenticatedFetch('/api/resync-local', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Re-sync failed')
-        }
-        data = await response.json()
-      } else {
-        // Oncue: JSON body with media_key
-        const response = await authenticatedFetch('/api/resync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            media_key: activeMediaKey,
-          }),
-        })
-
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          throw new Error(detail?.detail || 'Re-sync failed')
-        }
-
-        data = await response.json()
+      const mediaSourceId = sessionMeta?.media_handle_id || activeMediaKey
+      const mediaFile = await getMediaFile(mediaSourceId)
+      if (!mediaFile) {
+        throw new Error('Media file not available. Please relink the media file first.')
       }
+      const transcriptPayload = {
+        media_key: activeMediaKey,
+        lines,
+        audio_duration: sessionMeta?.audio_duration ?? 0,
+        title_data: sessionMeta?.title_data ?? {},
+        lines_per_page: sessionMeta?.lines_per_page ?? 25,
+        source_turns: sessionMeta?.source_turns,
+      }
+      const formData = new FormData()
+      formData.append('media_file', mediaFile)
+      formData.append('transcript_data', JSON.stringify(transcriptPayload))
+      const response = await authenticatedFetch('/api/resync', {
+        method: 'POST',
+        body: formData,
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}))
+        throw new Error(detail?.detail || 'Re-sync failed')
+      }
+      const data = await response.json() as Record<string, unknown>
 
       // Use the response data directly instead of refetching
       // (GCS write propagation can cause fetchTranscript to get stale data)
@@ -1395,20 +1206,15 @@ export default function TranscriptEditor({
     } finally {
       setIsResyncing(false)
     }
-  }, [activeMediaKey, sessionMeta, onSessionChange, pushHistory, lines, isCriminal])
+  }, [activeMediaKey, sessionMeta, onSessionChange, pushHistory, lines])
 
   const pdfData = pdfBase64 ?? sessionMeta?.pdf_base64 ?? docxBase64 ?? sessionMeta?.docx_base64 ?? ''
-  const xmlData = xmlBase64 ?? sessionMeta?.oncue_xml_base64 ?? ''
   const canSave = isDirty || hasPendingInlineEdit
   const updatedLabel = sessionMeta?.updated_at ? new Date(sessionMeta.updated_at).toLocaleString() : '—'
 
   const handleDownloadPdf = useCallback(async () => {
-    let pdfToDownload = pdfData
-
-    if (isCriminal) {
-      const saved = canSave ? await handleSave() : await refreshCriminalArtifacts()
-      pdfToDownload = saved?.pdf_base64 ?? pdfToDownload
-    }
+    const saved = canSave ? await handleSave() : await refreshArtifacts()
+    const pdfToDownload = saved?.pdf_base64 ?? pdfData
 
     if (!pdfToDownload) {
       setError('PDF export is not available for this transcript.')
@@ -1418,7 +1224,7 @@ export default function TranscriptEditor({
     const mediaNameRaw = sessionMeta?.title_data?.FILE_NAME || sessionMeta?.media_filename || activeMediaKey || 'transcript'
     const mediaBaseName = sanitizeDownloadStem(String(mediaNameRaw).replace(/\.[^.]+$/, ''))
     onDownload(pdfToDownload, `${mediaBaseName} transcript.pdf`, 'application/pdf')
-  }, [activeMediaKey, canSave, handleSave, isCriminal, onDownload, pdfData, refreshCriminalArtifacts, sessionMeta])
+  }, [activeMediaKey, canSave, handleSave, onDownload, pdfData, refreshArtifacts, sessionMeta])
 
   const isTypingInField = useCallback((target: EventTarget | null) => {
     if (!(target instanceof HTMLElement)) return false
@@ -1520,26 +1326,44 @@ export default function TranscriptEditor({
             <button
               className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
               onClick={handleDownloadPdf}
-              disabled={saving || !sessionMeta || (isCriminal ? !activeMediaKey : !pdfData)}
+              disabled={saving || !sessionMeta || !activeMediaKey}
             >
               Export PDF
             </button>
             {appVariant === 'oncue' ? (
-              <button
-                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                onClick={() => xmlData && onDownload(xmlData, buildFilename('Transcript-Edited', '.xml'), 'application/xml')}
-                disabled={!xmlData}
-              >
-                Export XML
-              </button>
+              <>
+                <button
+                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                  onClick={handleDownloadXml}
+                  disabled={!activeMediaKey}
+                >
+                  Export XML
+                </button>
+                <button
+                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                  onClick={handleDownloadViewer}
+                  disabled={!activeMediaKey}
+                >
+                  Export Player
+                </button>
+              </>
             ) : (
-              <button
-                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                onClick={handleDownloadViewer}
-                disabled={!activeMediaKey}
-              >
-                Export Player
-              </button>
+              <>
+                <button
+                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                  onClick={handleDownloadViewer}
+                  disabled={!activeMediaKey}
+                >
+                  Export Player
+                </button>
+                <button
+                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                  onClick={handleDownloadXml}
+                  disabled={!activeMediaKey}
+                >
+                  Export XML
+                </button>
+              </>
             )}
             <button
               className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium flex items-center gap-2"

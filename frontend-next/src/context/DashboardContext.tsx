@@ -1,7 +1,6 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react'
-import { authenticatedFetch } from '@/utils/auth'
 import {
   listCases as localListCases,
   listUncategorizedTranscripts as localListUncategorized,
@@ -97,63 +96,43 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const refreshCases = useCallback(async () => {
     setCasesLoading(true)
     try {
-      if (appVariant === 'criminal') {
-        const localCases = await localListCases()
-        setCases(localCases)
-        const uncategorized = await localListUncategorized()
-        setUncategorizedCount(uncategorized.length)
-      } else {
-        const response = await authenticatedFetch('/api/cases')
-        if (response.ok) {
-          const data = await response.json()
-          setCases(data.cases || [])
-          setUncategorizedCount(data.uncategorized_count || 0)
-        }
-      }
+      const localCases = await localListCases()
+      setCases(localCases)
+      const uncategorized = await localListUncategorized()
+      setUncategorizedCount(uncategorized.length)
     } catch (err) {
       console.error('Failed to fetch cases:', err)
     } finally {
       setCasesLoading(false)
     }
-  }, [appVariant])
+  }, [])
 
   const refreshRecentTranscripts = useCallback(async () => {
     setRecentLoading(true)
     try {
-      if (appVariant === 'criminal') {
-        // Aggregate from all cases + uncategorized
-        const allTranscripts: TranscriptSummary[] = []
-        const localCases = await localListCases()
-        for (const c of localCases) {
-          const caseTranscripts = await listTranscriptsInCase(c.case_id)
-          allTranscripts.push(...caseTranscripts)
-        }
-        const uncategorized = await localListUncategorized()
-        allTranscripts.push(...uncategorized)
-        // Sort by updated_at desc and take 5
-        allTranscripts.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
-        setRecentTranscripts(
-          allTranscripts.slice(0, 5).map((t) => ({
-            media_key: t.media_key,
-            title_label: t.title_label,
-            updated_at: t.updated_at,
-            line_count: t.line_count,
-          })),
-        )
-      } else {
-        const response = await authenticatedFetch('/api/transcripts')
-        if (response.ok) {
-          const data = await response.json()
-          // Get most recent 5 for sidebar
-          setRecentTranscripts((data.transcripts || []).slice(0, 5))
-        }
+      const allTranscripts: TranscriptSummary[] = []
+      const localCases = await localListCases()
+      for (const c of localCases) {
+        const caseTranscripts = await listTranscriptsInCase(c.case_id)
+        allTranscripts.push(...caseTranscripts)
       }
+      const uncategorized = await localListUncategorized()
+      allTranscripts.push(...uncategorized)
+      allTranscripts.sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+      setRecentTranscripts(
+        allTranscripts.slice(0, 5).map((t) => ({
+          media_key: t.media_key,
+          title_label: t.title_label,
+          updated_at: t.updated_at,
+          line_count: t.line_count,
+        })),
+      )
     } catch (err) {
       console.error('Failed to fetch transcripts:', err)
     } finally {
       setRecentLoading(false)
     }
-  }, [appVariant])
+  }, [])
 
   // Initial load - only after variant is resolved
   useEffect(() => {

@@ -10,14 +10,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 
 try:
-    from .config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
+    from .config import DEFAULT_LINES_PER_PAGE
 except ImportError:
     try:
-        from config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
+        from config import DEFAULT_LINES_PER_PAGE
     except ImportError:
         import config as config_module
         DEFAULT_LINES_PER_PAGE = config_module.DEFAULT_LINES_PER_PAGE
-        APP_VARIANT = config_module.APP_VARIANT
 
 # Viewer module for criminal variant
 try:
@@ -363,23 +362,24 @@ def build_variant_exports(
     media_content_type: Optional[str],
     oncue_xml: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Build base64 exports for the active variant to avoid drift across flows."""
-    if app_variant == "criminal":
-        viewer_html = generate_viewer_html_from_artifacts(
-            line_entries,
-            title_data,
-            audio_duration,
-            lines_per_page,
-            media_filename=media_filename,
-            media_content_type=media_content_type or "video/mp4",
-        )
-        exports = {"viewer_html_base64": base64.b64encode(viewer_html.encode("utf-8")).decode("ascii")}
-        if oncue_xml is not None:
-            exports["oncue_xml_base64"] = base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")
-        return exports
+    """Build base64 XML + standalone viewer exports for all variants."""
+    _ = app_variant  # Kept for call-site compatibility.
     if oncue_xml is None:
-        raise ValueError("oncue_xml is required for oncue exports")
-    return {"oncue_xml_base64": base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii")}
+        raise ValueError("oncue_xml is required")
+
+    viewer_html = generate_viewer_html_from_artifacts(
+        line_entries,
+        title_data,
+        audio_duration,
+        lines_per_page,
+        media_filename=media_filename,
+        media_content_type=media_content_type or "video/mp4",
+    )
+
+    return {
+        "oncue_xml_base64": base64.b64encode(oncue_xml.encode("utf-8")).decode("ascii"),
+        "viewer_html_base64": base64.b64encode(viewer_html.encode("utf-8")).decode("ascii"),
+    }
 
 
 def parse_viewer_html(html_text: str) -> Dict[str, Any]:

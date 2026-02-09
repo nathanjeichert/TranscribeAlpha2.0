@@ -2,7 +2,6 @@
 
 import JSZip from 'jszip'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useDashboard } from '@/context/DashboardContext'
 import {
   FFmpegCanceledError,
   cancelActiveFFmpegJob,
@@ -75,7 +74,6 @@ function formatBytes(bytes: number): string {
 }
 
 export default function ConverterPage() {
-  const { appVariant } = useDashboard()
   const [items, setItems] = useState<ConverterItem[]>([])
   const [pageError, setPageError] = useState('')
   const [pageNotice, setPageNotice] = useState('')
@@ -393,17 +391,6 @@ export default function ConverterPage() {
     const readyCount = items.filter((item) => item.status === 'ready').length
     return { totalSize, convertedCount, readyCount }
   }, [items])
-
-  if (appVariant !== 'criminal') {
-    return (
-      <div className="p-8 max-w-4xl mx-auto">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8">
-          <h1 className="text-2xl font-semibold text-gray-900 mb-2">Media Converter</h1>
-          <p className="text-gray-600">The converter is available only in the criminal variant.</p>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-6">
