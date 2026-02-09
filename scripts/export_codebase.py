@@ -23,6 +23,12 @@ EXCLUDE_FILE_NAMES = {
     ".DS_Store",
     "Nielsen, Martin 2019-07-23.xml",
 }
+EXCLUDE_RELATIVE_PATHS = {
+    "clip_template.docx",
+    "transcript_template.docx",
+    "frontend-next/public/icon-192.png",
+    "frontend-next/public/icon-512.png",
+}
 
 
 PART_SPECS = {
@@ -128,9 +134,12 @@ def is_binary_bytes(data: bytes) -> bool:
 
 
 def should_exclude(path: Path) -> bool:
+    rel_path = path.relative_to(REPO_ROOT).as_posix()
+    if rel_path in EXCLUDE_RELATIVE_PATHS:
+        return True
     if path.name in EXCLUDE_FILE_NAMES:
         return True
-    for part in path.relative_to(REPO_ROOT).parts:
+    for part in Path(rel_path).parts:
         if part in EXCLUDE_DIR_NAMES:
             return True
     return False
