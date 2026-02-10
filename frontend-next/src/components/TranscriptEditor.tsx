@@ -1331,39 +1331,21 @@ export default function TranscriptEditor({
               Export PDF
             </button>
             {appVariant === 'oncue' ? (
-              <>
-                <button
-                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                  onClick={handleDownloadXml}
-                  disabled={!activeMediaKey}
-                >
-                  Export XML
-                </button>
-                <button
-                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                  onClick={handleDownloadViewer}
-                  disabled={!activeMediaKey}
-                >
-                  Export Player
-                </button>
-              </>
+              <button
+                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                onClick={handleDownloadXml}
+                disabled={!activeMediaKey}
+              >
+                Export XML
+              </button>
             ) : (
-              <>
-                <button
-                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                  onClick={handleDownloadViewer}
-                  disabled={!activeMediaKey}
-                >
-                  Export Player
-                </button>
-                <button
-                  className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                  onClick={handleDownloadXml}
-                  disabled={!activeMediaKey}
-                >
-                  Export XML
-                </button>
-              </>
+              <button
+                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+                onClick={handleDownloadViewer}
+                disabled={!activeMediaKey}
+              >
+                Export Player
+              </button>
             )}
             <button
               className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-700 text-sm font-medium flex items-center gap-2"

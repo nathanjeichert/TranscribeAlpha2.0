@@ -1643,43 +1643,23 @@ export default function TranscribePage() {
                   {zipBusy === 'pdf' ? 'Building PDF ZIP...' : 'Download All PDFs (.zip)'}
                 </button>
                 {appVariant === 'oncue' ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadBatchZip('xml')}
-                      disabled={zipBusy !== null}
-                      className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {zipBusy === 'xml' ? 'Building XML ZIP...' : 'Download All OnCue XML (.zip)'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadBatchZip('html')}
-                      disabled={zipBusy !== null}
-                      className="btn-outline px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {zipBusy === 'html' ? 'Building HTML ZIP...' : 'Download All HTML Viewer (.zip)'}
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadBatchZip('xml')}
+                    disabled={zipBusy !== null}
+                    className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {zipBusy === 'xml' ? 'Building XML ZIP...' : 'Download All OnCue XML (.zip)'}
+                  </button>
                 ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadBatchZip('html')}
-                      disabled={zipBusy !== null}
-                      className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {zipBusy === 'html' ? 'Building HTML ZIP...' : 'Download All HTML Viewer (.zip)'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadBatchZip('xml')}
-                      disabled={zipBusy !== null}
-                      className="btn-outline px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {zipBusy === 'xml' ? 'Building XML ZIP...' : 'Download All OnCue XML (.zip)'}
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadBatchZip('html')}
+                    disabled={zipBusy !== null}
+                    className="btn-primary px-4 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {zipBusy === 'html' ? 'Building HTML ZIP...' : 'Download All HTML Viewer (.zip)'}
+                  </button>
                 )}
               </div>
             </div>
@@ -1752,55 +1732,29 @@ export default function TranscribePage() {
                           </button>
 
                           {appVariant === 'oncue' ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!result.oncue_xml_base64) return
-                                  downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
-                                }}
-                                disabled={!result.oncue_xml_base64}
-                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                Download OnCue XML
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!result.viewer_html_base64) return
-                                  downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
-                                }}
-                                disabled={!result.viewer_html_base64}
-                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                Download HTML Viewer
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!result.oncue_xml_base64) return
+                                downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
+                              }}
+                              disabled={!result.oncue_xml_base64}
+                              className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Download OnCue XML
+                            </button>
                           ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!result.viewer_html_base64) return
-                                  downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
-                                }}
-                                disabled={!result.viewer_html_base64}
-                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                Download HTML Viewer
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (!result.oncue_xml_base64) return
-                                  downloadBase64File(result.oncue_xml_base64, buildItemFilename(item, '.xml'), 'application/xml')
-                                }}
-                                disabled={!result.oncue_xml_base64}
-                                className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                Download OnCue XML
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!result.viewer_html_base64) return
+                                downloadBase64File(result.viewer_html_base64, buildItemFilename(item, '.html'), 'text/html')
+                              }}
+                              disabled={!result.viewer_html_base64}
+                              className="btn-outline text-sm px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Download HTML Viewer
+                            </button>
                           )}
 
                           {effectiveCaseId && (
