@@ -13,6 +13,20 @@ export type CodecInfo = {
   isCorrupted?: boolean
 }
 
+export type ClipBatchRequest = {
+  id: string
+  startTime: number
+  endTime: number
+  downloadStem?: string
+}
+
+export type ClipBatchProgress = {
+  total: number
+  completed: number
+  currentId: string | null
+  currentRatio: number
+}
+
 type ProgressCallback = (ratio: number) => void
 type IterableDirectoryHandle = FileSystemDirectoryHandle & {
   entries(): AsyncIterable<[string, FileSystemHandle]>
@@ -201,6 +215,49 @@ function isOutOfMemoryError(error: Error): boolean {
     message.includes('cannot enlarge memory') ||
     message.includes('out of memory')
   )
+}
+
+function sanitizeFilenameStem(value: string): string {
+  const cleaned = value
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return cleaned || 'clip'
+}
+
+function buildClipOutputFilename(
+  sourceFile: File,
+  outputName: string,
+  request: ClipBatchRequest,
+): string {
+  const outputExtension = getFileExtension(outputName)
+  const stem = request.downloadStem?.trim()
+  if (stem) {
+    return outputExtension ? `${sanitizeFilenameStem(stem)}.${outputExtension}` : sanitizeFilenameStem(stem)
+  }
+
+  if (outputExtension) {
+    return replaceExtension(sourceFile.name, `_clip-${sanitizeFilenameStem(request.id)}.${outputExtension}`)
+  }
+  return replaceExtension(sourceFile.name, `_clip-${sanitizeFilenameStem(request.id)}`)
+}
+
+function normalizeClipExportError(error: unknown): Error {
+  const normalized = normalizeError(error)
+  if (isOutOfMemoryError(normalized)) {
+    return new Error('File too large for in-browser clip export. Try smaller files or desktop FFmpeg.')
+  }
+  return normalized
+}
+
+function validateClipRequest(request: ClipBatchRequest): void {
+  if (!request.id) {
+    throw new Error('Clip request id is required.')
+  }
+  if (!Number.isFinite(request.startTime) || !Number.isFinite(request.endTime) || request.endTime <= request.startTime) {
+    throw new Error('Invalid clip time range.')
+  }
 }
 
 async function canPlayNatively(file: File): Promise<boolean> {
@@ -570,8 +627,41 @@ export async function clipMedia(
   endTime: number,
   onProgress?: ProgressCallback,
 ): Promise<File> {
-  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
-    throw new Error('Invalid clip time range.')
+  const requestId = 'clip-single'
+  const defaultStem = replaceExtension(file.name, '_clip')
+  const outputById = await clipMediaBatch(
+    file,
+    [{ id: requestId, startTime, endTime, downloadStem: defaultStem }],
+    onProgress
+      ? (progress) => {
+        onProgress(progress.currentRatio)
+      }
+      : undefined,
+  )
+  const clipped = outputById.get(requestId)
+  if (!clipped) {
+    throw new Error('Clip export failed')
+  }
+  return clipped
+}
+
+export async function clipMediaBatch(
+  file: File,
+  requests: ClipBatchRequest[],
+  onProgress?: (progress: ClipBatchProgress) => void,
+): Promise<Map<string, File>> {
+  const seenIds = new Set<string>()
+  const validatedRequests = requests.map((request) => {
+    validateClipRequest(request)
+    if (seenIds.has(request.id)) {
+      throw new Error(`Duplicate clip request id: ${request.id}`)
+    }
+    seenIds.add(request.id)
+    return request
+  })
+
+  if (!validatedRequests.length) {
+    return new Map<string, File>()
   }
 
   return runSerial(async () => {
@@ -580,78 +670,130 @@ export async function clipMedia(
     const sourceFile = await maybeRepairWav(file)
     const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const inputName = `clip-input.${inputExt}`
-    const copyOutputName = `clip-output.${inputExt}`
-    const fallbackOutputName = isLikelyVideoFile(sourceFile) ? 'clip-output.mp4' : 'clip-output.wav'
-    const duration = Math.max(0, endTime - startTime)
+    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+    const workerFSMount = '/clip-input'
+    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+    const outputById = new Map<string, File>()
+    const total = validatedRequests.length
+    let completed = 0
+    let mounted = false
 
-    activeProgressCallback = onProgress ?? null
+    const emitProgress = (currentId: string | null, currentRatio: number) => {
+      if (!onProgress) return
+      onProgress({
+        total,
+        completed,
+        currentId,
+        currentRatio: Math.max(0, Math.min(1, currentRatio)),
+      })
+    }
+
+    activeProgressCallback = (ratio: number) => {
+      const currentRequest = validatedRequests[Math.min(completed, total - 1)]
+      emitProgress(currentRequest?.id || null, ratio)
+    }
+
+    emitProgress(validatedRequests[0]?.id || null, 0)
 
     try {
-      await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+      if (useWorkerFS) {
+        await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
+        mounted = true
+      } else {
+        await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+      }
 
-      let outputName = copyOutputName
+      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-      try {
-        const copyExit = await ffmpeg.exec([
-          '-ss', startTime.toString(),
-          '-t', duration.toString(),
-          '-i', inputName,
-          '-c', 'copy',
-          '-avoid_negative_ts', 'make_zero',
-          outputName,
-        ])
-        if (copyExit !== 0) throw new Error('Stream copy failed')
-      } catch {
-        await removeVirtualFile(ffmpeg, copyOutputName)
-        outputName = fallbackOutputName
+      for (let index = 0; index < validatedRequests.length; index += 1) {
+        const request = validatedRequests[index]
+        const duration = Math.max(0, request.endTime - request.startTime)
+        const copyOutputName = `clip-output-${index}.${inputExt}`
+        const fallbackOutputName = isLikelyVideoFile(sourceFile)
+          ? `clip-output-${index}.mp4`
+          : `clip-output-${index}.wav`
 
-        const fallbackArgs = isLikelyVideoFile(sourceFile)
-          ? [
-            '-ss', startTime.toString(),
-            '-t', duration.toString(),
-            '-i', inputName,
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '18',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-avoid_negative_ts', 'make_zero',
-            outputName,
-          ]
-          : [
-            '-ss', startTime.toString(),
-            '-t', duration.toString(),
-            '-i', inputName,
-            '-acodec', 'pcm_s16le',
-            outputName,
-          ]
+        try {
+          emitProgress(request.id, 0)
 
-        const fallbackExit = await ffmpeg.exec(fallbackArgs)
-        if (fallbackExit !== 0) {
-          throw new Error('Clip export failed')
+          let outputName = copyOutputName
+          try {
+            const copyExit = await ffmpeg.exec([
+              '-ss', request.startTime.toString(),
+              '-t', duration.toString(),
+              '-i', effectiveInput,
+              '-c', 'copy',
+              '-avoid_negative_ts', 'make_zero',
+              outputName,
+            ])
+            if (copyExit !== 0) throw new Error('Stream copy failed')
+          } catch {
+            await removeVirtualFile(ffmpeg, copyOutputName)
+            outputName = fallbackOutputName
+
+            const fallbackArgs = isLikelyVideoFile(sourceFile)
+              ? [
+                '-ss', request.startTime.toString(),
+                '-t', duration.toString(),
+                '-i', effectiveInput,
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '18',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-avoid_negative_ts', 'make_zero',
+                outputName,
+              ]
+              : [
+                '-ss', request.startTime.toString(),
+                '-t', duration.toString(),
+                '-i', effectiveInput,
+                '-acodec', 'pcm_s16le',
+                outputName,
+              ]
+
+            const fallbackExit = await ffmpeg.exec(fallbackArgs)
+            if (fallbackExit !== 0) {
+              throw new Error('Clip export failed')
+            }
+          }
+
+          const outputData = await ffmpeg.readFile(outputName)
+          const bytes = toUint8Array(outputData)
+          if (bytes.byteLength === 0) {
+            throw new Error('Clip export produced an empty output file')
+          }
+
+          outputById.set(
+            request.id,
+            new File([toBlobBuffer(bytes)], buildClipOutputFilename(sourceFile, outputName, request), {
+              type: getMimeTypeFromFilename(outputName, sourceFile),
+            }),
+          )
+
+          completed += 1
+          emitProgress(request.id, 1)
+        } finally {
+          await removeVirtualFile(ffmpeg, copyOutputName)
+          await removeVirtualFile(ffmpeg, fallbackOutputName)
         }
       }
 
-      const outputData = await ffmpeg.readFile(outputName)
-      const bytes = toUint8Array(outputData)
-      const outputExtension = getFileExtension(outputName)
-      const outputFilename = outputExtension
-        ? replaceExtension(file.name, `_clip.${outputExtension}`)
-        : replaceExtension(file.name, '_clip')
-      return new File([toBlobBuffer(bytes)], outputFilename, {
-        type: getMimeTypeFromFilename(outputName, sourceFile),
-      })
+      emitProgress(null, 1)
+      return outputById
     } catch (error) {
       if (terminatedByUser) {
         terminatedByUser = false
         throw new FFmpegCanceledError()
       }
-      throw normalizeError(error)
+      throw normalizeClipExportError(error)
     } finally {
       activeProgressCallback = null
-      await removeVirtualFile(ffmpeg, inputName)
-      await removeVirtualFile(ffmpeg, copyOutputName)
-      await removeVirtualFile(ffmpeg, fallbackOutputName)
+      if (mounted) {
+        try { await ffmpeg.unmount(workerFSMount) } catch { /* ignore unmount errors */ }
+      } else {
+        await removeVirtualFile(ffmpeg, inputName)
+      }
     }
   })
 }

@@ -25,6 +25,7 @@ import {
   promptRelinkMedia,
   storeMediaHandle,
 } from '@/lib/mediaHandles'
+import { clipMedia, clipMediaBatch, type ClipBatchRequest } from '@/lib/ffmpegWorker'
 import WaveSurfer from 'wavesurfer.js'
 import { authenticatedFetch } from '@/utils/auth'
 import { guardedPush } from '@/utils/navigationGuard'
@@ -335,6 +336,7 @@ export default function ViewerPage() {
   const [selectedSequenceId, setSelectedSequenceId] = useState<string | null>(null)
   const [sequenceNameDrafts, setSequenceNameDrafts] = useState<Record<string, string>>({})
   const [sequenceError, setSequenceError] = useState('')
+  const [sequenceExportStatus, setSequenceExportStatus] = useState('')
   const [viewerMode, setViewerMode] = useState<ViewerMode>('document')
   const [showToolsPanel, setShowToolsPanel] = useState(false)
   const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>('clips')
@@ -560,6 +562,20 @@ export default function ViewerPage() {
       if (!silent) setIsLoading(false)
     }
   }, [loadMediaForTranscript, setActiveMediaKey])
+
+  const getTranscriptForExport = useCallback(async (mediaKey: string): Promise<ViewerTranscript | null> => {
+    const cached = transcriptCacheRef.current[mediaKey]
+    if (cached) return cached
+    try {
+      const raw = await getTranscript(mediaKey)
+      if (!raw) return null
+      const normalized = normalizeTranscript(raw, mediaKey)
+      transcriptCacheRef.current[mediaKey] = normalized
+      return normalized
+    } catch {
+      return null
+    }
+  }, [])
 
   useEffect(() => {
     if (queryMediaKey) {
@@ -1511,7 +1527,7 @@ export default function ViewerPage() {
         ? transcript
         : transcriptCacheRef.current[clip.source_media_key] || null
 
-      const transcriptRecord = record || await loadTranscriptByKey(clip.source_media_key, true)
+      const transcriptRecord = record || await getTranscriptForExport(clip.source_media_key)
       if (!transcriptRecord) {
         throw new Error('Unable to load transcript for clip export.')
       }
@@ -1525,44 +1541,152 @@ export default function ViewerPage() {
     } finally {
       setExporting(false)
     }
-  }, [downloadBlob, loadTranscriptByKey, requestClipPdfBlob, transcript])
+  }, [downloadBlob, getTranscriptForExport, requestClipPdfBlob, transcript])
+
+  const exportClipMedia = useCallback(async (clip: ClipRecord) => {
+    if (!transcript) return
+    setClipError('')
+    setExporting(true)
+    try {
+      const record = clip.source_media_key === transcript.media_key
+        ? transcript
+        : transcriptCacheRef.current[clip.source_media_key] || null
+
+      const transcriptRecord = record || await getTranscriptForExport(clip.source_media_key)
+      if (!transcriptRecord) {
+        throw new Error('Unable to load transcript for clip export.')
+      }
+
+      const mediaSourceId = transcriptRecord.media_handle_id || transcriptRecord.media_key || clip.source_media_key
+      const mediaFile = await getMediaFile(mediaSourceId)
+      if (!mediaFile) {
+        throw new Error('Media file not available. Relink media before exporting this clip.')
+      }
+
+      const clipFile = await clipMedia(mediaFile, clip.start_time, clip.end_time)
+      const dotIndex = clipFile.name.lastIndexOf('.')
+      const extension = dotIndex > -1 ? clipFile.name.slice(dotIndex) : ''
+      const baseStem = sanitizeFilename(`${clip.name || 'clip'}-${clip.clip_id}`)
+      downloadBlob(clipFile, `${baseStem}${extension}`)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to export clip media'
+      setClipError(message)
+    } finally {
+      setExporting(false)
+    }
+  }, [downloadBlob, getTranscriptForExport, transcript])
 
   const exportSequenceZip = useCallback(async (sequence: ClipSequenceRecord) => {
     setExporting(true)
     setSequenceError('')
+    setSequenceExportStatus('')
 
     try {
       const zip = new JSZip()
-      const folder = zip.folder(sanitizeFilename(sequence.name))
-      if (!folder) throw new Error('Failed to initialize zip output')
+      const rootFolder = zip.folder(sanitizeFilename(sequence.name))
+      if (!rootFolder) throw new Error('Failed to initialize zip output')
+      const pdfFolder = rootFolder.folder('pdf')
+      const mediaFolder = rootFolder.folder('media')
+      if (!pdfFolder || !mediaFolder) throw new Error('Failed to initialize zip output folders')
 
       const orderedEntries = [...sequence.entries].sort((a, b) => a.order - b.order)
-      let exportIndex = 1
-
+      const exportItems: Array<{
+        entry: ClipSequenceEntry
+        clip: ClipRecord
+        orderToken: string
+        baseName: string
+      }> = []
       for (const entry of orderedEntries) {
         const clip = clips.find((item) => item.clip_id === entry.clip_id)
         if (!clip) continue
-
-        const transcriptRecord = transcriptCacheRef.current[entry.source_media_key] || await loadTranscriptByKey(entry.source_media_key, true)
-        if (!transcriptRecord) continue
-
-        const pdfBlob = await requestClipPdfBlob(transcriptRecord, clip)
-        const index = String(exportIndex).padStart(2, '0')
-        const baseName = sanitizeFilename(clip.name || `clip-${clip.clip_id}`)
-        folder.file(`${index}-${baseName}.pdf`, pdfBlob)
-        exportIndex += 1
+        const orderToken = String(exportItems.length + 1).padStart(2, '0')
+        exportItems.push({
+          entry,
+          clip,
+          orderToken,
+          baseName: sanitizeFilename(clip.name || `clip-${clip.clip_id}`),
+        })
       }
 
-      const output = await zip.generateAsync({ type: 'blob' })
+      if (!exportItems.length) {
+        throw new Error('No clips available for sequence export.')
+      }
+
+      const transcriptBySource = new Map<string, ViewerTranscript>()
+      setSequenceExportStatus(`Exporting clip PDFs 0/${exportItems.length}...`)
+
+      for (let index = 0; index < exportItems.length; index += 1) {
+        const item = exportItems[index]
+        let transcriptRecord = transcriptBySource.get(item.entry.source_media_key)
+        if (!transcriptRecord) {
+          const cached = transcriptCacheRef.current[item.entry.source_media_key] || null
+          transcriptRecord = cached || await getTranscriptForExport(item.entry.source_media_key)
+          if (!transcriptRecord) {
+            throw new Error(`Unable to load transcript for clip "${item.clip.name}".`)
+          }
+          transcriptBySource.set(item.entry.source_media_key, transcriptRecord)
+        }
+        const pdfBlob = await requestClipPdfBlob(transcriptRecord, item.clip)
+        pdfFolder.file(`${item.orderToken}-${item.baseName}.pdf`, pdfBlob)
+        setSequenceExportStatus(`Exporting clip PDFs ${index + 1}/${exportItems.length}...`)
+      }
+
+      const itemsBySource = new Map<string, typeof exportItems>()
+      exportItems.forEach((item) => {
+        const existing = itemsBySource.get(item.entry.source_media_key)
+        if (existing) {
+          existing.push(item)
+          return
+        }
+        itemsBySource.set(item.entry.source_media_key, [item])
+      })
+
+      let mediaCompleted = 0
+      setSequenceExportStatus(`Exporting media clips 0/${exportItems.length}...`)
+
+      for (const [sourceMediaKey, sourceItems] of Array.from(itemsBySource.entries())) {
+        const transcriptRecord = transcriptBySource.get(sourceMediaKey)
+        const mediaSourceId = transcriptRecord?.media_handle_id || sourceMediaKey
+        const mediaFile = await getMediaFile(mediaSourceId)
+        if (!mediaFile) {
+          throw new Error(`Media file not available for "${sourceMediaKey}". Relink media before sequence export.`)
+        }
+
+        const batchRequests: ClipBatchRequest[] = sourceItems.map((item) => ({
+          id: item.orderToken,
+          startTime: item.clip.start_time,
+          endTime: item.clip.end_time,
+          downloadStem: `${item.orderToken}-${item.baseName}`,
+        }))
+
+        const batchClips = await clipMediaBatch(mediaFile, batchRequests, (progress) => {
+          const completedNow = mediaCompleted + progress.completed
+          setSequenceExportStatus(`Exporting media clips ${completedNow}/${exportItems.length}...`)
+        })
+
+        batchRequests.forEach((request) => {
+          const clipFile = batchClips.get(request.id)
+          if (!clipFile) {
+            throw new Error(`Failed to export media clip ${request.id}.`)
+          }
+          mediaFolder.file(clipFile.name, clipFile)
+        })
+
+        mediaCompleted += sourceItems.length
+        setSequenceExportStatus(`Exporting media clips ${mediaCompleted}/${exportItems.length}...`)
+      }
+
+      setSequenceExportStatus('Building ZIP archive...')
+      const output = await zip.generateAsync({ type: 'blob', streamFiles: true })
       downloadBlob(output, `${sanitizeFilename(sequence.name)}.zip`)
-      setSequenceError('Media clip files are disabled until ffmpeg worker integration is merged.')
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to export sequence zip'
       setSequenceError(message)
     } finally {
+      setSequenceExportStatus('')
       setExporting(false)
     }
-  }, [clips, downloadBlob, loadTranscriptByKey, requestClipPdfBlob])
+  }, [clips, downloadBlob, getTranscriptForExport, requestClipPdfBlob])
 
   const getViewerTemplate = useCallback(async () => {
     if (templateCacheRef.current) return templateCacheRef.current
@@ -2329,6 +2453,9 @@ export default function ViewerPage() {
                                         <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => void exportClipPdf(clip)} disabled={exporting}>
                                           Export PDF
                                         </button>
+                                        <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => void exportClipMedia(clip)} disabled={exporting}>
+                                          Export Media
+                                        </button>
                                         <button type="button" className="btn-outline px-2 py-1 text-xs text-red-700" onClick={() => void removeClip(clip)}>
                                           Delete
                                         </button>
@@ -2409,6 +2536,11 @@ export default function ViewerPage() {
                     {sequenceError && (
                       <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                         {sequenceError}
+                      </div>
+                    )}
+                    {sequenceExportStatus && (
+                      <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                        {sequenceExportStatus}
                       </div>
                     )}
 
