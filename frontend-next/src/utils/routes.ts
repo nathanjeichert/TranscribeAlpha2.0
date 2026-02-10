@@ -7,6 +7,7 @@ export const normalizePathname = (pathname: string) => {
 
 export const routes = {
   home: () => '/',
+  jobs: () => withTrailingSlash('/jobs'),
   transcribe: (caseId?: string) => {
     const base = withTrailingSlash('/transcribe')
     if (!caseId) return base

@@ -234,31 +234,6 @@ def transcribe_with_assemblyai(
         logger.error("ASSEMBLYAI_API_KEY not configured")
         return None
 
-    def _build_primary_config() -> "aai.TranscriptionConfig":
-        # Configure transcription with speaker diarization
-        prompt = (
-            "Produce a verbatim transcript. Include disfluencies and fillers (um, uh, er, ah, hmm, mhm, like, you know, I mean), "
-            "repetitions (I I, the the), restarts (I was- I went), stutters (th-that, b-but), "
-            "and informal speech (gonna, wanna, gotta)."
-        )
-
-        config_kwargs = {
-            "speech_models": ["universal-3-pro"],
-            "prompt": prompt,
-            "format_text": True,
-            "speaker_labels": True,
-        }
-        if speakers_expected is not None:
-            config_kwargs["speakers_expected"] = speakers_expected
-
-        # `temperature` is supported in newer SDK versions.
-        if "temperature" in inspect.signature(aai.TranscriptionConfig).parameters:
-            config_kwargs["temperature"] = 0.1
-        else:
-            logger.warning("AssemblyAI SDK does not support `temperature`; upgrade to assemblyai>=0.50.0")
-
-        return aai.TranscriptionConfig(**config_kwargs)
-
     try:
         logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
         logger.info(
@@ -267,7 +242,7 @@ def transcribe_with_assemblyai(
         )
 
         transcriber = aai.Transcriber()
-        config = _build_primary_config()
+        config = build_assemblyai_config(speakers_expected)
         transcript = transcriber.transcribe(audio_path, config=config)
 
         # Check for errors
@@ -335,6 +310,113 @@ def transcribe_with_assemblyai(
 
         logger.error(traceback.format_exc())
         raise RuntimeError(f"AssemblyAI transcription error: {e}") from e
+
+
+def build_assemblyai_config(speakers_expected: Optional[int] = None) -> "aai.TranscriptionConfig":
+    """Build the AssemblyAI config used for legal transcription."""
+    if not ASSEMBLYAI_AVAILABLE:
+        raise RuntimeError("AssemblyAI SDK not installed. Run: pip install assemblyai")
+
+    prompt = (
+        "Produce a verbatim transcript. Include disfluencies and fillers (um, uh, er, ah, hmm, mhm, like, you know, I mean), "
+        "repetitions (I I, the the), restarts (I was- I went), stutters (th-that, b-but), "
+        "and informal speech (gonna, wanna, gotta)."
+    )
+
+    config_kwargs = {
+        "speech_models": ["universal-3-pro"],
+        "prompt": prompt,
+        "format_text": True,
+        "speaker_labels": True,
+    }
+    if speakers_expected is not None:
+        config_kwargs["speakers_expected"] = speakers_expected
+
+    # `temperature` is supported in newer SDK versions.
+    if "temperature" in inspect.signature(aai.TranscriptionConfig).parameters:
+        config_kwargs["temperature"] = 0.1
+    else:
+        logger.warning("AssemblyAI SDK does not support `temperature`; upgrade to assemblyai>=0.50.0")
+
+    return aai.TranscriptionConfig(**config_kwargs)
+
+
+def turns_from_assemblyai_response(response: object, include_timestamps: bool = True) -> List[TranscriptTurn]:
+    """
+    Convert an AssemblyAI transcript response into our TranscriptTurn format.
+
+    Supports both the SDK Transcript wrapper (response.transcript) and the raw TranscriptResponse.
+    """
+    if not response:
+        return []
+
+    # SDK Transcript wrapper has `.transcript` (TranscriptResponse) and `.id`/`.status`.
+    transcript = getattr(response, "transcript", None) or response
+
+    utterances = getattr(transcript, "utterances", None) or []
+    turns: List[TranscriptTurn] = []
+
+    if utterances:
+        for utterance in utterances:
+            speaker_label = getattr(utterance, "speaker", None)
+            speaker_name = normalize_speaker_label(speaker_label, fallback="SPEAKER A")
+
+            timestamp_str = None
+            if include_timestamps and getattr(utterance, "start", None) is not None:
+                start_ms = float(getattr(utterance, "start"))
+                start_seconds = start_ms / 1000.0
+                minutes = int(start_seconds // 60)
+                seconds = int(start_seconds % 60)
+                timestamp_str = f"[{minutes:02d}:{seconds:02d}]"
+
+            word_timestamps: List[WordTimestamp] = []
+            words = getattr(utterance, "words", None) or []
+            for word in words:
+                word_text = getattr(word, "text", "")
+                if not word_text:
+                    continue
+                word_speaker_raw = getattr(word, "speaker", None)
+                word_speaker = normalize_speaker_label(word_speaker_raw, fallback=speaker_name)
+                start_val = getattr(word, "start", None)
+                end_val = getattr(word, "end", None)
+                if start_val is None or end_val is None:
+                    continue
+                confidence_val = getattr(word, "confidence", None)
+                word_timestamps.append(
+                    WordTimestamp(
+                        text=str(word_text),
+                        start=float(start_val),
+                        end=float(end_val),
+                        confidence=float(confidence_val) if confidence_val is not None else None,
+                        speaker=word_speaker,
+                    )
+                )
+
+            turns.append(
+                TranscriptTurn(
+                    speaker=speaker_name,
+                    text=str(getattr(utterance, "text", "") or ""),
+                    timestamp=timestamp_str,
+                    words=word_timestamps if word_timestamps else None,
+                )
+            )
+
+        return mark_continuation_turns(turns)
+
+    # Fallback: no utterances (unexpected if speaker_labels is enabled).
+    text_value = str(getattr(transcript, "text", "") or "").strip()
+    if not text_value:
+        return []
+
+    turns.append(
+        TranscriptTurn(
+            speaker="SPEAKER A",
+            text=text_value,
+            timestamp="[00:00]" if include_timestamps else None,
+            words=None,
+        )
+    )
+    return turns
 
 
 def get_media_duration(file_path: str) -> Optional[float]:

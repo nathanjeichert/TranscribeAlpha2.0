@@ -13,9 +13,10 @@ interface NavItemProps {
   active?: boolean
   collapsed?: boolean
   title?: string
+  badge?: React.ReactNode
 }
 
-function NavItem({ href, icon, label, active, collapsed, title }: NavItemProps) {
+function NavItem({ href, icon, label, active, collapsed, title, badge }: NavItemProps) {
   return (
     <Link
       href={href}
@@ -28,8 +29,20 @@ function NavItem({ href, icon, label, active, collapsed, title }: NavItemProps) 
           : 'text-primary-300 hover:bg-primary-800 hover:text-white'
       }`}
     >
-      <span className="w-5 h-5 flex items-center justify-center opacity-80">{icon}</span>
-      {!collapsed && <span>{label}</span>}
+      <span className="relative w-5 h-5 flex items-center justify-center opacity-80">
+        {icon}
+        {collapsed && badge ? (
+          <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400" />
+        ) : null}
+      </span>
+      {!collapsed && (
+        <span className="flex-1 min-w-0 truncate">{label}</span>
+      )}
+      {!collapsed && badge ? (
+        <span className="ml-auto text-xs font-semibold px-2 py-0.5 rounded-full bg-primary-800 text-primary-100">
+          {badge}
+        </span>
+      ) : null}
     </Link>
   )
 }
@@ -44,7 +57,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const rawPathname = usePathname()
   const searchParams = useSearchParams()
   const pathname = normalizePathname(rawPathname)
-  const { cases, uncategorizedCount, recentTranscripts, setActiveMediaKey } = useDashboard()
+  const { cases, uncategorizedCount, recentTranscripts, setActiveMediaKey, activeJobCount } = useDashboard()
 
   const isActive = (path: string) => {
     if (path === '/') return pathname === '/'
@@ -106,6 +119,20 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </svg>
           }
           label="Dashboard"
+        />
+
+        <NavItem
+          href={routes.jobs()}
+          active={isActive(routes.jobs())}
+          collapsed={collapsed}
+          badge={activeJobCount > 0 ? activeJobCount : null}
+          icon={
+            <svg fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="w-5 h-5">
+              <path d="M8 6h13M8 12h13M8 18h13" />
+              <path d="M3 6h.01M3 12h.01M3 18h.01" />
+            </svg>
+          }
+          label="Jobs"
         />
 
         <NavItem

@@ -1,57 +1,34 @@
 'use client'
 
 import JSZip from 'jszip'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import {
-  FFmpegCanceledError,
-  cancelActiveFFmpegJob,
-  convertToPlayable,
-  detectCodec,
-  readConvertedFromCache,
-  writeConvertedToCache,
-  type CodecInfo,
-} from '@/lib/ffmpegWorker'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { useDashboard, type JobRecord, type JobStatus } from '@/context/DashboardContext'
 
-type ConverterStatus =
-  | 'detecting'
-  | 'ready'
-  | 'already-playable'
-  | 'skipped'
-  | 'converting'
-  | 'converted'
-  | 'failed'
-
-interface ConverterItem {
-  id: string
-  file: File
-  codec: CodecInfo | null
-  status: ConverterStatus
-  progress: number
-  error: string
-  convertedFile: File | null
-}
-
-const buildId = () => `${Date.now()}_${Math.random().toString(16).slice(2)}`
-const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024
 const LARGE_ZIP_WARNING_BYTES = 750 * 1024 * 1024
 
-function statusLabel(status: ConverterStatus): string {
-  if (status === 'detecting') return 'Detecting'
-  if (status === 'ready') return 'Ready'
-  if (status === 'already-playable') return 'Already OK'
-  if (status === 'skipped') return 'Skipped'
-  if (status === 'converting') return 'Converting'
-  if (status === 'converted') return 'Converted'
-  return 'Failed'
+function statusLabel(job: JobRecord): string {
+  if (job.status === 'queued') {
+    if (!job.codec) return 'Detecting'
+    if (job.needsConversion) return 'Ready'
+    return 'Ready'
+  }
+  if (job.status === 'running') return 'Converting'
+  if (job.status === 'succeeded' && job.needsConversion === false) return 'Already OK'
+  if (job.status === 'succeeded') return 'Converted'
+  if (job.status === 'canceled') return 'Canceled'
+  if (job.status === 'failed') return 'Failed'
+  if (job.status === 'finalizing') return 'Finalizing'
+  return job.status
 }
 
-function statusClass(status: ConverterStatus): string {
-  if (status === 'converted') return 'bg-green-100 text-green-700'
-  if (status === 'ready') return 'bg-blue-100 text-blue-700'
-  if (status === 'already-playable') return 'bg-gray-100 text-gray-700'
-  if (status === 'converting') return 'bg-primary-100 text-primary-700'
+function statusClass(status: JobStatus, needsConversion?: boolean): string {
+  if (status === 'succeeded' && needsConversion === false) return 'bg-gray-100 text-gray-700'
+  if (status === 'succeeded') return 'bg-green-100 text-green-700'
+  if (status === 'running') return 'bg-primary-100 text-primary-700'
   if (status === 'failed') return 'bg-red-100 text-red-700'
-  return 'bg-amber-100 text-amber-800'
+  if (status === 'canceled') return 'bg-amber-100 text-amber-800'
+  if (status === 'queued') return 'bg-blue-100 text-blue-700'
+  return 'bg-gray-100 text-gray-700'
 }
 
 function downloadFile(file: File) {
@@ -74,80 +51,61 @@ function formatBytes(bytes: number): string {
 }
 
 export default function ConverterPage() {
-  const [items, setItems] = useState<ConverterItem[]>([])
+  const {
+    jobs,
+    addConversionJobs,
+    startConversionQueue,
+    stopConversionQueue,
+    retryJob,
+    removeJob,
+    getConvertedFile,
+  } = useDashboard()
+
   const [pageError, setPageError] = useState('')
   const [pageNotice, setPageNotice] = useState('')
-  const [isConverting, setIsConverting] = useState(false)
   const [zipBusy, setZipBusy] = useState(false)
   const [dragOver, setDragOver] = useState(false)
-  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const stopRequestedRef = useRef(false)
-  const itemsRef = useRef<ConverterItem[]>([])
   const dragDepthRef = useRef(0)
 
-  useEffect(() => {
-    itemsRef.current = items
-  }, [items])
+  const conversionJobs = useMemo(() => {
+    return [...jobs]
+      .filter((job) => job.kind === 'conversion')
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  }, [jobs])
 
-  const updateItem = useCallback((id: string, updater: Partial<ConverterItem> | ((item: ConverterItem) => ConverterItem)) => {
-    setItems((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item
-        if (typeof updater === 'function') {
-          return updater(item)
-        }
-        return { ...item, ...updater }
-      }),
-    )
-  }, [])
+  const isConverting = useMemo(() => {
+    return conversionJobs.some((job) => job.status === 'running')
+  }, [conversionJobs])
 
-  const detectForItem = useCallback(async (id: string, file: File) => {
-    try {
-      const codec = await detectCodec(file)
-      if (codec.needsConversion) {
-        updateItem(id, {
-          codec,
-          status: 'ready',
-          error: '',
-        })
-        return
+  const runningJob = useMemo(() => conversionJobs.find((job) => job.status === 'running') ?? null, [conversionJobs])
+
+  const totals = useMemo(() => {
+    const totalSize = conversionJobs.reduce((sum, job) => sum + (job.fileSizeBytes || 0), 0)
+    const readyCount = conversionJobs.filter((job) => job.status === 'queued' && job.needsConversion).length
+    const convertedCount = conversionJobs.filter((job) => job.status === 'succeeded' && job.needsConversion).length
+    const alreadyOkCount = conversionJobs.filter((job) => job.status === 'succeeded' && job.needsConversion === false).length
+    return { totalSize, readyCount, convertedCount, alreadyOkCount }
+  }, [conversionJobs])
+
+  const failedCount = useMemo(() => {
+    return conversionJobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length
+  }, [conversionJobs])
+
+  const addFiles = useCallback(
+    async (incoming: File[]) => {
+      if (!incoming.length) return
+      setPageError('')
+      setPageNotice('')
+      try {
+        await addConversionJobs(incoming)
+      } catch {
+        setPageError('Failed to add files.')
       }
-
-      updateItem(id, {
-        codec,
-        status: 'already-playable',
-        error: '',
-      })
-    } catch {
-      updateItem(id, {
-        codec: null,
-        status: 'skipped',
-        error: 'Could not detect format.',
-      })
-    }
-  }, [updateItem])
-
-  const addFiles = useCallback(async (incoming: File[]) => {
-    if (!incoming.length) return
-    setPageError('')
-    setPageNotice('')
-
-    const newItems: ConverterItem[] = incoming.map((file) => ({
-      id: buildId(),
-      file,
-      codec: null,
-      status: 'detecting',
-      progress: 0,
-      error: '',
-      convertedFile: null,
-    }))
-
-    setItems((prev) => [...prev, ...newItems])
-
-    await Promise.allSettled(newItems.map((item) => detectForItem(item.id, item.file)))
-  }, [detectForItem])
+    },
+    [addConversionJobs],
+  )
 
   const handleFileInputChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
@@ -186,154 +144,45 @@ export default function ConverterPage() {
 
   const convertReadyFiles = useCallback(async () => {
     if (isConverting) return
-
-    const readyItems = itemsRef.current.filter((item) => item.status === 'ready')
-    if (!readyItems.length) {
+    if (totals.readyCount === 0) {
       setPageError('No files are ready to convert.')
       return
     }
-
-    const itemsToConvert: ConverterItem[] = []
-    for (const item of readyItems) {
-      if (item.file.size <= LARGE_FILE_WARNING_BYTES) {
-        itemsToConvert.push(item)
-        continue
-      }
-
-      const shouldContinue = window.confirm(
-        `This file is very large (${formatBytes(item.file.size)}). In-browser conversion may fail. Continue?\n\n${item.file.name}`,
-      )
-      if (shouldContinue) {
-        updateItem(item.id, { error: '' })
-        itemsToConvert.push(item)
-      } else {
-        updateItem(item.id, {
-          status: 'ready',
-          progress: 0,
-          error: 'Skipped in this batch due to large file size.',
-        })
-      }
+    try {
+      await startConversionQueue({ promptLargeFiles: true })
+    } finally {
+      // Runner status is reflected via jobs; keep the page state minimal.
     }
+  }, [isConverting, startConversionQueue, totals.readyCount])
 
-    if (!itemsToConvert.length) {
-      setPageError('')
-      setPageNotice('No files selected for conversion after large-file warnings.')
+  const handleStop = useCallback(() => {
+    stopConversionQueue()
+    setPageNotice('Stopping conversion...')
+  }, [stopConversionQueue])
+
+  const retryFailed = useCallback(async () => {
+    if (isConverting) return
+    const targets = conversionJobs.filter((job) => job.status === 'failed' || job.status === 'canceled')
+    if (!targets.length) {
+      setPageNotice('No failed conversions to retry.')
       return
     }
 
-    stopRequestedRef.current = false
-    setIsConverting(true)
-    setBatchProgress({ current: 1, total: itemsToConvert.length })
     setPageError('')
     setPageNotice('')
-
-    try {
-      for (let index = 0; index < itemsToConvert.length; index += 1) {
-        const item = itemsToConvert[index]
-        if (stopRequestedRef.current) break
-
-        setBatchProgress({ current: index + 1, total: itemsToConvert.length })
-        updateItem(item.id, {
-          status: 'converting',
-          progress: 0,
-          error: '',
-        })
-
-        try {
-          let cached: File | null = null
-          try {
-            cached = await readConvertedFromCache(item.file)
-          } catch (cacheReadError) {
-            console.warn('Converter cache read failed, continuing with conversion.', cacheReadError)
-          }
-
-          if (cached) {
-            updateItem(item.id, {
-              status: 'converted',
-              convertedFile: cached,
-              progress: 1,
-            })
-            continue
-          }
-
-          let converted: File | null = null
-
-          try {
-            converted = await convertToPlayable(item.file, (ratio) => {
-              updateItem(item.id, {
-                status: 'converting',
-                progress: ratio,
-              })
-            })
-          } catch (clientError) {
-            if (clientError instanceof FFmpegCanceledError || stopRequestedRef.current) {
-              updateItem(item.id, {
-                status: 'failed',
-                error: 'Conversion canceled.',
-              })
-              break
-            }
-            const message = clientError instanceof Error ? clientError.message : 'In-browser conversion failed.'
-            updateItem(item.id, {
-              status: 'failed',
-              error: message,
-            })
-            continue
-          }
-
-          if (!converted) continue
-
-          try {
-            await writeConvertedToCache(item.file, converted)
-          } catch (cacheWriteError) {
-            console.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
-          }
-
-          updateItem(item.id, {
-            status: 'converted',
-            convertedFile: converted,
-            progress: 1,
-          })
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Conversion failed.'
-          updateItem(item.id, {
-            status: 'failed',
-            error: message,
-          })
-        }
-      }
-    } finally {
-      setIsConverting(false)
-      setBatchProgress(null)
-      if (stopRequestedRef.current) {
-        setPageNotice('Conversion stopped. Completed files were kept.')
-      }
-      stopRequestedRef.current = false
+    for (const job of targets) {
+      retryJob(job.id)
     }
-  }, [isConverting, updateItem])
-
-  const handleStop = useCallback(() => {
-    stopRequestedRef.current = true
-    cancelActiveFFmpegJob()
-  }, [])
-
-  const removeItem = useCallback((id: string) => {
-    if (isConverting) return
-    setItems((prev) => prev.filter((item) => item.id !== id))
-  }, [isConverting])
-
-  const retryItem = useCallback((id: string) => {
-    if (isConverting) return
-    updateItem(id, {
-      status: 'ready',
-      progress: 0,
-      error: '',
-      convertedFile: null,
-    })
-  }, [isConverting, updateItem])
+    await startConversionQueue({ promptLargeFiles: true })
+  }, [conversionJobs, isConverting, retryJob, startConversionQueue])
 
   const downloadAllZip = useCallback(async () => {
-    const converted = itemsRef.current.filter((item) => item.convertedFile).map((item) => item.convertedFile as File)
+    const converted: File[] = []
+    for (const job of conversionJobs) {
+      if (job.status !== 'succeeded' || !job.needsConversion) continue
+      const file = getConvertedFile(job.id)
+      if (file) converted.push(file)
+    }
     if (!converted.length) {
       setPageError('No converted files are available to download.')
       return
@@ -383,14 +232,14 @@ export default function ConverterPage() {
     } finally {
       setZipBusy(false)
     }
-  }, [])
+  }, [conversionJobs, getConvertedFile])
 
-  const totals = useMemo(() => {
-    const totalSize = items.reduce((sum, item) => sum + item.file.size, 0)
-    const convertedCount = items.filter((item) => item.status === 'converted').length
-    const readyCount = items.filter((item) => item.status === 'ready').length
-    return { totalSize, convertedCount, readyCount }
-  }, [items])
+  const clearAll = useCallback(() => {
+    if (isConverting) return
+    for (const job of conversionJobs) {
+      removeJob(job.id)
+    }
+  }, [conversionJobs, isConverting, removeJob])
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-6">
@@ -445,15 +294,16 @@ export default function ConverterPage() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="p-4 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="font-semibold text-gray-900">Files ({items.length})</h2>
+            <h2 className="font-semibold text-gray-900">Files ({conversionJobs.length})</h2>
             <p className="text-sm text-gray-500">
               {formatBytes(totals.totalSize)} total, {totals.readyCount} ready, {totals.convertedCount} converted
+              {totals.alreadyOkCount ? `, ${totals.alreadyOkCount} already OK` : ''}
             </p>
-            {isConverting && batchProgress && (
+            {runningJob ? (
               <p className="text-sm font-medium text-primary-700 mt-1">
-                Converting {batchProgress.current} of {batchProgress.total}
+                Converting: {runningJob.title} {typeof runningJob.progress === 'number' ? `(${Math.round(runningJob.progress * 100)}%)` : ''}
               </p>
-            )}
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -463,6 +313,14 @@ export default function ConverterPage() {
               className="btn-primary px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Convert All
+            </button>
+            <button
+              type="button"
+              onClick={retryFailed}
+              disabled={isConverting || failedCount === 0}
+              className="btn-outline px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Retry Failed ({failedCount})
             </button>
             <button
               type="button"
@@ -482,11 +340,8 @@ export default function ConverterPage() {
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (isConverting) return
-                setItems([])
-              }}
-              disabled={isConverting || items.length === 0}
+              onClick={clearAll}
+              disabled={isConverting || conversionJobs.length === 0}
               className="btn-outline px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Clear
@@ -495,49 +350,59 @@ export default function ConverterPage() {
         </div>
 
         <div className="divide-y divide-gray-100">
-          {items.map((item) => (
-            <div key={item.id} className="p-4 flex flex-wrap items-center gap-4">
+          {conversionJobs.map((job) => {
+            const convertedFile = job.needsConversion ? getConvertedFile(job.id) : null
+            const downloadUnavailable =
+              job.status === 'succeeded' && job.needsConversion && !convertedFile
+
+            return (
+            <div key={job.id} className="p-4 flex flex-wrap items-center gap-4">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-gray-900 truncate">{item.file.name}</p>
+                <p className="font-medium text-gray-900 truncate">{job.title}</p>
                 <p className="text-sm text-gray-500">
-                  {(item.codec?.codecName || 'Unknown')} • {formatBytes(item.file.size)}
+                  {(job.codec?.codecName || 'Unknown')} • {formatBytes(job.fileSizeBytes || 0)}
                 </p>
-                {item.error && <p className="text-sm text-red-600 mt-1">{item.error}</p>}
+                {job.error ? <p className="text-sm text-red-600 mt-1">{job.error}</p> : null}
+                {downloadUnavailable ? (
+                  <p className="text-xs text-amber-700 mt-1">
+                    Download unavailable after refresh. Reconvert to regenerate the output.
+                  </p>
+                ) : null}
               </div>
 
-              {item.status === 'converting' ? (
+              {job.status === 'running' ? (
                 <div className="w-40">
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div className="h-full bg-primary-600 transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
+                    <div className="h-full bg-primary-600 transition-all" style={{ width: `${Math.round((job.progress || 0) * 100)}%` }} />
                   </div>
-                  <p className="text-xs text-gray-500 mt-1">{Math.round(item.progress * 100)}%</p>
+                  <p className="text-xs text-gray-500 mt-1">{Math.round((job.progress || 0) * 100)}%</p>
                 </div>
               ) : (
                 <div className="w-40" />
               )}
 
-              <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusClass(item.status)}`}>
-                {statusLabel(item.status)}
+              <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusClass(job.status, job.needsConversion)}`}>
+                {statusLabel(job)}
               </span>
 
-              {item.status === 'failed' && (
+              {(job.status === 'failed' || job.status === 'canceled' || downloadUnavailable) && (
                 <button
                   type="button"
-                  onClick={() => retryItem(item.id)}
-                  disabled={isConverting}
+                  onClick={() => retryJob(job.id)}
+                  disabled={isConverting || job.status === 'running'}
                   className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Retry
+                  {downloadUnavailable ? 'Reconvert' : 'Retry'}
                 </button>
               )}
 
               <button
                 type="button"
                 onClick={() => {
-                  if (!item.convertedFile) return
-                  downloadFile(item.convertedFile)
+                  if (!convertedFile) return
+                  downloadFile(convertedFile)
                 }}
-                disabled={!item.convertedFile}
+                disabled={!convertedFile}
                 className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Download
@@ -545,17 +410,17 @@ export default function ConverterPage() {
 
               <button
                 type="button"
-                onClick={() => removeItem(item.id)}
-                disabled={isConverting}
+                onClick={() => removeJob(job.id)}
+                disabled={isConverting || job.status === 'running'}
                 className="btn-outline px-3 py-1.5 text-sm text-red-700 border-red-300 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                aria-label={`Remove ${item.file.name}`}
+                aria-label={`Remove ${job.title}`}
               >
                 X
               </button>
             </div>
-          ))}
+          )})}
 
-          {items.length === 0 && (
+          {conversionJobs.length === 0 && (
             <div className="p-8 text-center text-gray-500">No files selected yet.</div>
           )}
         </div>

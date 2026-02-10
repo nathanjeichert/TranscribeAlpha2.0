@@ -3,6 +3,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -44,9 +45,19 @@ except ImportError:
     from storage import save_upload_to_tempfile
 
 try:
-    from ..transcriber import convert_video_to_audio, get_media_duration, process_transcription
+    from ..transcriber import (
+        build_assemblyai_config,
+        convert_video_to_audio,
+        get_media_duration,
+        turns_from_assemblyai_response,
+    )
 except ImportError:
-    from transcriber import convert_video_to_audio, get_media_duration, process_transcription
+    from transcriber import (
+        build_assemblyai_config,
+        convert_video_to_audio,
+        get_media_duration,
+        turns_from_assemblyai_response,
+    )
 
 try:
     from ..transcript_formatting import create_pdf
@@ -84,6 +95,16 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 _RESYNC_MEDIA_TTL_SECONDS = 15 * 60
 _RESYNC_MEDIA_REGISTRY = {}
+_MEDIA_KEY_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+def _normalize_media_key(value: Optional[object]) -> Optional[str]:
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return None
+    if _MEDIA_KEY_RE.fullmatch(candidate):
+        return candidate
+    return None
 
 
 def _cleanup_resync_media_registry():
@@ -320,6 +341,7 @@ async def transcribe(
     transcription_model: str = Form("assemblyai"),
     case_id: Optional[str] = Form(None),
     source_filename: Optional[str] = Form(None),
+    media_key: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
 ):
     _ = current_user
@@ -342,20 +364,36 @@ async def transcribe(
     media_content_type = file.content_type or mimetypes.guess_type(display_filename)[0] or "application/octet-stream"
 
     temp_upload_path = None
+    file_size = None
     try:
-        temp_upload_path, file_size = await save_upload_to_tempfile(file)
-        logger.info("Transcription upload size: %.2f MB", file_size / (1024 * 1024))
+        if transcription_model == "assemblyai":
+            # Avoid an extra tempfile copy: UploadFile already stores data in a spooled temp file;
+            # we stream that directly to AssemblyAI.
+            try:
+                file.file.seek(0, os.SEEK_END)
+                file_size = file.file.tell()
+                file.file.seek(0)
+            except Exception:
+                file_size = None
 
-        if file_size > 2 * 1024 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+            if file_size is not None:
+                logger.info("Transcription upload size: %.2f MB", file_size / (1024 * 1024))
+                if file_size > 2 * 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+        else:
+            temp_upload_path, file_size = await save_upload_to_tempfile(file)
+            logger.info("Transcription upload size: %.2f MB", file_size / (1024 * 1024))
 
-        if not temp_upload_path:
-            raise HTTPException(status_code=400, detail="Unable to read uploaded file")
+            if file_size > 2 * 1024 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+
+            if not temp_upload_path:
+                raise HTTPException(status_code=400, detail="Unable to read uploaded file")
 
         if speakers_expected is not None and speakers_expected <= 0:
             raise HTTPException(status_code=400, detail="speakers_expected must be a positive integer")
 
-        media_key = uuid.uuid4().hex
+        effective_media_key = _normalize_media_key(media_key) or uuid.uuid4().hex
         title_data = {
             "CASE_NAME": case_name,
             "CASE_NUMBER": case_number,
@@ -365,20 +403,60 @@ async def transcribe(
             "LOCATION": location,
             "FILE_NAME": display_filename,
             "FILE_DURATION": "Calculating...",
-            "MEDIA_ID": media_key,
+            "MEDIA_ID": effective_media_key,
         }
 
         duration_seconds = 0.0
         asr_start_time = time.time()
 
         if transcription_model == "assemblyai":
-            turns, duration_seconds = process_transcription(
-                None,
-                file.filename or display_filename,
-                speakers_expected,
-                title_data,
-                input_path=temp_upload_path,
+            try:
+                import assemblyai as aai
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"AssemblyAI SDK unavailable: {exc}") from exc
+
+            try:
+                try:
+                    file.file.seek(0)
+                except Exception:
+                    pass
+
+                config = build_assemblyai_config(speakers_expected)
+                transcript = await anyio.to_thread.run_sync(
+                    lambda: aai.Transcriber().transcribe(file.file, config=config)
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.error("AssemblyAI transcription failed: %s", exc)
+                raise HTTPException(status_code=502, detail=f"AssemblyAI transcription failed: {exc}") from exc
+
+            status_obj = getattr(transcript, "status", None)
+            status_value = getattr(status_obj, "value", None) or str(status_obj or "")
+            if status_value and status_value != "completed":
+                if status_value == "error":
+                    error_value = getattr(transcript, "error", None) or "AssemblyAI job failed"
+                    raise HTTPException(status_code=502, detail=error_value)
+                raise HTTPException(status_code=502, detail=f"AssemblyAI returned status={status_value}")
+
+            audio_duration = getattr(transcript, "audio_duration", None) or 0
+            try:
+                duration_seconds = float(audio_duration)
+            except (TypeError, ValueError):
+                duration_seconds = 0.0
+
+            hours, rem = divmod(duration_seconds, 3600)
+            minutes, seconds = divmod(rem, 60)
+            title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(
+                int(hours),
+                int(minutes),
+                int(round(seconds)),
             )
+
+            turns = turns_from_assemblyai_response(transcript)
+            if not turns:
+                raise HTTPException(status_code=400, detail="AssemblyAI transcription returned no usable turns")
+
             logger.info("AssemblyAI completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
         else:
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -453,7 +531,7 @@ async def transcribe(
         )
 
         transcript_data = {
-            "media_key": media_key,
+            "media_key": effective_media_key,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "title_data": title_data,
@@ -468,7 +546,7 @@ async def transcribe(
             "media_blob_name": None,
             "media_content_type": media_content_type,
             "media_filename": display_filename,
-            "media_handle_id": media_key,
+            "media_handle_id": effective_media_key,
             "clips": [],
             "case_id": case_id or None,
         }
