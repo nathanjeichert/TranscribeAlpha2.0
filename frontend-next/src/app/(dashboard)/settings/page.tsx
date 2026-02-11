@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
-import { getWorkspaceName, getStorageEstimate, clearWorkspace, pickAndInitWorkspace } from '@/lib/storage'
+import { getWorkspaceName, getStorageEstimate, clearWorkspace, pickAndInitWorkspace, isPersistentStorage, requestPersistentStorage } from '@/lib/storage'
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -18,6 +18,8 @@ export default function SettingsPage() {
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
   const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
   const [changingWorkspace, setChangingWorkspace] = useState(false)
+  const [persistentActive, setPersistentActive] = useState<boolean | null>(null)
+  const [requestingPersistence, setRequestingPersistence] = useState(false)
 
   const loadWorkspaceInfo = useCallback(async () => {
     const name = getWorkspaceName()
@@ -27,6 +29,12 @@ export default function SettingsPage() {
       setStorageEstimate(estimate)
     } catch {
       // Workspace may not be accessible
+    }
+    try {
+      const persisted = await isPersistentStorage()
+      setPersistentActive(persisted)
+    } catch {
+      // Storage API may not be available
     }
   }, [])
 
@@ -103,6 +111,35 @@ export default function SettingsPage() {
                 </p>
               ) : (
                 <p className="text-sm text-gray-500">Calculating...</p>
+              )}
+            </div>
+            <div className="flex items-center justify-between py-3 border-b border-gray-100">
+              <div>
+                <p className="font-medium text-gray-900 mb-1">Persistent Storage</p>
+                {persistentActive === null ? (
+                  <p className="text-sm text-gray-500">Checking...</p>
+                ) : persistentActive ? (
+                  <p className="text-sm text-green-600">Active &mdash; browser will not evict your workspace data</p>
+                ) : (
+                  <p className="text-sm text-amber-600">Not active &mdash; browser may clear stored data under storage pressure</p>
+                )}
+              </div>
+              {persistentActive === false && (
+                <button
+                  onClick={async () => {
+                    setRequestingPersistence(true)
+                    try {
+                      const granted = await requestPersistentStorage()
+                      setPersistentActive(granted)
+                    } finally {
+                      setRequestingPersistence(false)
+                    }
+                  }}
+                  disabled={requestingPersistence}
+                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {requestingPersistence ? 'Requesting...' : 'Request Persistence'}
+                </button>
               )}
             </div>
             <div className="py-3">
