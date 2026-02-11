@@ -35,7 +35,7 @@ const wizardSteps: Array<{ key: WizardStep; label: string }> = [
   { key: 'configure', label: 'Configure' },
 ]
 
-const MAX_BATCH_FILES = 50
+const MAX_BATCH_FILES = 3000
 const CASE_USE_BATCH = '__batch__'
 const CASE_UNCATEGORIZED = '__uncategorized__'
 

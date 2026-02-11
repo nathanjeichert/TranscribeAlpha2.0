@@ -70,6 +70,8 @@ const CACHE_DIR = 'cache/converted'
 const CACHE_KEY_SAMPLE_BYTES = 64 * 1024
 const CONVERTED_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024
 const RESET_RUNTIME_AFTER_EXTRACT_BYTES = 200 * 1024 * 1024
+const RESET_RUNTIME_AFTER_CONVERT_BYTES = 750 * 1024 * 1024
+const RESET_RUNTIME_AFTER_CONVERT_COUNT = 25
 const WORKERFS_SIZE_THRESHOLD = 2 * 1024 * 1024 * 1024
 const WORKSPACE_IDB_KEY = 'workspace-dir-handle'
 
@@ -79,6 +81,8 @@ let operationQueue: Promise<void> = Promise.resolve()
 let activeProgressCallback: ProgressCallback | null = null
 let terminatedByUser = false
 let listenersAttached = false
+let conversionsSinceReset = 0
+let convertedBytesSinceReset = 0
 
 const progressListener = ({ progress }: { progress: number }) => {
   if (!activeProgressCallback) return
@@ -111,6 +115,8 @@ function resetFFmpegRuntime(): void {
   loadPromise = null
   listenersAttached = false
   activeProgressCallback = null
+  conversionsSinceReset = 0
+  convertedBytesSinceReset = 0
 }
 
 function getFileExtension(filename: string): string {
@@ -246,7 +252,7 @@ function buildClipOutputFilename(
 function normalizeClipExportError(error: unknown): Error {
   const normalized = normalizeError(error)
   if (isOutOfMemoryError(normalized)) {
-    return new Error('File too large for in-browser clip export. Try smaller files or desktop FFmpeg.')
+    return new Error('This clip is too large to export in this tab. Try exporting fewer or shorter clips at once.')
   }
   return normalized
 }
@@ -472,6 +478,37 @@ function buildConversionAttempts(
   return attempts
 }
 
+function maybeRecycleAfterConversion(sourceBytes: number): void {
+  conversionsSinceReset += 1
+  convertedBytesSinceReset += sourceBytes
+  if (
+    conversionsSinceReset >= RESET_RUNTIME_AFTER_CONVERT_COUNT ||
+    convertedBytesSinceReset >= RESET_RUNTIME_AFTER_CONVERT_BYTES
+  ) {
+    resetFFmpegRuntime()
+  }
+}
+
+function normalizeConversionError(error: Error, sourceCodec: CodecInfo | null): Error {
+  if (isOutOfMemoryError(error)) {
+    return new Error(
+      'This tab ran out of memory while converting. Try converting fewer files at a time and download completed files before continuing.',
+    )
+  }
+  if (isLikelyG729Codec(sourceCodec)) {
+    return new Error(
+      'This recording format is not supported by the browser converter yet. Please use the desktop converter for this file.',
+    )
+  }
+  if (error.message.toLowerCase().includes('empty output')) {
+    return new Error('The converted file came out empty. Please try this file again.')
+  }
+  if (error.message.toLowerCase().includes('conversion failed')) {
+    return new Error('We could not convert this file. Please try again.')
+  }
+  return error
+}
+
 export async function getFFmpeg(): Promise<FFmpeg> {
   if (ffmpegInstance?.loaded) return ffmpegInstance
   if (!ffmpegInstance) {
@@ -549,74 +586,100 @@ export async function convertToPlayable(
   return runSerial(async () => {
     terminatedByUser = false
     const sourceFile = await maybeRepairWav(file)
-    const ffmpeg = await getFFmpeg()
     const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const outputExt = getConvertedExtension(sourceFile)
-    const inputName = `input.${inputExt}`
-    const outputName = `output.${outputExt}`
     const sourceCodec = isLikelyWavFile(sourceFile) ? await parseWavHeader(sourceFile) : null
+    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+    const workerFSMount = '/convert-input'
+    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
 
-    activeProgressCallback = onProgress ?? null
+    const runConversionAttempt = async (): Promise<File> => {
+      const ffmpeg = await getFFmpeg()
+      const inputName = `input.${inputExt}`
+      const outputName = `output.${outputExt}`
+      let mounted = false
+
+      activeProgressCallback = onProgress ?? null
+
+      try {
+        if (useWorkerFS) {
+          await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
+          mounted = true
+        } else {
+          await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+        }
+
+        let lastError: Error | null = null
+        const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
+        const attempts = buildConversionAttempts(sourceFile, effectiveInput, outputName, sourceCodec)
+
+        for (const attempt of attempts) {
+          await removeVirtualFile(ffmpeg, outputName)
+          try {
+            const exitCode = await ffmpeg.exec(attempt.args)
+            if (exitCode !== 0) {
+              throw new Error(`Conversion failed (${attempt.label})`)
+            }
+
+            const outputData = await ffmpeg.readFile(outputName)
+            const bytes = toUint8Array(outputData)
+            if (bytes.byteLength === 0) {
+              throw new Error(`Conversion produced an empty output file (${attempt.label})`)
+            }
+
+            return new File([toBlobBuffer(bytes)], getConvertedFilename(file), {
+              type: getConvertedMimeType(file),
+            })
+          } catch (attemptError) {
+            if (terminatedByUser) {
+              terminatedByUser = false
+              throw new FFmpegCanceledError()
+            }
+            lastError = normalizeError(attemptError)
+          }
+        }
+
+        if (lastError) {
+          throw normalizeConversionError(lastError, sourceCodec)
+        }
+        throw new Error('Conversion failed.')
+      } finally {
+        activeProgressCallback = null
+        if (mounted) {
+          try {
+            await ffmpeg.unmount(workerFSMount)
+          } catch {
+            // Ignore unmount errors.
+          }
+        } else {
+          await removeVirtualFile(ffmpeg, inputName)
+        }
+        await removeVirtualFile(ffmpeg, outputName)
+      }
+    }
 
     try {
-      await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
-
-      let lastError: Error | null = null
-      const attempts = buildConversionAttempts(sourceFile, inputName, outputName, sourceCodec)
-
-      for (const attempt of attempts) {
-        await removeVirtualFile(ffmpeg, outputName)
-        try {
-          const exitCode = await ffmpeg.exec(attempt.args)
-          if (exitCode !== 0) {
-            throw new Error(`FFmpeg conversion failed (${attempt.label})`)
-          }
-
-          const outputData = await ffmpeg.readFile(outputName)
-          const bytes = toUint8Array(outputData)
-          if (bytes.byteLength === 0) {
-            throw new Error(`FFmpeg conversion produced an empty output file (${attempt.label})`)
-          }
-
-          return new File([toBlobBuffer(bytes)], getConvertedFilename(file), {
-            type: getConvertedMimeType(file),
-          })
-        } catch (attemptError) {
-          if (terminatedByUser) {
-            terminatedByUser = false
-            throw new FFmpegCanceledError()
-          }
-          lastError = normalizeError(attemptError)
-        }
-      }
-
-      if (lastError) {
-        if (isOutOfMemoryError(lastError)) {
-          throw new Error('File too large for in-browser conversion. Consider desktop FFmpeg.')
-        }
-        if (isLikelyG729Codec(sourceCodec)) {
-          throw new Error(
-            'This G.729 file could not be decoded in-browser by the current FFmpeg build. ' +
-            'Convert locally with desktop FFmpeg and re-import.',
-          )
-        }
-        throw lastError
-      }
-      throw new Error('FFmpeg conversion failed')
-    } catch (error) {
+      const converted = await runConversionAttempt()
+      maybeRecycleAfterConversion(sourceFile.size)
+      return converted
+    } catch (firstError) {
       if (terminatedByUser) {
         terminatedByUser = false
         throw new FFmpegCanceledError()
       }
-      const normalized = normalizeError(error)
-      if (isOutOfMemoryError(normalized)) {
-        throw new Error('File too large for in-browser conversion. Consider desktop FFmpeg.')
+      resetFFmpegRuntime()
+      try {
+        const converted = await runConversionAttempt()
+        maybeRecycleAfterConversion(sourceFile.size)
+        return converted
+      } catch (secondError) {
+        if (terminatedByUser) {
+          terminatedByUser = false
+          throw new FFmpegCanceledError()
+        }
+        const normalized = normalizeConversionError(normalizeError(secondError), sourceCodec)
+        throw normalized
       }
-      throw normalized
-    } finally {
-      activeProgressCallback = null
-      await removeVirtualFile(ffmpeg, inputName)
-      await removeVirtualFile(ffmpeg, outputName)
     }
   })
 }
@@ -905,7 +968,7 @@ export async function extractAudio(
       if (firstError instanceof FFmpegCanceledError) throw firstError
       const normalized = normalizeError(firstError)
       if (isOutOfMemoryError(normalized)) {
-        throw new Error('File too large for in-browser audio extraction. Split the file or use desktop FFmpeg.')
+        throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
       }
 
       resetFFmpegRuntime()
@@ -920,7 +983,7 @@ export async function extractAudio(
         if (secondError instanceof FFmpegCanceledError) throw secondError
         const finalError = normalizeError(secondError)
         if (isOutOfMemoryError(finalError)) {
-          throw new Error('File too large for in-browser audio extraction. Split the file or use desktop FFmpeg.')
+          throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
         }
         throw finalError
       }

@@ -171,7 +171,10 @@ async def convert_media(
 
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
-        raise HTTPException(status_code=500, detail="ffmpeg is not installed on the server")
+        raise HTTPException(
+            status_code=500,
+            detail="Media conversion is temporarily unavailable on the server.",
+        )
 
     content_type = file.content_type or ""
     is_video = content_type.startswith("video/")
@@ -188,7 +191,10 @@ async def convert_media(
         remainder = await file.read(1)
         if remainder:
             os.unlink(tmp_in_path)
-            raise HTTPException(status_code=413, detail="File too large (max 64 MB)")
+            raise HTTPException(
+                status_code=413,
+                detail="This file is too large for server conversion (64 MB limit).",
+            )
 
     tmp_out_path = tmp_in_path + out_ext
     try:
@@ -217,12 +223,17 @@ async def convert_media(
 
         result = subprocess.run(cmd, capture_output=True, timeout=120)
         if result.returncode != 0:
-            stderr_text = result.stderr.decode("utf-8", errors="replace")[-500:]
-            raise HTTPException(status_code=422, detail=f"ffmpeg conversion failed: {stderr_text}")
+            raise HTTPException(
+                status_code=422,
+                detail="We could not convert this file on the server. Please try again or use a different file.",
+            )
 
         out_size = os.path.getsize(tmp_out_path)
         if out_size == 0:
-            raise HTTPException(status_code=422, detail="ffmpeg produced an empty output file")
+            raise HTTPException(
+                status_code=422,
+                detail="Conversion finished but produced an empty file. Please try again.",
+            )
 
         orig_name = file.filename or "converted"
         dot = orig_name.rfind(".")
