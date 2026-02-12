@@ -74,6 +74,8 @@ const RESET_RUNTIME_AFTER_CONVERT_BYTES = 750 * 1024 * 1024
 const RESET_RUNTIME_AFTER_CONVERT_COUNT = 25
 const WORKERFS_SIZE_THRESHOLD = 2 * 1024 * 1024 * 1024
 const WORKSPACE_IDB_KEY = 'workspace-dir-handle'
+const DEFAULT_MEMORY_LIMIT_MB = 1024
+const TELEPHONY_FORMAT_CODES = new Set([0x2222, 0x0131, 0x0006, 0x0007])
 
 let ffmpegInstance: FFmpeg | null = null
 let loadPromise: Promise<void> | null = null
@@ -83,6 +85,14 @@ let terminatedByUser = false
 let listenersAttached = false
 let conversionsSinceReset = 0
 let convertedBytesSinceReset = 0
+let runtimeMemoryLimitMB = DEFAULT_MEMORY_LIMIT_MB
+
+type EncoderSupport = {
+  libopus: boolean
+  libmp3lame: boolean
+}
+
+let encoderSupportPromise: Promise<EncoderSupport> | null = null
 
 const progressListener = ({ progress }: { progress: number }) => {
   if (!activeProgressCallback) return
@@ -117,6 +127,26 @@ function resetFFmpegRuntime(): void {
   activeProgressCallback = null
   conversionsSinceReset = 0
   convertedBytesSinceReset = 0
+  encoderSupportPromise = null
+}
+
+function clampMemoryLimitMB(limitMb: number): number {
+  if (!Number.isFinite(limitMb)) return DEFAULT_MEMORY_LIMIT_MB
+  return Math.max(256, Math.min(4096, Math.floor(limitMb)))
+}
+
+function getResetAfterConvertBytes(): number {
+  const scaled = Math.floor(clampMemoryLimitMB(runtimeMemoryLimitMB) * 0.5 * 1024 * 1024)
+  return Math.max(64 * 1024 * 1024, Math.min(RESET_RUNTIME_AFTER_CONVERT_BYTES, scaled))
+}
+
+function getResetAfterExtractBytes(): number {
+  const scaled = Math.floor(clampMemoryLimitMB(runtimeMemoryLimitMB) * 0.35 * 1024 * 1024)
+  return Math.max(64 * 1024 * 1024, Math.min(RESET_RUNTIME_AFTER_EXTRACT_BYTES, scaled))
+}
+
+export function setFFmpegMemoryLimitMB(limitMb: number): void {
+  runtimeMemoryLimitMB = clampMemoryLimitMB(limitMb)
 }
 
 function getFileExtension(filename: string): string {
@@ -131,16 +161,20 @@ function replaceExtension(filename: string, extension: string): string {
   return `${base}${extension}`
 }
 
-function getConvertedExtension(file: File): 'wav' | 'mp4' {
-  return isLikelyVideoFile(file) ? 'mp4' : 'wav'
+function getConvertedExtension(file: File, codecInfo: CodecInfo | null = null): 'wav' | 'mp4' | 'ogg' {
+  if (isLikelyVideoFile(file)) return 'mp4'
+  if (isTelephonyCodec(codecInfo)) return 'ogg'
+  return 'wav'
 }
 
-function getConvertedMimeType(file: File): string {
-  return isLikelyVideoFile(file) ? 'video/mp4' : 'audio/wav'
+function getConvertedMimeType(file: File, codecInfo: CodecInfo | null = null): string {
+  if (isLikelyVideoFile(file)) return 'video/mp4'
+  if (isTelephonyCodec(codecInfo)) return 'audio/ogg'
+  return 'audio/wav'
 }
 
-function getConvertedFilename(file: File): string {
-  const ext = getConvertedExtension(file)
+function getConvertedFilename(file: File, extension?: string): string {
+  const ext = extension || getConvertedExtension(file)
   return replaceExtension(file.name, `_converted.${ext}`)
 }
 
@@ -161,6 +195,20 @@ function isLikelyVideoFile(file: File): boolean {
 function isLikelyWavFile(file: File): boolean {
   const extension = getFileExtension(file.name)
   return extension === 'wav' || (file.type || '').toLowerCase().includes('wav')
+}
+
+function isTelephonyCodec(codecInfo: CodecInfo | null): boolean {
+  if (!codecInfo) return false
+  if (typeof codecInfo.formatCode === 'number' && TELEPHONY_FORMAT_CODES.has(codecInfo.formatCode)) return true
+
+  const label = (codecInfo.codecName || '').toLowerCase()
+  if (!label) return false
+
+  if (label.includes('g.729') || label.includes('g729')) return true
+  if (label.includes('gsm') || label.includes('amr')) return true
+  if (label.includes('g.711') || label.includes('g711')) return true
+  if (label.includes('alaw') || label.includes('mu-law') || label.includes('mulaw')) return true
+  return false
 }
 
 function isKnownStandardByExtension(file: File): CodecInfo | null {
@@ -405,7 +453,15 @@ async function removeVirtualFile(ffmpeg: FFmpeg, path: string): Promise<void> {
   }
 }
 
-function conversionArgs(file: File, inputName: string, outputName: string): string[] {
+type AudioOutputEncoder = 'libopus' | 'libmp3lame' | 'pcm'
+
+function conversionArgs(
+  file: File,
+  inputName: string,
+  outputName: string,
+  codecInfo: CodecInfo | null = null,
+  encoder: AudioOutputEncoder = 'pcm',
+): string[] {
   if (isLikelyVideoFile(file)) {
     return [
       '-i', inputName,
@@ -417,6 +473,31 @@ function conversionArgs(file: File, inputName: string, outputName: string): stri
       '-movflags', '+faststart',
       outputName,
     ]
+  }
+
+  if (isTelephonyCodec(codecInfo)) {
+    if (encoder === 'libopus') {
+      return [
+        '-i', inputName,
+        '-vn',
+        '-sn',
+        '-dn',
+        '-c:a', 'libopus',
+        '-b:a', '32k',
+        outputName,
+      ]
+    }
+    if (encoder === 'libmp3lame') {
+      return [
+        '-i', inputName,
+        '-vn',
+        '-sn',
+        '-dn',
+        '-c:a', 'libmp3lame',
+        '-b:a', '64k',
+        outputName,
+      ]
+    }
   }
 
   return [
@@ -436,31 +517,85 @@ function isLikelyG729Codec(codecInfo: CodecInfo | null): boolean {
 type ConversionAttempt = {
   label: string
   args: string[]
+  outputName: string
+  outputExtension: string
+  outputMimeType: string
 }
 
 function buildConversionAttempts(
   file: File,
   inputName: string,
-  outputName: string,
   codecInfo: CodecInfo | null,
+  encoderSupport: EncoderSupport,
 ): ConversionAttempt[] {
-  const attempts: ConversionAttempt[] = [
-    {
+  const isVideo = isLikelyVideoFile(file)
+  const baseOutputExt = isVideo ? 'mp4' : isTelephonyCodec(codecInfo) ? (encoderSupport.libopus ? 'ogg' : 'mp3') : 'wav'
+  const baseOutputName = `output.${baseOutputExt}`
+  const baseOutputMime = getMimeTypeFromFilename(baseOutputName, file)
+  const attempts: ConversionAttempt[] = []
+
+  if (isVideo) {
+    attempts.push({
       label: 'default',
-      args: conversionArgs(file, inputName, outputName),
-    },
-  ]
+      args: conversionArgs(file, inputName, baseOutputName, codecInfo),
+      outputName: baseOutputName,
+      outputExtension: baseOutputExt,
+      outputMimeType: baseOutputMime,
+    })
+    return attempts
+  }
+
+  if (isTelephonyCodec(codecInfo)) {
+    if (encoderSupport.libopus) {
+      attempts.push({
+        label: 'compressed-opus',
+        args: conversionArgs(file, inputName, 'output.ogg', codecInfo, 'libopus'),
+        outputName: 'output.ogg',
+        outputExtension: 'ogg',
+        outputMimeType: 'audio/ogg',
+      })
+    }
+    if (encoderSupport.libmp3lame) {
+      attempts.push({
+        label: 'compressed-mp3',
+        args: conversionArgs(file, inputName, 'output.mp3', codecInfo, 'libmp3lame'),
+        outputName: 'output.mp3',
+        outputExtension: 'mp3',
+        outputMimeType: 'audio/mpeg',
+      })
+    }
+  }
+
+  attempts.push({
+    label: 'default',
+    args: conversionArgs(file, inputName, baseOutputName, codecInfo),
+    outputName: baseOutputName,
+    outputExtension: baseOutputExt,
+    outputMimeType: baseOutputMime,
+  })
 
   if (!isLikelyVideoFile(file) && isLikelyG729Codec(codecInfo)) {
+    const g729OutputName = encoderSupport.libopus ? 'output-g729.ogg' : encoderSupport.libmp3lame ? 'output-g729.mp3' : 'output-g729.wav'
+    const g729OutputExt = g729OutputName.split('.').pop() || 'wav'
+    const g729MimeType = getMimeTypeFromFilename(g729OutputName, file)
+    const g729CodecArgs = encoderSupport.libopus
+      ? ['-c:a', 'libopus', '-b:a', '32k']
+      : encoderSupport.libmp3lame
+        ? ['-c:a', 'libmp3lame', '-b:a', '64k']
+        : ['-acodec', 'pcm_s16le']
+
     attempts.push({
       label: 'force-g729-decoder',
       args: [
         '-f', 'wav',
         '-c:a', 'g729',
         '-i', inputName,
-        '-acodec', 'pcm_s16le',
-        outputName,
+        ...g729CodecArgs,
+        g729OutputName,
       ],
+      outputName: g729OutputName,
+      outputExtension: g729OutputExt,
+      outputMimeType: g729MimeType,
     })
     attempts.push({
       label: 'force-g729-decoder-mono',
@@ -469,9 +604,12 @@ function buildConversionAttempts(
         '-ac', '1',
         '-c:a', 'g729',
         '-i', inputName,
-        '-acodec', 'pcm_s16le',
-        outputName,
+        ...g729CodecArgs,
+        g729OutputName,
       ],
+      outputName: g729OutputName,
+      outputExtension: g729OutputExt,
+      outputMimeType: g729MimeType,
     })
   }
 
@@ -483,7 +621,7 @@ function maybeRecycleAfterConversion(sourceBytes: number): void {
   convertedBytesSinceReset += sourceBytes
   if (
     conversionsSinceReset >= RESET_RUNTIME_AFTER_CONVERT_COUNT ||
-    convertedBytesSinceReset >= RESET_RUNTIME_AFTER_CONVERT_BYTES
+    convertedBytesSinceReset >= getResetAfterConvertBytes()
   ) {
     resetFFmpegRuntime()
   }
@@ -541,6 +679,28 @@ export async function getFFmpeg(): Promise<FFmpeg> {
   return ffmpegInstance
 }
 
+async function isEncoderSupported(ffmpeg: FFmpeg, encoder: string): Promise<boolean> {
+  try {
+    const exitCode = await ffmpeg.exec(['-hide_banner', '-h', `encoder=${encoder}`])
+    return exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+async function getEncoderSupport(ffmpeg: FFmpeg): Promise<EncoderSupport> {
+  if (!encoderSupportPromise) {
+    encoderSupportPromise = (async () => {
+      const [libopus, libmp3lame] = await Promise.all([
+        isEncoderSupported(ffmpeg, 'libopus'),
+        isEncoderSupported(ffmpeg, 'libmp3lame'),
+      ])
+      return { libopus, libmp3lame }
+    })()
+  }
+  return encoderSupportPromise
+}
+
 export function cancelActiveFFmpegJob(): void {
   terminatedByUser = true
   resetFFmpegRuntime()
@@ -587,7 +747,6 @@ export async function convertToPlayable(
     terminatedByUser = false
     const sourceFile = await maybeRepairWav(file)
     const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
-    const outputExt = getConvertedExtension(sourceFile)
     const sourceCodec = isLikelyWavFile(sourceFile) ? await parseWavHeader(sourceFile) : null
     const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
     const workerFSMount = '/convert-input'
@@ -595,8 +754,8 @@ export async function convertToPlayable(
 
     const runConversionAttempt = async (): Promise<File> => {
       const ffmpeg = await getFFmpeg()
+      const encoderSupport = await getEncoderSupport(ffmpeg)
       const inputName = `input.${inputExt}`
-      const outputName = `output.${outputExt}`
       let mounted = false
 
       activeProgressCallback = onProgress ?? null
@@ -611,24 +770,24 @@ export async function convertToPlayable(
 
         let lastError: Error | null = null
         const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
-        const attempts = buildConversionAttempts(sourceFile, effectiveInput, outputName, sourceCodec)
+        const attempts = buildConversionAttempts(sourceFile, effectiveInput, sourceCodec, encoderSupport)
 
         for (const attempt of attempts) {
-          await removeVirtualFile(ffmpeg, outputName)
+          await removeVirtualFile(ffmpeg, attempt.outputName)
           try {
             const exitCode = await ffmpeg.exec(attempt.args)
             if (exitCode !== 0) {
               throw new Error(`Conversion failed (${attempt.label})`)
             }
 
-            const outputData = await ffmpeg.readFile(outputName)
+            const outputData = await ffmpeg.readFile(attempt.outputName)
             const bytes = toUint8Array(outputData)
             if (bytes.byteLength === 0) {
               throw new Error(`Conversion produced an empty output file (${attempt.label})`)
             }
 
-            return new File([toBlobBuffer(bytes)], getConvertedFilename(file), {
-              type: getConvertedMimeType(file),
+            return new File([toBlobBuffer(bytes)], getConvertedFilename(file, attempt.outputExtension), {
+              type: attempt.outputMimeType || getMimeTypeFromFilename(attempt.outputName, file),
             })
           } catch (attemptError) {
             if (terminatedByUser) {
@@ -654,7 +813,9 @@ export async function convertToPlayable(
         } else {
           await removeVirtualFile(ffmpeg, inputName)
         }
-        await removeVirtualFile(ffmpeg, outputName)
+        for (const outputName of ['output.wav', 'output.mp4', 'output.ogg', 'output.mp3', 'output-g729.ogg', 'output-g729.mp3', 'output-g729.wav']) {
+          await removeVirtualFile(ffmpeg, outputName)
+        }
       }
     }
 
@@ -959,7 +1120,7 @@ export async function extractAudio(
 
     try {
       const extracted = await runExtractionAttempt()
-      if (sourceFile.size >= RESET_RUNTIME_AFTER_EXTRACT_BYTES) {
+      if (sourceFile.size >= getResetAfterExtractBytes()) {
         // Large jobs can leave wasm memory fragmented; recycle runtime between files.
         resetFFmpegRuntime()
       }
@@ -975,7 +1136,161 @@ export async function extractAudio(
 
       try {
         const extracted = await runExtractionAttempt()
-        if (sourceFile.size >= RESET_RUNTIME_AFTER_EXTRACT_BYTES) {
+        if (sourceFile.size >= getResetAfterExtractBytes()) {
+          resetFFmpegRuntime()
+        }
+        return extracted
+      } catch (secondError) {
+        if (secondError instanceof FFmpegCanceledError) throw secondError
+        const finalError = normalizeError(secondError)
+        if (isOutOfMemoryError(finalError)) {
+          throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
+        }
+        throw finalError
+      }
+    }
+  })
+}
+
+export async function extractAudioStereo(
+  file: File,
+  onProgress?: ProgressCallback,
+): Promise<File> {
+  return runSerial(async () => {
+    terminatedByUser = false
+    const sourceFile = await maybeRepairWav(file)
+    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
+    const inputName = `audio-stereo-input.${inputExt}`
+    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+    const workerFSMount = '/input-stereo'
+    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+
+    const runExtractionAttempt = async (): Promise<File> => {
+      const ffmpeg = await getFFmpeg()
+      const encoderSupport = await getEncoderSupport(ffmpeg)
+      activeProgressCallback = onProgress ?? null
+      let mounted = false
+      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
+
+      const attempts: Array<{ label: string; args: string[]; outputName: string; outputType: string }> = []
+      if (encoderSupport.libopus) {
+        attempts.push({
+          label: 'stereo-opus',
+          args: [
+            '-i', effectiveInput,
+            '-map', '0:a:0?',
+            '-vn',
+            '-sn',
+            '-dn',
+            '-c:a', 'libopus',
+            '-b:a', '32k',
+            '-ar', '8000',
+            'audio-stereo-output.ogg',
+          ],
+          outputName: 'audio-stereo-output.ogg',
+          outputType: 'audio/ogg',
+        })
+      }
+      if (encoderSupport.libmp3lame) {
+        attempts.push({
+          label: 'stereo-mp3',
+          args: [
+            '-i', effectiveInput,
+            '-map', '0:a:0?',
+            '-vn',
+            '-sn',
+            '-dn',
+            '-c:a', 'libmp3lame',
+            '-b:a', '64k',
+            '-ar', '8000',
+            'audio-stereo-output.mp3',
+          ],
+          outputName: 'audio-stereo-output.mp3',
+          outputType: 'audio/mpeg',
+        })
+      }
+      attempts.push({
+        label: 'stereo-pcm-fallback',
+        args: [
+          '-i', effectiveInput,
+          '-map', '0:a:0?',
+          '-vn',
+          '-sn',
+          '-dn',
+          '-acodec', 'pcm_s16le',
+          '-ar', '8000',
+          'audio-stereo-output.wav',
+        ],
+        outputName: 'audio-stereo-output.wav',
+        outputType: 'audio/wav',
+      })
+
+      try {
+        if (useWorkerFS) {
+          await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
+          mounted = true
+        } else {
+          await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
+        }
+
+        let lastError: Error | null = null
+        for (const attempt of attempts) {
+          await removeVirtualFile(ffmpeg, attempt.outputName)
+          try {
+            const exitCode = await ffmpeg.exec(attempt.args)
+            if (exitCode !== 0) {
+              throw new Error(`Stereo audio extraction failed (${attempt.label})`)
+            }
+            const outputData = await ffmpeg.readFile(attempt.outputName)
+            const bytes = toUint8Array(outputData)
+            if (bytes.byteLength === 0) {
+              throw new Error(`Stereo audio extraction produced empty output (${attempt.label})`)
+            }
+            const ext = attempt.outputName.split('.').pop() || 'ogg'
+            return new File([toBlobBuffer(bytes)], replaceExtension(file.name, `_audio_stereo.${ext}`), {
+              type: attempt.outputType,
+            })
+          } catch (attemptError) {
+            if (terminatedByUser) {
+              terminatedByUser = false
+              throw new FFmpegCanceledError()
+            }
+            lastError = normalizeError(attemptError)
+          }
+        }
+
+        throw lastError ?? new Error('Stereo audio extraction failed')
+      } finally {
+        activeProgressCallback = null
+        if (mounted) {
+          try { await ffmpeg.unmount(workerFSMount) } catch { /* ignore unmount errors */ }
+        } else {
+          await removeVirtualFile(ffmpeg, inputName)
+        }
+        for (const outputName of ['audio-stereo-output.ogg', 'audio-stereo-output.mp3', 'audio-stereo-output.wav']) {
+          await removeVirtualFile(ffmpeg, outputName)
+        }
+      }
+    }
+
+    try {
+      const extracted = await runExtractionAttempt()
+      if (sourceFile.size >= getResetAfterExtractBytes()) {
+        resetFFmpegRuntime()
+      }
+      return extracted
+    } catch (firstError) {
+      if (firstError instanceof FFmpegCanceledError) throw firstError
+      const normalized = normalizeError(firstError)
+      if (isOutOfMemoryError(normalized)) {
+        throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
+      }
+
+      resetFFmpegRuntime()
+
+      try {
+        const extracted = await runExtractionAttempt()
+        if (sourceFile.size >= getResetAfterExtractBytes()) {
           resetFFmpegRuntime()
         }
         return extracted
@@ -1077,25 +1392,51 @@ export async function cacheKey(file: File): Promise<string> {
   return bytesToHex(new Uint8Array(digest)).slice(0, 16)
 }
 
-export async function getConvertedCachePath(file: File): Promise<string> {
-  const extension = getConvertedExtension(file)
+async function getCodecForCacheDecisions(file: File): Promise<CodecInfo | null> {
+  if (!isLikelyWavFile(file)) return null
+  try {
+    return await parseWavHeader(file)
+  } catch {
+    return null
+  }
+}
+
+export async function getConvertedCachePath(file: File, extensionOverride?: string): Promise<string> {
+  const codecInfo = await getCodecForCacheDecisions(file)
+  const extension = extensionOverride || getConvertedExtension(file, codecInfo)
   const key = await cacheKey(file)
   return `${CACHE_DIR}/${key}.${extension}`
 }
 
 export async function readConvertedFromCache(file: File): Promise<File | null> {
-  const path = await getConvertedCachePath(file)
-  const bytes = await readBinaryFile(path)
-  if (!bytes) return null
+  const codecInfo = await getCodecForCacheDecisions(file)
+  const primaryExtension = getConvertedExtension(file, codecInfo)
+  const candidateExtensions = Array.from(
+    new Set(
+      isTelephonyCodec(codecInfo)
+        ? [primaryExtension, 'ogg', 'mp3', 'wav']
+        : [primaryExtension],
+    ),
+  )
 
-  return new File([bytes], getConvertedFilename(file), {
-    type: getConvertedMimeType(file),
-    lastModified: Date.now(),
-  })
+  for (const extension of candidateExtensions) {
+    const path = await getConvertedCachePath(file, extension)
+    const bytes = await readBinaryFile(path)
+    if (!bytes) continue
+
+    const filename = getConvertedFilename(file, extension)
+    const contentType = getMimeTypeFromFilename(filename, file)
+    return new File([bytes], filename, {
+      type: contentType,
+      lastModified: Date.now(),
+    })
+  }
+  return null
 }
 
 export async function writeConvertedToCache(originalFile: File, convertedFile: File): Promise<void> {
-  const path = await getConvertedCachePath(originalFile)
+  const extension = getFileExtension(convertedFile.name) || 'wav'
+  const path = await getConvertedCachePath(originalFile, extension)
   const data = await convertedFile.arrayBuffer()
   await writeBinaryFile(path, data)
   await pruneConvertedCache().catch(() => undefined)

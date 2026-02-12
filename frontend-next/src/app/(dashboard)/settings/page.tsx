@@ -13,7 +13,7 @@ function formatBytes(bytes: number): string {
 }
 
 export default function SettingsPage() {
-  const { appVariant } = useDashboard()
+  const { appVariant, memoryLimitMB, setMemoryLimitMB } = useDashboard()
 
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
   const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
@@ -148,6 +148,37 @@ export default function SettingsPage() {
                 Cases, transcripts, and media links are stored locally in your workspace with IndexedDB support for media handles.
               </p>
             </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Performance</h2>
+          <div className="space-y-4">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="font-medium text-gray-900">Memory Limit</p>
+                <span className="text-sm font-semibold text-gray-700">{memoryLimitMB} MB</span>
+              </div>
+              <input
+                type="range"
+                min={256}
+                max={4096}
+                step={256}
+                value={memoryLimitMB}
+                onChange={(event) => setMemoryLimitMB(Number(event.target.value))}
+                className="w-full accent-primary-600"
+              />
+              <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+                <span>256 MB</span>
+                <span>4096 MB</span>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600">
+              Higher values allow more parallel processing for faster batch transcription. Lower values reduce memory pressure on devices with limited RAM.
+            </p>
+            <p className="text-xs text-amber-700">
+              Warning: setting this too high may crash the browser, especially when other apps are running.
+            </p>
           </div>
         </div>
 

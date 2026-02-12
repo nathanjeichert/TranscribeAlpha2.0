@@ -7,7 +7,7 @@ import { useDashboard } from '@/context/DashboardContext'
 import TranscriptEditor, { EditorSessionResponse, EditorSaveResponse } from '@/components/TranscriptEditor'
 import MediaMissingBanner from '@/components/MediaMissingBanner'
 import { routes } from '@/utils/routes'
-import { getTranscript as localGetTranscript, saveTranscript as localSaveTranscript } from '@/lib/storage'
+import { getTranscript as localGetTranscript, readBinaryFile, saveTranscript as localSaveTranscript } from '@/lib/storage'
 import { getMediaObjectURL, promptRelinkMedia } from '@/lib/mediaHandles'
 
 type TranscriptData = EditorSessionResponse & {
@@ -63,6 +63,22 @@ export default function EditorPage() {
       if (blobUrlRef.current) {
         URL.revokeObjectURL(blobUrlRef.current)
         blobUrlRef.current = null
+      }
+
+      const playbackPath = typeof record.playback_cache_path === 'string' ? record.playback_cache_path : ''
+      const playbackType = typeof record.playback_cache_content_type === 'string'
+        ? record.playback_cache_content_type
+        : 'audio/ogg'
+      if (playbackPath) {
+        const cached = await readBinaryFile(playbackPath)
+        if (cached) {
+          const url = URL.createObjectURL(new Blob([cached], { type: playbackType }))
+          blobUrlRef.current = url
+          setMediaUrl(url)
+          setMediaContentType(playbackType)
+          setMediaAvailable(true)
+          return
+        }
       }
 
       const mediaSourceId = (record.media_handle_id as string) || key

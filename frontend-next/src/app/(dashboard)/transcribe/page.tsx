@@ -7,6 +7,7 @@ import { useDashboard, type TranscriptionJobInput } from '@/context/DashboardCon
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import { createCase as localCreateCase } from '@/lib/storage'
+import { detectCodec, type CodecInfo } from '@/lib/ffmpegWorker'
 
 interface FormData {
   case_name: string
@@ -27,6 +28,8 @@ interface QueueItem {
   fileHandle?: FileSystemFileHandle | null
   speaker_names: string
   speakers_expected: string
+  channel_label_1: string
+  channel_label_2: string
   case_target: string
 }
 
@@ -41,6 +44,13 @@ const CASE_UNCATEGORIZED = '__uncategorized__'
 
 const buildQueueId = () => `${Date.now()}_${Math.random().toString(16).slice(2)}`
 const buildFileSignature = (file: File) => `${file.name}::${file.size}::${file.lastModified}`
+
+function isLikelyG729Codec(codec: CodecInfo | null): boolean {
+  if (!codec) return false
+  if (codec.formatCode === 0x2222) return true
+  const label = (codec.codecName || '').toLowerCase()
+  return label.includes('g.729') || label.includes('g729')
+}
 
 function buildMediaKey(): string {
   // 32 hex chars (UUID without hyphens), matches backend validation.
@@ -66,6 +76,9 @@ export default function TranscribePage() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [pageError, setPageError] = useState('')
   const [pageNotice, setPageNotice] = useState('')
+  const [jailCallMode, setJailCallMode] = useState(false)
+  const [jailCallDetected, setJailCallDetected] = useState(false)
+  const [jailCallPromptDismissed, setJailCallPromptDismissed] = useState(false)
 
   const [showNewCaseModal, setShowNewCaseModal] = useState(false)
   const [newCaseName, setNewCaseName] = useState('')
@@ -96,6 +109,25 @@ export default function TranscribePage() {
     }
     return map
   }, [cases])
+
+  const inspectForJailCalls = useCallback(async (files: File[]) => {
+    if (!files.length) return
+    const checks = await Promise.allSettled(files.map((file) => detectCodec(file)))
+    let seen = 0
+    let g729Count = 0
+    for (const check of checks) {
+      if (check.status !== 'fulfilled') continue
+      seen += 1
+      if (isLikelyG729Codec(check.value)) {
+        g729Count += 1
+      }
+    }
+    if (!seen) return
+    if (g729Count / seen > 0.5) {
+      setJailCallDetected(true)
+      setJailCallPromptDismissed(false)
+    }
+  }, [])
 
   const updateQueueItem = useCallback((itemId: string, updater: Partial<QueueItem> | ((current: QueueItem) => QueueItem)) => {
     setQueue((prev) =>
@@ -128,6 +160,8 @@ export default function TranscribePage() {
       fileHandle: fileHandle ?? null,
       speaker_names: '',
       speakers_expected: '',
+      channel_label_1: '',
+      channel_label_2: '',
       case_target: CASE_USE_BATCH,
     }
   }, [])
@@ -163,6 +197,7 @@ export default function TranscribePage() {
       }
 
       setQueue([...baseQueue, ...nextItems])
+      void inspectForJailCalls(accepted)
 
       if (duplicateCount > 0) {
         setPageNotice(`${duplicateCount} duplicate file(s) were added. Duplicates are allowed and will be processed.`)
@@ -171,7 +206,7 @@ export default function TranscribePage() {
         setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
       }
     },
-    [createQueueItem],
+    [createQueueItem, inspectForJailCalls],
   )
 
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -225,11 +260,14 @@ export default function TranscribePage() {
       const dropped = handles.length - accepted.length
 
       const nextItems: QueueItem[] = []
+      const acceptedFiles: File[] = []
       for (const handle of accepted) {
         const file = await handle.getFile()
+        acceptedFiles.push(file)
         nextItems.push(createQueueItem(file, handle))
       }
       setQueue([...baseQueue, ...nextItems])
+      void inspectForJailCalls(acceptedFiles)
 
       if (dropped > 0) {
         setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
@@ -237,7 +275,7 @@ export default function TranscribePage() {
     } catch {
       // User cancelled the file picker
     }
-  }, [createQueueItem])
+  }, [createQueueItem, inspectForJailCalls])
 
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
@@ -293,6 +331,22 @@ export default function TranscribePage() {
   const setFileSpeakersExpected = (itemId: string, value: string) => {
     updateQueueItem(itemId, { speakers_expected: value })
   }
+  const setFileChannelLabel1 = (itemId: string, value: string) => {
+    updateQueueItem(itemId, { channel_label_1: value })
+  }
+  const setFileChannelLabel2 = (itemId: string, value: string) => {
+    updateQueueItem(itemId, { channel_label_2: value })
+  }
+
+  const setTranscriptionMode = (nextMode: 'standard' | 'jail') => {
+    const jailMode = nextMode === 'jail'
+    setJailCallMode(jailMode)
+    if (jailMode) {
+      setFormData((prev) => ({ ...prev, transcription_model: 'assemblyai' }))
+      setJailCallPromptDismissed(true)
+      setPageNotice('')
+    }
+  }
 
   const isBatchSelection = queue.length > 1
   const hasQueue = queue.length > 0
@@ -320,21 +374,30 @@ export default function TranscribePage() {
       const speakersExpectedNum = Number(item.speakers_expected)
       const speakersExpected =
         Number.isInteger(speakersExpectedNum) && speakersExpectedNum > 0 ? speakersExpectedNum : null
+      const channelLabels: Record<number, string> = {}
+      if (jailCallMode) {
+        const channelOne = item.channel_label_1.trim()
+        const channelTwo = item.channel_label_2.trim()
+        if (channelOne) channelLabels[1] = channelOne
+        if (channelTwo) channelLabels[2] = channelTwo
+      }
 
       return {
         file: item.file,
         fileHandle: item.fileHandle ?? null,
         originalFileName: item.originalFileName || item.file.name,
         mediaKey: buildMediaKey(),
-        transcriptionModel: formData.transcription_model,
+        transcriptionModel: jailCallMode ? 'assemblyai' : formData.transcription_model,
         caseId: effectiveCaseId ? effectiveCaseId : null,
         case_name: formData.case_name,
         case_number: formData.case_number,
         firm_name: formData.firm_name,
         input_date: formData.input_date,
         location: formData.location,
-        speakers_expected: speakersExpected,
-        speaker_names: item.speaker_names,
+        speakers_expected: jailCallMode ? null : speakersExpected,
+        speaker_names: jailCallMode ? '' : item.speaker_names,
+        multichannel: jailCallMode,
+        channelLabels: Object.keys(channelLabels).length > 0 ? channelLabels : undefined,
       }
     })
 
@@ -343,7 +406,7 @@ export default function TranscribePage() {
     setStep('upload')
     setPageNotice(`Queued ${inputs.length} transcription job(s). Track progress in Jobs.`)
     guardedPush(router, routes.jobs())
-  }, [enqueueTranscriptionJobs, formData, getEffectiveCaseId, queue, router])
+  }, [enqueueTranscriptionJobs, formData, getEffectiveCaseId, jailCallMode, queue, router])
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
@@ -406,8 +469,61 @@ export default function TranscribePage() {
         </div>
       )}
 
+      {jailCallDetected && !jailCallMode && !jailCallPromptDismissed && (
+        <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4">
+          <p className="text-sm text-amber-900">
+            G.729 jail call recordings detected. Switch to Jail Call mode for optimized channel-based speaker separation?
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              className="btn-primary px-4 py-2 text-sm"
+              onClick={() => setTranscriptionMode('jail')}
+            >
+              Switch to Jail Call Mode
+            </button>
+            <button
+              type="button"
+              className="btn-outline px-4 py-2 text-sm"
+              onClick={() => setJailCallPromptDismissed(true)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {step === 'upload' && (
         <div className="space-y-6">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Transcription Mode</h2>
+            <div className="inline-flex rounded-lg border border-gray-200 p-1 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setTranscriptionMode('standard')}
+                className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                  !jailCallMode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Standard Transcription
+              </button>
+              <button
+                type="button"
+                onClick={() => setTranscriptionMode('jail')}
+                className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                  jailCallMode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Jail Call Mode
+              </button>
+            </div>
+            {jailCallMode ? (
+              <p className="mt-3 text-sm text-amber-700">
+                Jail Call mode uses AssemblyAI multichannel transcription and stereo-preserving preprocessing.
+              </p>
+            ) : null}
+          </div>
+
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">
               Upload Media {isBatchSelection ? 'Files' : 'File'}
@@ -637,21 +753,34 @@ export default function TranscribePage() {
                   transcription_model: event.target.value as 'assemblyai' | 'gemini',
                 }))
               }
+              disabled={jailCallMode}
               className="input-field"
             >
               <option value="assemblyai">AssemblyAI (Recommended)</option>
               <option value="gemini">Gemini 3.0 Pro</option>
             </select>
+            {jailCallMode ? (
+              <p className="mt-2 text-xs text-amber-700">
+                Jail Call mode requires AssemblyAI multichannel and cannot use Gemini.
+              </p>
+            ) : null}
           </div>
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="p-4 border-b border-gray-100">
               <h2 className="text-lg font-semibold text-gray-900">{isBatchSelection ? 'Per-File Overrides' : 'Transcript Options'}</h2>
               <p className="text-sm text-gray-500 mt-1">
-                {isBatchSelection
-                  ? 'Set optional speaker hints and case override per file.'
-                  : 'Set optional speaker hints for this transcript.'}
+                {jailCallMode
+                  ? 'Set optional channel labels and case override per file.'
+                  : isBatchSelection
+                    ? 'Set optional speaker hints and case override per file.'
+                    : 'Set optional speaker hints for this transcript.'}
               </p>
+              {jailCallMode ? (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  Each audio channel is treated as a separate speaker. Channel 1 = Speaker A, Channel 2 = Speaker B.
+                </div>
+              ) : null}
             </div>
             <div className="divide-y divide-gray-100">
               {queue.map((item, index) => (
@@ -688,33 +817,64 @@ export default function TranscribePage() {
                       </div>
                     )}
 
-                    <div className={isBatchSelection ? 'lg:col-span-2' : ''}>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
-                        Speaker Names (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={item.speaker_names}
-                        onChange={(event) => setFileSpeakerNames(item.id, event.target.value)}
-                        className="input-field text-sm"
-                        placeholder="e.g., John Smith, Jane Doe"
-                      />
-                    </div>
+                    {jailCallMode ? (
+                      <>
+                        <div className={isBatchSelection ? '' : 'lg:col-span-1'}>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                            Channel 1 Label (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={item.channel_label_1}
+                            onChange={(event) => setFileChannelLabel1(item.id, event.target.value)}
+                            className="input-field text-sm"
+                            placeholder="e.g., Inmate"
+                          />
+                        </div>
+                        <div className={isBatchSelection ? '' : 'lg:col-span-1'}>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                            Channel 2 Label (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={item.channel_label_2}
+                            onChange={(event) => setFileChannelLabel2(item.id, event.target.value)}
+                            className="input-field text-sm"
+                            placeholder="e.g., Outside Party"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className={isBatchSelection ? 'lg:col-span-2' : ''}>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                            Speaker Names (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={item.speaker_names}
+                            onChange={(event) => setFileSpeakerNames(item.id, event.target.value)}
+                            className="input-field text-sm"
+                            placeholder="e.g., John Smith, Jane Doe"
+                          />
+                        </div>
 
-                    <div>
-                      <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
-                        Number of Speakers (Optional)
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={item.speakers_expected}
-                        onChange={(event) => setFileSpeakersExpected(item.id, event.target.value)}
-                        className="input-field text-sm"
-                        placeholder="e.g., 2"
-                      />
-                    </div>
+                        <div>
+                          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                            Number of Speakers (Optional)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            value={item.speakers_expected}
+                            onChange={(event) => setFileSpeakersExpected(item.id, event.target.value)}
+                            className="input-field text-sm"
+                            placeholder="e.g., 2"
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}

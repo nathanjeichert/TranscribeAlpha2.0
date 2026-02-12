@@ -44,6 +44,8 @@ export interface TranscriptData {
   media_content_type?: string
   media_handle_id?: string
   media_blob_name?: string
+  playback_cache_path?: string
+  playback_cache_content_type?: string
   case_id?: string | null
   [key: string]: unknown
 }
@@ -253,6 +255,7 @@ async function ensureWorkspaceStructure(root: FileSystemDirectoryHandle): Promis
   await root.getDirectoryHandle('uncategorized', { create: true })
   const cache = await root.getDirectoryHandle('cache', { create: true })
   await cache.getDirectoryHandle('converted', { create: true })
+  await cache.getDirectoryHandle('playback', { create: true })
 }
 
 // ─── Low-Level File Operations ──────────────────────────────────────

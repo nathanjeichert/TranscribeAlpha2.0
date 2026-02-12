@@ -46,16 +46,20 @@ except ImportError:
 
 try:
     from ..transcriber import (
+        build_assemblyai_multichannel_config,
         build_assemblyai_config,
         convert_video_to_audio,
         get_media_duration,
+        turns_from_assemblyai_multichannel_response,
         turns_from_assemblyai_response,
     )
 except ImportError:
     from transcriber import (
+        build_assemblyai_multichannel_config,
         build_assemblyai_config,
         convert_video_to_audio,
         get_media_duration,
+        turns_from_assemblyai_multichannel_response,
         turns_from_assemblyai_response,
     )
 
@@ -349,6 +353,8 @@ async def transcribe(
     input_time: str = Form(""),
     location: str = Form(""),
     speakers_expected: Optional[int] = Form(None),
+    multichannel: bool = Form(False),
+    channel_labels: Optional[str] = Form(None),
     transcription_model: str = Form("assemblyai"),
     case_id: Optional[str] = Form(None),
     source_filename: Optional[str] = Form(None),
@@ -366,6 +372,9 @@ async def transcribe(
             detail=f"Invalid transcription model. Must be one of: {', '.join(valid_models)}",
         )
 
+    if multichannel and transcription_model != "assemblyai":
+        raise HTTPException(status_code=400, detail="multichannel is only supported with AssemblyAI")
+
     if transcription_model == "assemblyai" and not os.getenv("ASSEMBLYAI_API_KEY"):
         raise HTTPException(status_code=500, detail="Server configuration error: AssemblyAI API key not configured")
     if transcription_model == "gemini" and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
@@ -373,6 +382,26 @@ async def transcribe(
 
     display_filename = (source_filename or "").strip() or file.filename or "media"
     media_content_type = file.content_type or mimetypes.guess_type(display_filename)[0] or "application/octet-stream"
+
+    parsed_channel_labels: Optional[dict[int, str]] = None
+    if channel_labels:
+        try:
+            raw_channel_labels = json.loads(channel_labels)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="channel_labels must be valid JSON") from exc
+        if not isinstance(raw_channel_labels, dict):
+            raise HTTPException(status_code=400, detail="channel_labels must be a JSON object")
+        parsed_channel_labels = {}
+        for raw_key, raw_value in raw_channel_labels.items():
+            try:
+                channel_index = int(raw_key)
+            except (TypeError, ValueError):
+                continue
+            label = str(raw_value or "").strip()
+            if channel_index > 0 and label:
+                parsed_channel_labels[channel_index] = label
+        if not parsed_channel_labels:
+            parsed_channel_labels = None
 
     temp_upload_path = None
     file_size = None
@@ -401,7 +430,7 @@ async def transcribe(
             if not temp_upload_path:
                 raise HTTPException(status_code=400, detail="Unable to read uploaded file")
 
-        if speakers_expected is not None and speakers_expected <= 0:
+        if not multichannel and speakers_expected is not None and speakers_expected <= 0:
             raise HTTPException(status_code=400, detail="speakers_expected must be a positive integer")
 
         effective_media_key = _normalize_media_key(media_key) or uuid.uuid4().hex
@@ -432,7 +461,11 @@ async def transcribe(
                 except Exception:
                     pass
 
-                config = build_assemblyai_config(speakers_expected)
+                config = (
+                    build_assemblyai_multichannel_config()
+                    if multichannel
+                    else build_assemblyai_config(speakers_expected)
+                )
                 transcript = await anyio.to_thread.run_sync(
                     lambda: aai.Transcriber().transcribe(file.file, config=config)
                 )
@@ -464,7 +497,10 @@ async def transcribe(
                 int(round(seconds)),
             )
 
-            turns = turns_from_assemblyai_response(transcript)
+            if multichannel:
+                turns = turns_from_assemblyai_multichannel_response(transcript, parsed_channel_labels)
+            else:
+                turns = turns_from_assemblyai_response(transcript)
             if not turns:
                 raise HTTPException(status_code=400, detail="AssemblyAI transcription returned no usable turns")
 
@@ -558,6 +594,8 @@ async def transcribe(
             "media_content_type": media_content_type,
             "media_filename": display_filename,
             "media_handle_id": effective_media_key,
+            "multichannel": bool(multichannel),
+            "channel_labels": parsed_channel_labels or None,
             "clips": [],
             "case_id": case_id or None,
         }

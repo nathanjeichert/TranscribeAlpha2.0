@@ -11,6 +11,7 @@ import {
   getTranscript,
   listCaseClips,
   listCaseSequences,
+  readBinaryFile,
   saveClip,
   saveTranscript,
   saveSequence,
@@ -499,6 +500,19 @@ export default function ViewerPage() {
   const loadMediaForTranscript = useCallback(async (record: ViewerTranscript) => {
     revokeMediaUrl()
     setMediaLoading(true)
+
+    if (record.playback_cache_path) {
+      const cached = await readBinaryFile(record.playback_cache_path)
+      if (cached) {
+        const contentType = record.playback_cache_content_type || 'audio/ogg'
+        const objectUrl = URL.createObjectURL(new Blob([cached], { type: contentType }))
+        blobUrlRef.current = objectUrl
+        setMediaUrl(objectUrl)
+        setMediaAvailable(true)
+        setMediaLoading(false)
+        return
+      }
+    }
 
     const handleId = record.media_handle_id || record.media_key
     const objectUrl = await getMediaObjectURL(handleId)
