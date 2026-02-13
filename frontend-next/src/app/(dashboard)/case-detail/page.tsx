@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
@@ -49,6 +49,21 @@ interface SearchResult {
   matches: SearchMatch[]
 }
 
+function highlightSearchTerm(text: string, query: string): React.ReactNode {
+  if (!query) return text
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
+  if (parts.length === 1) return text
+  return parts.map((part, i) =>
+    part.toLowerCase() === query.toLowerCase()
+      ? React.createElement('mark', { key: i, className: 'bg-yellow-200 text-yellow-900 rounded-sm px-0.5' }, part)
+      : part,
+  )
+}
+
+type SortField = 'updated_at' | 'title_label' | 'audio_duration' | 'line_count'
+type SortDir = 'asc' | 'desc'
+
 export default function CaseDetailPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -73,6 +88,9 @@ export default function CaseDetailPage() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [showSearchResults, setShowSearchResults] = useState(false)
+
+  const [sortField, setSortField] = useState<SortField>('updated_at')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
 
   const [reassignTargets, setReassignTargets] = useState<Record<string, string>>({})
   const [reassigningTranscript, setReassigningTranscript] = useState<string | null>(null)
@@ -221,6 +239,25 @@ export default function CaseDetailPage() {
       setSearching(false)
     }
   }
+
+  const sortedTranscripts = useMemo(() => {
+    const list = [...transcripts]
+    const dir = sortDir === 'asc' ? 1 : -1
+    list.sort((a, b) => {
+      switch (sortField) {
+        case 'title_label':
+          return dir * a.title_label.localeCompare(b.title_label)
+        case 'audio_duration':
+          return dir * ((a.audio_duration || 0) - (b.audio_duration || 0))
+        case 'line_count':
+          return dir * ((a.line_count || 0) - (b.line_count || 0))
+        case 'updated_at':
+        default:
+          return dir * ((a.updated_at || '').localeCompare(b.updated_at || ''))
+      }
+    })
+    return list
+  }, [transcripts, sortField, sortDir])
 
   const formatDuration = (seconds?: number) => {
     if (!seconds) return '-'
@@ -389,20 +426,30 @@ export default function CaseDetailPage() {
                   <button
                     onClick={() => {
                       setActiveMediaKey(result.media_key)
-                      guardedPush(router, routes.editor(result.media_key))
+                      guardedPush(router, routes.viewer(result.media_key, caseId, result.matches[0]?.line_id))
                     }}
                     className="font-medium text-primary-600 hover:text-primary-700 mb-2 text-left"
                   >
                     {result.title_label}
+                    <span className="ml-2 text-xs font-normal text-gray-400">
+                      ({result.matches.length} match{result.matches.length !== 1 ? 'es' : ''})
+                    </span>
                   </button>
                   <div className="space-y-2">
                     {result.matches.slice(0, 5).map((match, i) => (
-                      <div key={i} className="text-sm bg-gray-50 rounded p-2">
+                      <button
+                        key={i}
+                        onClick={() => {
+                          setActiveMediaKey(result.media_key)
+                          guardedPush(router, routes.viewer(result.media_key, caseId, match.line_id))
+                        }}
+                        className="w-full text-left text-sm bg-gray-50 hover:bg-blue-50 rounded p-2 transition-colors cursor-pointer"
+                      >
                         <span className="text-gray-500">Page {match.page}, Line {match.line}</span>
                         <span className="mx-2 text-gray-400">|</span>
                         <span className="font-medium text-gray-700">{match.speaker}:</span>
-                        <span className="text-gray-600 ml-1">{match.text}</span>
-                      </div>
+                        <span className="text-gray-600 ml-1">{highlightSearchTerm(match.text, searchQuery)}</span>
+                      </button>
                     ))}
                     {result.matches.length > 5 && (
                       <p className="text-sm text-gray-500">
@@ -418,17 +465,46 @@ export default function CaseDetailPage() {
       )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-100">
-        <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Transcripts</h2>
-          <Link
-            href={routes.transcribe(caseId)}
-            className="btn-primary px-4 py-2 text-sm flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M12 4v16m8-8H4" />
-            </svg>
-            Add Transcript
-          </Link>
+          <div className="flex items-center gap-3">
+            {transcripts.length > 1 && (
+              <div className="flex items-center gap-2">
+                <select
+                  value={sortField}
+                  onChange={(e) => setSortField(e.target.value as SortField)}
+                  className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 text-gray-700 bg-white"
+                >
+                  <option value="updated_at">Last Updated</option>
+                  <option value="title_label">Name</option>
+                  <option value="audio_duration">Duration</option>
+                  <option value="line_count">Lines</option>
+                </select>
+                <button
+                  onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                  className="p-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500"
+                  title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    {sortDir === 'asc' ? (
+                      <path d="M3 4h13M3 8h9M3 12h5m4-4v12m0 0l-4-4m4 4l4-4" />
+                    ) : (
+                      <path d="M3 4h13M3 8h9M3 12h5m4 8V8m0 0l-4 4m4-4l4 4" />
+                    )}
+                  </svg>
+                </button>
+              </div>
+            )}
+            <Link
+              href={routes.transcribe(caseId)}
+              className="btn-primary px-4 py-2 text-sm flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M12 4v16m8-8H4" />
+              </svg>
+              Add Transcript
+            </Link>
+          </div>
         </div>
         {isEditing && (
           <div className="px-4 py-3 border-b border-gray-100 bg-primary-50 text-sm text-primary-800">
@@ -451,7 +527,7 @@ export default function CaseDetailPage() {
           </div>
         ) : (
           <div className="divide-y divide-gray-100">
-            {transcripts.map((transcript) => (
+            {sortedTranscripts.map((transcript) => (
               <div
                 key={transcript.media_key}
                 className="p-4 flex items-center justify-between hover:bg-gray-50"
