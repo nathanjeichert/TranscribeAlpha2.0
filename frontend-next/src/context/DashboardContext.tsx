@@ -392,6 +392,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const conversionRunnerActiveRef = useRef(false)
   const stopConversionRequestedRef = useRef(false)
 
+  const applyJobsMutation = useCallback((updater: (prev: JobRecord[]) => JobRecord[]) => {
+    const next = updater(jobsRef.current)
+    jobsRef.current = next
+    setJobs(next)
+  }, [])
+
   // Fetch app config
   useEffect(() => {
     fetch('/api/config')
@@ -439,7 +445,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     void (async () => {
       const loaded = await readPersistedJobs(idbKey, legacyKey)
       if (canceled) return
-      setJobs(loaded)
+      applyJobsMutation(() => loaded)
       jobsHydratedRef.current = true
       try {
         localStorage.removeItem(legacyKey)
@@ -451,7 +457,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     return () => {
       canceled = true
     }
-  }, [])
+  }, [applyJobsMutation])
 
   useEffect(() => {
     jobsRef.current = jobs
@@ -603,19 +609,24 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const updateJob = useCallback((jobId: string, updater: Partial<JobRecord> | ((job: JobRecord) => JobRecord)) => {
-    setJobs((prev) =>
+    applyJobsMutation((prev) =>
       prev.map((job) => {
         if (job.id !== jobId) return job
         const next = typeof updater === 'function' ? updater(job) : { ...job, ...updater }
         return { ...next, updatedAt: nowIso() }
       }),
     )
-  }, [])
+  }, [applyJobsMutation])
 
   const removeJob = useCallback((jobId: string) => {
     const existing = jobsRef.current.find((job) => job.id === jobId)
     if (existing?.convertedCachePath) {
       void deleteFile(existing.convertedCachePath).catch(() => undefined)
+    }
+    const xhr = abortRef.current.get(jobId)
+    if (xhr) {
+      try { xhr.abort() } catch {}
+      abortRef.current.delete(jobId)
     }
     jobFilesRef.current.delete(jobId)
     transcriptionInputsRef.current.delete(jobId)
@@ -625,8 +636,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     abortRef.current.delete(jobId)
     inFlightUploadBytesRef.current.delete(jobId)
     activeTranscriptionJobIdsRef.current.delete(jobId)
-    setJobs((prev) => prev.filter((job) => job.id !== jobId))
-  }, [removeConvertedFromMemory])
+    applyJobsMutation((prev) => prev.filter((job) => job.id !== jobId))
+  }, [applyJobsMutation, removeConvertedFromMemory])
 
   const getConvertedFile = useCallback((jobId: string) => {
     return convertedFilesRef.current.get(jobId) ?? null
@@ -1247,13 +1258,13 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         return job
       })
 
-      setJobs((prev) => {
+      applyJobsMutation((prev) => {
         const combined = [...prev, ...newJobs]
         return combined.slice(Math.max(0, combined.length - MAX_PERSISTED_JOBS))
       })
       void runTranscriptionQueue()
     },
-    [runTranscriptionQueue],
+    [applyJobsMutation, runTranscriptionQueue],
   )
 
   const addConversionJobs = useCallback(
@@ -1279,7 +1290,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         }
       })
 
-      setJobs((prev) => {
+      applyJobsMutation((prev) => {
         const combined = [...prev, ...newJobs]
         return combined.slice(Math.max(0, combined.length - MAX_PERSISTED_JOBS))
       })
@@ -1305,7 +1316,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [updateJob],
+    [applyJobsMutation, updateJob],
   )
 
   const runConversionQueue = useCallback(
@@ -1461,6 +1472,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       if (job.kind === 'transcription') {
         preparedAudioRef.current.delete(jobId)
         inFlightUploadBytesRef.current.delete(jobId)
+        activeTranscriptionJobIdsRef.current.delete(jobId)
         updateJob(jobId, { status: 'queued', error: '', detail: 'Queued', unloadSensitive: false })
         void runTranscriptionQueue()
       }
