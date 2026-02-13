@@ -11,7 +11,7 @@ import {
   getTranscript,
   listCaseClips,
   listCaseSequences,
-  readBinaryFile,
+  resolveWorkspaceRelativePathForHandle,
   saveClip,
   saveTranscript,
   saveSequence,
@@ -20,12 +20,9 @@ import {
   type ClipSequenceRecord,
   type TranscriptData,
 } from '@/lib/storage'
-import {
-  getMediaFile,
-  getMediaObjectURL,
-  promptRelinkMedia,
-  storeMediaHandle,
-} from '@/lib/mediaHandles'
+import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
+import { resolveMediaFileForRecord, resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 import { clipMedia, clipMediaBatch, type ClipBatchRequest } from '@/lib/ffmpegWorker'
 import WaveSurfer from 'wavesurfer.js'
 import { authenticatedFetch } from '@/utils/auth'
@@ -306,6 +303,8 @@ export default function ViewerPage() {
   const [mediaUrl, setMediaUrl] = useState<string | null>(null)
   const [mediaAvailable, setMediaAvailable] = useState(true)
   const [mediaLoading, setMediaLoading] = useState(false)
+  const [mediaMissingMessage, setMediaMissingMessage] = useState('Media file not found.')
+  const [mediaActionLabel, setMediaActionLabel] = useState('Locate File')
 
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -503,28 +502,20 @@ export default function ViewerPage() {
     revokeMediaUrl()
     setMediaLoading(true)
 
-    if (record.playback_cache_path) {
-      const cached = await readBinaryFile(record.playback_cache_path)
-      if (cached) {
-        const contentType = record.playback_cache_content_type || 'audio/ogg'
-        const objectUrl = URL.createObjectURL(new Blob([cached], { type: contentType }))
-        blobUrlRef.current = objectUrl
-        setMediaUrl(objectUrl)
-        setMediaAvailable(true)
-        setMediaLoading(false)
-        return
-      }
-    }
-
-    const handleId = record.media_handle_id || record.media_key
-    const objectUrl = await getMediaObjectURL(handleId)
-    if (objectUrl) {
-      blobUrlRef.current = objectUrl
-      setMediaUrl(objectUrl)
+    const resolved = await resolveMediaObjectURLForRecord(record)
+    if (resolved.objectUrl) {
+      blobUrlRef.current = resolved.objectUrl
+      setMediaUrl(resolved.objectUrl)
       setMediaAvailable(true)
+      setMediaMissingMessage('Media file not found.')
+      setMediaActionLabel('Locate File')
     } else {
       setMediaUrl(null)
       setMediaAvailable(false)
+      setMediaMissingMessage(
+        resolved.message || 'We could not find the media file. Click Locate File to relink it.',
+      )
+      setMediaActionLabel(resolved.reconnectRecommended ? 'Reconnect File Access' : 'Locate File')
     }
     setMediaLoading(false)
   }, [revokeMediaUrl])
@@ -1002,15 +993,77 @@ export default function ViewerPage() {
 
   const relinkMedia = useCallback(async () => {
     if (!transcript) return
+    const recovered = await resolveMediaObjectURLForRecord(transcript, { requestPermission: true })
+    if (recovered.objectUrl) {
+      let recoveredWorkspacePath: string | null = null
+      if (recovered.resolvedHandleId) {
+        const recoveredHandle = await getMediaHandle(recovered.resolvedHandleId)
+        if (recoveredHandle) {
+          recoveredWorkspacePath = await resolveWorkspaceRelativePathForHandle(recoveredHandle)
+        }
+      }
+
+      const nextTranscript =
+        (recovered.resolvedHandleId && recovered.resolvedHandleId !== transcript.media_handle_id) ||
+        (recoveredWorkspacePath && recoveredWorkspacePath !== transcript.media_workspace_relpath)
+          ? {
+              ...transcript,
+              media_handle_id: recovered.resolvedHandleId || transcript.media_handle_id,
+              media_workspace_relpath: recoveredWorkspacePath || transcript.media_workspace_relpath,
+              media_storage_mode: recoveredWorkspacePath ? 'workspace-relative' : transcript.media_storage_mode,
+              playback_cache_path: recoveredWorkspacePath ? undefined : transcript.playback_cache_path,
+              playback_cache_content_type: recoveredWorkspacePath ? undefined : transcript.playback_cache_content_type,
+            }
+          : transcript
+
+      if (nextTranscript !== transcript) {
+        const caseId = transcript.case_id && String(transcript.case_id).trim()
+          ? String(transcript.case_id)
+          : undefined
+        await saveTranscript(transcript.media_key, nextTranscript, caseId)
+        transcriptCacheRef.current[transcript.media_key] = nextTranscript
+        setTranscript(nextTranscript)
+      }
+
+      await loadMediaForTranscript(nextTranscript)
+      return
+    }
+
     const expected = transcript.media_filename || transcript.title_data?.FILE_NAME || 'media file'
-    const result = await promptRelinkMedia(expected)
+    const result = await promptRelinkMedia(expected, transcript.media_key)
     if (!result) return
 
-    await storeMediaHandle(result.handleId, result.handle)
+    const relinkedFile = await result.handle.getFile()
+    const workspaceRelativePath = await resolveWorkspaceRelativePathForHandle(result.handle)
+
+    let cachePath = ''
+    let cacheType = ''
+    if (!workspaceRelativePath) {
+      try {
+        const cached = await cacheMediaForPlayback(transcript.media_key, relinkedFile, {
+          filename: relinkedFile.name,
+          contentType: relinkedFile.type || transcript.media_content_type || 'application/octet-stream',
+        })
+        cachePath = cached.path
+        cacheType = cached.contentType
+      } catch {
+        // Ignore cache failures and rely on relinked handle.
+      }
+    }
 
     const nextTranscript: ViewerTranscript = {
       ...transcript,
-      media_handle_id: result.handleId,
+      media_handle_id: transcript.media_key,
+      media_filename: relinkedFile.name || transcript.media_filename,
+      media_content_type: relinkedFile.type || transcript.media_content_type,
+      media_storage_mode: workspaceRelativePath ? 'workspace-relative' : 'external-handle',
+      media_workspace_relpath: workspaceRelativePath || undefined,
+      playback_cache_path: cachePath || transcript.playback_cache_path,
+      playback_cache_content_type: cacheType || transcript.playback_cache_content_type,
+    }
+    if (workspaceRelativePath) {
+      delete nextTranscript.playback_cache_path
+      delete nextTranscript.playback_cache_content_type
     }
 
     const caseId = transcript.case_id && String(transcript.case_id).trim()
@@ -1594,10 +1647,12 @@ export default function ViewerPage() {
         throw new Error('Unable to load transcript for clip export.')
       }
 
-      const mediaSourceId = transcriptRecord.media_handle_id || transcriptRecord.media_key || clip.source_media_key
-      const mediaFile = await getMediaFile(mediaSourceId)
+      const resolvedMedia = await resolveMediaFileForRecord(transcriptRecord, { requestPermission: true })
+      const mediaFile = resolvedMedia.file
       if (!mediaFile) {
-        throw new Error('Media file not available. Relink media before exporting this clip.')
+        throw new Error(
+          resolvedMedia.message || 'Media file not available. Relink media before exporting this clip.',
+        )
       }
 
       const clipFile = await clipMedia(mediaFile, clip.start_time, clip.end_time)
@@ -1683,10 +1738,15 @@ export default function ViewerPage() {
 
       for (const [sourceMediaKey, sourceItems] of Array.from(itemsBySource.entries())) {
         const transcriptRecord = transcriptBySource.get(sourceMediaKey)
-        const mediaSourceId = transcriptRecord?.media_handle_id || sourceMediaKey
-        const mediaFile = await getMediaFile(mediaSourceId)
+        if (!transcriptRecord) {
+          throw new Error(`Unable to load transcript for "${sourceMediaKey}".`)
+        }
+        const resolvedMedia = await resolveMediaFileForRecord(transcriptRecord, { requestPermission: true })
+        const mediaFile = resolvedMedia.file
         if (!mediaFile) {
-          throw new Error(`Media file not available for "${sourceMediaKey}". Relink media before sequence export.`)
+          throw new Error(
+            resolvedMedia.message || `Media file not available for "${sourceMediaKey}". Relink media before sequence export.`,
+          )
         }
 
         const batchRequests: ClipBatchRequest[] = sourceItems.map((item) => ({
@@ -1760,10 +1820,12 @@ export default function ViewerPage() {
       const payload = linesToViewerPayload(transcript)
       const transcriptJson = escapeScriptBoundary(JSON.stringify(payload))
 
-      const mediaHandleId = transcript.media_handle_id || transcript.media_key
-      const mediaFile = await getMediaFile(mediaHandleId)
+      const resolvedMedia = await resolveMediaFileForRecord(transcript, { requestPermission: true })
+      const mediaFile = resolvedMedia.file
       if (!mediaFile) {
-        throw new Error('Media file not available. Relink media before exporting standalone viewer.')
+        throw new Error(
+          resolvedMedia.message || 'Media file not available. Relink media before exporting standalone viewer.',
+        )
       }
 
       const fileSizeMb = mediaFile.size / (1024 * 1024)
@@ -1838,9 +1900,9 @@ export default function ViewerPage() {
     <>
       {!mediaAvailable && (
         <div className="absolute bottom-3 left-3 right-3 rounded border border-amber-200 bg-amber-50/95 p-3 text-sm text-amber-900">
-          <p className="mb-2">Media file not found.</p>
+          <p className="mb-2">{mediaMissingMessage}</p>
           <button type="button" onClick={() => void relinkMedia()} className="btn-outline px-3 py-1.5 text-xs">
-            Locate File
+            {mediaActionLabel}
           </button>
         </div>
       )}

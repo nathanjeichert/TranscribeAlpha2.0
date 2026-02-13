@@ -10,6 +10,12 @@ interface StoredMediaBlobRecord {
   saved_at: string
 }
 
+interface MediaAccessOptions {
+  requestPermission?: boolean
+}
+
+export type MediaHandlePermissionState = 'missing' | 'granted' | 'prompt' | 'denied'
+
 export async function storeMediaHandle(
   handleId: string,
   handle: FileSystemFileHandle,
@@ -49,6 +55,7 @@ export async function storeMediaBlob(
 
 export async function getMediaHandle(
   handleId: string,
+  options?: MediaAccessOptions,
 ): Promise<FileSystemFileHandle | null> {
   try {
     const db = await openDB()
@@ -64,13 +71,55 @@ export async function getMediaHandle(
 
     if (!handle) return null
 
-    // Request read permission
-    const permission = await (handle as any).requestPermission({ mode: 'read' })
+    const shouldRequestPermission = Boolean(options?.requestPermission)
+    let permission: PermissionState | string = 'prompt'
+    try {
+      permission = await (handle as any).queryPermission({ mode: 'read' })
+    } catch {
+      // queryPermission may not be supported in all environments.
+    }
+
+    if (permission !== 'granted' && shouldRequestPermission) {
+      try {
+        permission = await (handle as any).requestPermission({ mode: 'read' })
+      } catch {
+        return null
+      }
+    }
+
     if (permission !== 'granted') return null
 
     return handle
   } catch {
     return null
+  }
+}
+
+export async function getMediaHandlePermissionState(handleId: string): Promise<MediaHandlePermissionState> {
+  try {
+    const db = await openDB()
+    const handle: FileSystemFileHandle | undefined = await new Promise(
+      (resolve, reject) => {
+        const tx = db.transaction(HANDLE_STORE, 'readonly')
+        const store = tx.objectStore(HANDLE_STORE)
+        const request = store.get(handleId)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      },
+    )
+
+    if (!handle) return 'missing'
+
+    try {
+      const permission = await (handle as any).queryPermission({ mode: 'read' })
+      if (permission === 'granted') return 'granted'
+      if (permission === 'denied') return 'denied'
+      return 'prompt'
+    } catch {
+      return 'prompt'
+    }
+  } catch {
+    return 'missing'
   }
 }
 
@@ -127,12 +176,15 @@ export async function removeMediaBlob(sourceId: string): Promise<void> {
   }
 }
 
-export async function getMediaFile(sourceId: string): Promise<File | null> {
+export async function getMediaFile(
+  sourceId: string,
+  options?: MediaAccessOptions,
+): Promise<File | null> {
   // Prefer stored playable blob when available (e.g., converted media fallback).
   const blobMedia = await getMediaBlob(sourceId)
   if (blobMedia) return blobMedia
 
-  const handle = await getMediaHandle(sourceId)
+  const handle = await getMediaHandle(sourceId, options)
   if (!handle) return null
   try {
     return await handle.getFile()
@@ -141,14 +193,52 @@ export async function getMediaFile(sourceId: string): Promise<File | null> {
   }
 }
 
-export async function getMediaObjectURL(sourceId: string): Promise<string | null> {
-  const file = await getMediaFile(sourceId)
+export async function getFirstAvailableMediaFile(
+  sourceIds: Array<string | null | undefined>,
+  options?: MediaAccessOptions,
+): Promise<{ sourceId: string; file: File } | null> {
+  const seen = new Set<string>()
+  for (const rawSourceId of sourceIds) {
+    const sourceId = String(rawSourceId || '').trim()
+    if (!sourceId || seen.has(sourceId)) continue
+    seen.add(sourceId)
+    const file = await getMediaFile(sourceId, options)
+    if (file) {
+      return { sourceId, file }
+    }
+  }
+  return null
+}
+
+export async function getMediaObjectURL(
+  sourceId: string,
+  options?: MediaAccessOptions,
+): Promise<string | null> {
+  const file = await getMediaFile(sourceId, options)
   if (!file) return null
   return URL.createObjectURL(file)
 }
 
+export async function getFirstAvailableMediaObjectURL(
+  sourceIds: Array<string | null | undefined>,
+  options?: MediaAccessOptions,
+): Promise<{ sourceId: string; objectUrl: string } | null> {
+  const seen = new Set<string>()
+  for (const rawSourceId of sourceIds) {
+    const sourceId = String(rawSourceId || '').trim()
+    if (!sourceId || seen.has(sourceId)) continue
+    seen.add(sourceId)
+    const objectUrl = await getMediaObjectURL(sourceId, options)
+    if (objectUrl) {
+      return { sourceId, objectUrl }
+    }
+  }
+  return null
+}
+
 export async function promptRelinkMedia(
   expectedFilename: string,
+  preferredHandleId?: string,
 ): Promise<{
   handle: FileSystemFileHandle
   handleId: string
@@ -169,7 +259,7 @@ export async function promptRelinkMedia(
 
     if (!handle) return null
 
-    const handleId = crypto.randomUUID()
+    const handleId = String(preferredHandleId || '').trim() || crypto.randomUUID()
     await storeMediaHandle(handleId, handle)
     return { handle, handleId }
   } catch {

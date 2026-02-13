@@ -8,12 +8,14 @@ import {
   listUncategorizedTranscripts as localListUncategorized,
   listTranscriptsInCase,
   readBinaryFile,
+  resolveWorkspaceRelativePathForHandle,
   saveTranscript as localSaveTranscript,
   writeBinaryFile,
   type TranscriptData,
   type TranscriptSummary,
 } from '@/lib/storage'
-import { getMediaFile, storeMediaBlob, storeMediaHandle } from '@/lib/mediaHandles'
+import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { getMediaFile, storeMediaHandle } from '@/lib/mediaHandles'
 import { openDB } from '@/lib/idb'
 import {
   FFmpegCanceledError,
@@ -762,29 +764,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
       const job = jobsRef.current.find((entry) => entry.id === jobId)
       const caseId = job?.caseId ? String(job.caseId) : undefined
-
-      const record = { ...(transcriptPayload as Record<string, unknown>) } as TranscriptData
-
-      if (job?.multichannel) {
-        const prepared = preparedAudioRef.current.get(jobId)
-        if (prepared) {
-          const normalizedType = prepared.type || 'audio/ogg'
-          const extension = prepared.name.endsWith('.mp3') || normalizedType === 'audio/mpeg' ? 'mp3' : 'ogg'
-          const playbackPath = `cache/playback/${mediaKey}.${extension}`
-          try {
-            await writeBinaryFile(playbackPath, await prepared.arrayBuffer())
-            record.playback_cache_path = playbackPath
-            record.playback_cache_content_type = extension === 'mp3' ? 'audio/mpeg' : 'audio/ogg'
-          } catch {
-            // Ignore playback-cache write failures; transcript persistence remains primary.
-          }
-        }
-      }
-
-      await localSaveTranscript(mediaKey, record, caseId)
-
       const activeFile = jobFilesRef.current.get(jobId)
-      const shouldPersistBlobFallback = !activeFile?.fileHandle
+
       const mediaFilename =
         (transcriptPayload.media_filename as string | undefined) ||
         activeFile?.originalFileName ||
@@ -795,16 +776,65 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         activeFile?.file.type ||
         'application/octet-stream'
 
-      try {
-        if (activeFile?.fileHandle) {
+      const record = { ...(transcriptPayload as Record<string, unknown>) } as TranscriptData
+      record.media_filename = mediaFilename
+      record.media_content_type = mediaContentType
+      record.media_handle_id = mediaKey
+      record.media_storage_mode = activeFile?.fileHandle ? 'external-handle' : 'workspace-cache'
+
+      let workspaceRelativePath: string | null = null
+      if (activeFile?.fileHandle) {
+        try {
           await storeMediaHandle(mediaKey, activeFile.fileHandle)
+        } catch {
+          // Best effort only; cached playback remains available even if handle persistence fails.
         }
-        if (shouldPersistBlobFallback && activeFile?.file) {
-          await storeMediaBlob(mediaKey, activeFile.file, mediaFilename, mediaContentType)
+
+        workspaceRelativePath = await resolveWorkspaceRelativePathForHandle(activeFile.fileHandle)
+        if (workspaceRelativePath) {
+          record.media_workspace_relpath = workspaceRelativePath
+          record.media_storage_mode = 'workspace-relative'
         }
-      } catch {
-        // Media persistence is best-effort; transcript save is the priority.
       }
+
+      if (!workspaceRelativePath) {
+        delete record.media_workspace_relpath
+      }
+
+      if (job?.multichannel) {
+        const prepared = preparedAudioRef.current.get(jobId)
+        if (prepared) {
+          try {
+            const cached = await cacheMediaForPlayback(mediaKey, prepared, {
+              filename: prepared.name || mediaFilename,
+              contentType: prepared.type || 'audio/ogg',
+            })
+            record.playback_cache_path = cached.path
+            record.playback_cache_content_type = cached.contentType
+            if (!workspaceRelativePath) {
+              record.media_storage_mode = 'workspace-cache'
+            }
+          } catch {
+            // Ignore playback-cache write failures; transcript persistence remains primary.
+          }
+        }
+      } else if (!workspaceRelativePath && activeFile?.file) {
+        try {
+          const cached = await cacheMediaForPlayback(mediaKey, activeFile.file, {
+            filename: mediaFilename,
+            contentType: mediaContentType,
+          })
+          record.playback_cache_path = cached.path
+          record.playback_cache_content_type = cached.contentType
+        } catch {
+          // Ignore playback-cache write failures and rely on external handles when available.
+        }
+      } else if (workspaceRelativePath) {
+        delete record.playback_cache_path
+        delete record.playback_cache_content_type
+      }
+
+      await localSaveTranscript(mediaKey, record, caseId)
 
       setActiveMediaKey(mediaKey)
       await refreshRecentTranscripts()

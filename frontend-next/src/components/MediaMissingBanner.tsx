@@ -3,10 +3,18 @@
 interface MediaMissingBannerProps {
   mediaKey: string
   mediaFilename?: string
+  message?: string
+  actionLabel?: string
   onReimport: () => void
 }
 
-export default function MediaMissingBanner({ mediaKey, mediaFilename, onReimport }: MediaMissingBannerProps) {
+export default function MediaMissingBanner({
+  mediaKey,
+  mediaFilename,
+  message,
+  actionLabel,
+  onReimport,
+}: MediaMissingBannerProps) {
   return (
     <div className="bg-amber-50 border-b border-amber-200 px-6 py-3">
       <div className="flex items-center justify-between max-w-7xl mx-auto">
@@ -21,7 +29,7 @@ export default function MediaMissingBanner({ mediaKey, mediaFilename, onReimport
               Media file not found
             </p>
             <p className="text-sm text-amber-600">
-              {(mediaFilename || 'The media file')} is not linked. Locate the file on your computer to enable playback.
+              {message || `${mediaFilename || 'The media file'} is not linked. Locate the file on your computer to enable playback.`}
             </p>
           </div>
         </div>
@@ -29,7 +37,7 @@ export default function MediaMissingBanner({ mediaKey, mediaFilename, onReimport
           onClick={onReimport}
           className="px-4 py-2 bg-amber-100 hover:bg-amber-200 text-amber-800 font-medium text-sm rounded-lg transition-colors"
         >
-          Locate File
+          {actionLabel || 'Locate File'}
         </button>
       </div>
     </div>

@@ -63,8 +63,8 @@ export default function WorkspaceSetup({ onComplete }: WorkspaceSetupProps) {
 
         <h1 className="text-3xl font-bold text-white mb-3">Welcome to TranscribeAlpha</h1>
         <p className="text-slate-300 text-lg mb-8 leading-relaxed">
-          Choose a folder to store your case data. Your media files will stay where they
-          are &mdash; we&apos;ll just save transcripts and case information here.
+          Choose a folder to store your case data. Files in that folder stay linked
+          automatically. Files outside it can still be used and may need a quick reconnect.
         </p>
 
         {error && (

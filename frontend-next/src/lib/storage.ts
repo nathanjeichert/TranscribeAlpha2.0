@@ -43,6 +43,8 @@ export interface TranscriptData {
   media_filename?: string
   media_content_type?: string
   media_handle_id?: string
+  media_workspace_relpath?: string
+  media_storage_mode?: 'workspace-relative' | 'external-handle' | 'workspace-cache'
   media_blob_name?: string
   playback_cache_path?: string
   playback_cache_content_type?: string
@@ -65,16 +67,90 @@ export interface SearchMatch {
   match_type: string
 }
 
+export interface WorkspacePreferences {
+  lines_per_page: number
+  auto_save_interval_seconds: number
+  default_transcription_model: string
+  media_cache_cap_bytes: number
+}
+
+export interface WorkspaceConfig {
+  version: number
+  created_at: string
+  updated_at: string
+  preferences: WorkspacePreferences
+}
+
+export const DEFAULT_MEDIA_CACHE_CAP_BYTES = 10 * 1024 * 1024 * 1024
+
 // ─── Constants ──────────────────────────────────────────────────────
 
 const IDB_KEY_WORKSPACE = 'workspace-dir-handle'
 const MULTI_TAB_CHANNEL = 'ta-multi-tab'
 const CONFIG_FILENAME = 'config.json'
+const CONFIG_VERSION = 2
 
 // ─── Module State ───────────────────────────────────────────────────
 
 let workspaceHandle: FileSystemDirectoryHandle | null = null
 let multiTabChannel: BroadcastChannel | null = null
+
+function buildDefaultPreferences(overrides?: Partial<WorkspacePreferences>): WorkspacePreferences {
+  return {
+    lines_per_page: 25,
+    auto_save_interval_seconds: 60,
+    default_transcription_model: 'assemblyai',
+    media_cache_cap_bytes: DEFAULT_MEDIA_CACHE_CAP_BYTES,
+    ...overrides,
+  }
+}
+
+function buildDefaultConfig(overrides?: Partial<WorkspaceConfig>): WorkspaceConfig {
+  const now = new Date().toISOString()
+  return {
+    version: CONFIG_VERSION,
+    created_at: now,
+    updated_at: now,
+    preferences: buildDefaultPreferences(),
+    ...overrides,
+  }
+}
+
+function normalizeWorkspaceConfig(raw: unknown): WorkspaceConfig {
+  const record = (raw || {}) as Record<string, unknown>
+  const preferencesRecord = (record.preferences || {}) as Record<string, unknown>
+  const parsedCap = Number(preferencesRecord.media_cache_cap_bytes)
+  const capBytes = Number.isFinite(parsedCap) && parsedCap > 0
+    ? Math.floor(parsedCap)
+    : DEFAULT_MEDIA_CACHE_CAP_BYTES
+
+  const createdAt = typeof record.created_at === 'string' && record.created_at.trim()
+    ? record.created_at
+    : new Date().toISOString()
+  const updatedAt = typeof record.updated_at === 'string' && record.updated_at.trim()
+    ? record.updated_at
+    : createdAt
+
+  return {
+    version: Number.isFinite(Number(record.version)) ? Number(record.version) : CONFIG_VERSION,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    preferences: buildDefaultPreferences({
+      lines_per_page: Number.isFinite(Number(preferencesRecord.lines_per_page))
+        ? Number(preferencesRecord.lines_per_page)
+        : 25,
+      auto_save_interval_seconds: Number.isFinite(Number(preferencesRecord.auto_save_interval_seconds))
+        ? Number(preferencesRecord.auto_save_interval_seconds)
+        : 60,
+      default_transcription_model:
+        typeof preferencesRecord.default_transcription_model === 'string' &&
+        preferencesRecord.default_transcription_model.trim()
+          ? preferencesRecord.default_transcription_model
+          : 'assemblyai',
+      media_cache_cap_bytes: capBytes,
+    }),
+  }
+}
 
 // ─── Multi-Tab Detection ────────────────────────────────────────────
 
@@ -222,15 +298,7 @@ export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirect
 
   if (!isExisting) {
     await ensureWorkspaceStructure(handle)
-    await writeJSONToHandle(handle, CONFIG_FILENAME, {
-      version: 1,
-      created_at: new Date().toISOString(),
-      preferences: {
-        lines_per_page: 25,
-        auto_save_interval_seconds: 60,
-        default_transcription_model: 'assemblyai',
-      },
-    })
+    await writeJSONToHandle(handle, CONFIG_FILENAME, buildDefaultConfig())
   }
 
   // Store handle in IndexedDB
@@ -364,6 +432,83 @@ export async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+export async function readWorkspaceRelativeFile(path: string): Promise<File | null> {
+  try {
+    const root = getWorkspaceHandle()
+    const normalizedPath = String(path || '').replace(/^\/+|\/+$/g, '')
+    if (!normalizedPath) return null
+    const parts = normalizedPath.split('/')
+    const filename = parts.pop()
+    if (!filename) return null
+    const dir = await navigateToDir(root, parts)
+    const handle = await dir.getFileHandle(filename)
+    return await handle.getFile()
+  } catch {
+    return null
+  }
+}
+
+export async function resolveWorkspaceRelativePathForHandle(
+  fileHandle: FileSystemFileHandle,
+): Promise<string | null> {
+  try {
+    const root = getWorkspaceHandle()
+    const pathParts = await (root as any).resolve(fileHandle) as string[] | null
+    if (!Array.isArray(pathParts) || pathParts.length === 0) return null
+    return pathParts.join('/')
+  } catch {
+    return null
+  }
+}
+
+export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
+  const current = await readJSON<WorkspaceConfig>(CONFIG_FILENAME)
+  const normalized = normalizeWorkspaceConfig(current)
+
+  const needsWrite =
+    !current ||
+    JSON.stringify(current.preferences || {}) !== JSON.stringify(normalized.preferences) ||
+    Number(current.version || 0) < CONFIG_VERSION
+
+  if (needsWrite) {
+    const persisted: WorkspaceConfig = {
+      ...normalized,
+      version: CONFIG_VERSION,
+      updated_at: new Date().toISOString(),
+      created_at: normalized.created_at || new Date().toISOString(),
+    }
+    await writeJSON(CONFIG_FILENAME, persisted)
+    return persisted
+  }
+
+  return normalized
+}
+
+export async function updateWorkspacePreferences(
+  updates: Partial<WorkspacePreferences>,
+): Promise<WorkspaceConfig> {
+  const current = await getWorkspaceConfig()
+  const nextPreferences = buildDefaultPreferences({
+    ...current.preferences,
+    ...updates,
+  })
+  const nextConfig: WorkspaceConfig = {
+    ...current,
+    version: CONFIG_VERSION,
+    updated_at: new Date().toISOString(),
+    preferences: nextPreferences,
+  }
+  await writeJSON(CONFIG_FILENAME, nextConfig)
+  return nextConfig
+}
+
+export async function getMediaCacheCapBytes(): Promise<number> {
+  const config = await getWorkspaceConfig()
+  const capBytes = Number(config.preferences.media_cache_cap_bytes)
+  if (!Number.isFinite(capBytes) || capBytes <= 0) return DEFAULT_MEDIA_CACHE_CAP_BYTES
+  return Math.floor(capBytes)
 }
 
 // ─── Case Operations ────────────────────────────────────────────────

@@ -7,8 +7,14 @@ import { useDashboard } from '@/context/DashboardContext'
 import TranscriptEditor, { EditorSessionResponse, EditorSaveResponse } from '@/components/TranscriptEditor'
 import MediaMissingBanner from '@/components/MediaMissingBanner'
 import { routes } from '@/utils/routes'
-import { getTranscript as localGetTranscript, readBinaryFile, saveTranscript as localSaveTranscript } from '@/lib/storage'
-import { getMediaObjectURL, promptRelinkMedia } from '@/lib/mediaHandles'
+import {
+  getTranscript as localGetTranscript,
+  resolveWorkspaceRelativePathForHandle,
+  saveTranscript as localSaveTranscript,
+} from '@/lib/storage'
+import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
+import { resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 
 type TranscriptData = EditorSessionResponse & {
   transcript?: string | null
@@ -27,6 +33,8 @@ export default function EditorPage() {
   const [error, setError] = useState<string>('')
   const [mediaAvailable, setMediaAvailable] = useState(true)
   const [mediaFilename, setMediaFilename] = useState<string>('')
+  const [mediaMissingMessage, setMediaMissingMessage] = useState<string>('')
+  const [mediaActionLabel, setMediaActionLabel] = useState<string>('Locate File')
   const blobUrlRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -65,31 +73,23 @@ export default function EditorPage() {
         blobUrlRef.current = null
       }
 
-      const playbackPath = typeof record.playback_cache_path === 'string' ? record.playback_cache_path : ''
-      const playbackType = typeof record.playback_cache_content_type === 'string'
-        ? record.playback_cache_content_type
-        : 'audio/ogg'
-      if (playbackPath) {
-        const cached = await readBinaryFile(playbackPath)
-        if (cached) {
-          const url = URL.createObjectURL(new Blob([cached], { type: playbackType }))
-          blobUrlRef.current = url
-          setMediaUrl(url)
-          setMediaContentType(playbackType)
-          setMediaAvailable(true)
-          return
-        }
-      }
-
-      const mediaSourceId = (record.media_handle_id as string) || key
-      const url = await getMediaObjectURL(mediaSourceId)
-      if (url) {
-        blobUrlRef.current = url
-        setMediaUrl(url)
+      const resolved = await resolveMediaObjectURLForRecord({
+        ...(record as Record<string, unknown>),
+        media_key: key,
+      })
+      if (resolved.objectUrl) {
+        blobUrlRef.current = resolved.objectUrl
+        setMediaUrl(resolved.objectUrl)
         setMediaAvailable(true)
+        setMediaMissingMessage('')
+        setMediaActionLabel('Locate File')
       } else {
         setMediaUrl('')
         setMediaAvailable(false)
+        setMediaMissingMessage(
+          resolved.message || 'We could not find the media file. Click Locate File to relink it.',
+        )
+        setMediaActionLabel(resolved.reconnectRecommended ? 'Reconnect File Access' : 'Locate File')
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to load transcript')
@@ -125,48 +125,104 @@ export default function EditorPage() {
   const handleRelinkMedia = useCallback(async () => {
     if (!mediaKey) return
     try {
-      const result = await promptRelinkMedia(mediaFilename || 'media file')
+      const existing = await localGetTranscript(mediaKey)
+      if (!existing) return
+
+      const existingRecord = existing as Record<string, unknown>
+      const caseId = typeof existingRecord.case_id === 'string' && existingRecord.case_id
+        ? existingRecord.case_id
+        : undefined
+
+      const recovered = await resolveMediaObjectURLForRecord(
+        { ...(existingRecord as Record<string, unknown>), media_key: mediaKey },
+        { requestPermission: true },
+      )
+      if (recovered.objectUrl) {
+        if (blobUrlRef.current) {
+          URL.revokeObjectURL(blobUrlRef.current)
+          blobUrlRef.current = null
+        }
+        blobUrlRef.current = recovered.objectUrl
+        setMediaUrl(recovered.objectUrl)
+        setMediaAvailable(true)
+        setMediaMissingMessage('')
+        setMediaActionLabel('Locate File')
+
+        let recoveredWorkspacePath: string | null = null
+        if (recovered.resolvedHandleId) {
+          const recoveredHandle = await getMediaHandle(recovered.resolvedHandleId)
+          if (recoveredHandle) {
+            recoveredWorkspacePath = await resolveWorkspaceRelativePathForHandle(recoveredHandle)
+          }
+        }
+
+        if (
+          (recovered.resolvedHandleId && recovered.resolvedHandleId !== existingRecord.media_handle_id) ||
+          (recoveredWorkspacePath && recoveredWorkspacePath !== existingRecord.media_workspace_relpath)
+        ) {
+          const updated = {
+            ...existingRecord,
+            media_handle_id: recovered.resolvedHandleId || existingRecord.media_handle_id,
+            media_workspace_relpath: recoveredWorkspacePath || existingRecord.media_workspace_relpath,
+            media_storage_mode: recoveredWorkspacePath ? 'workspace-relative' : existingRecord.media_storage_mode,
+          } as Record<string, unknown>
+          if (recoveredWorkspacePath) {
+            delete updated.playback_cache_path
+            delete updated.playback_cache_content_type
+          }
+          await localSaveTranscript(mediaKey, updated, caseId)
+          setTranscriptData(updated as unknown as TranscriptData)
+          refreshRecentTranscripts()
+        }
+        return
+      }
+
+      const result = await promptRelinkMedia(mediaFilename || 'media file', mediaKey)
       if (!result) return
 
       const relinkedFile = await result.handle.getFile()
-      const nextMediaSourceId = result.handleId
-      const existing = await localGetTranscript(mediaKey)
-      if (existing) {
-        const existingRecord = existing as Record<string, unknown>
-        const caseId = typeof existingRecord.case_id === 'string' && existingRecord.case_id
-          ? existingRecord.case_id
-          : undefined
+      const workspaceRelativePath = await resolveWorkspaceRelativePathForHandle(result.handle)
 
-        const updated = {
-          ...existingRecord,
-          media_handle_id: nextMediaSourceId,
-          media_filename: relinkedFile.name || (existingRecord.media_filename as string | undefined),
-          media_content_type: relinkedFile.type || (existingRecord.media_content_type as string | undefined),
-        } as Record<string, unknown>
-
-        await localSaveTranscript(mediaKey, updated, caseId)
-        setTranscriptData(updated as unknown as TranscriptData)
-        refreshRecentTranscripts()
+      let cachedPlaybackPath = ''
+      let cachedPlaybackType = ''
+      if (!workspaceRelativePath) {
+        try {
+          const cached = await cacheMediaForPlayback(mediaKey, relinkedFile, {
+            filename: relinkedFile.name,
+            contentType: relinkedFile.type || 'application/octet-stream',
+          })
+          cachedPlaybackPath = cached.path
+          cachedPlaybackType = cached.contentType
+        } catch {
+          // Keep going: direct external handle is still usable.
+        }
       }
 
+      const updated = {
+        ...existingRecord,
+        media_handle_id: mediaKey,
+        media_filename: relinkedFile.name || (existingRecord.media_filename as string | undefined),
+        media_content_type: relinkedFile.type || (existingRecord.media_content_type as string | undefined),
+        media_storage_mode: workspaceRelativePath ? 'workspace-relative' : 'external-handle',
+        media_workspace_relpath: workspaceRelativePath || undefined,
+        playback_cache_path: cachedPlaybackPath || existingRecord.playback_cache_path,
+        playback_cache_content_type: cachedPlaybackType || existingRecord.playback_cache_content_type,
+      } as Record<string, unknown>
+      if (workspaceRelativePath) {
+        delete updated.playback_cache_path
+        delete updated.playback_cache_content_type
+      }
+
+      await localSaveTranscript(mediaKey, updated, caseId)
+      setTranscriptData(updated as unknown as TranscriptData)
       setMediaFilename(relinkedFile.name || mediaFilename)
       setMediaContentType(relinkedFile.type || mediaContentType)
-
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current)
-        blobUrlRef.current = null
-      }
-
-      const url = await getMediaObjectURL(nextMediaSourceId)
-      if (url) {
-        blobUrlRef.current = url
-        setMediaUrl(url)
-        setMediaAvailable(true)
-      }
+      refreshRecentTranscripts()
+      await loadTranscript(mediaKey)
     } catch (err: any) {
       setError(err?.message || 'Failed to relink media')
     }
-  }, [mediaContentType, mediaFilename, mediaKey, refreshRecentTranscripts])
+  }, [loadTranscript, mediaContentType, mediaFilename, mediaKey, refreshRecentTranscripts])
 
   const downloadFile = (base64Data: string, filename: string, mimeType: string) => {
     const byteCharacters = atob(base64Data)
@@ -272,6 +328,8 @@ export default function EditorPage() {
         <MediaMissingBanner
           mediaKey={mediaKey}
           mediaFilename={mediaFilename}
+          message={mediaMissingMessage}
+          actionLabel={mediaActionLabel}
           onReimport={handleRelinkMedia}
         />
       )}

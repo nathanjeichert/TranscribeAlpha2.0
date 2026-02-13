@@ -2,7 +2,18 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
-import { getWorkspaceName, getStorageEstimate, clearWorkspace, pickAndInitWorkspace, isPersistentStorage, requestPersistentStorage } from '@/lib/storage'
+import { evictMediaCacheToCap } from '@/lib/mediaCache'
+import {
+  DEFAULT_MEDIA_CACHE_CAP_BYTES,
+  clearWorkspace,
+  getMediaCacheCapBytes,
+  getStorageEstimate,
+  getWorkspaceName,
+  isPersistentStorage,
+  pickAndInitWorkspace,
+  requestPersistentStorage,
+  updateWorkspacePreferences,
+} from '@/lib/storage'
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -10,6 +21,13 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
+}
+
+const BYTES_PER_GB = 1024 * 1024 * 1024
+
+function formatCacheCapGb(value: number): string {
+  const rounded = Math.max(0.1, Math.round(value * 10) / 10)
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
 export default function SettingsPage() {
@@ -20,6 +38,11 @@ export default function SettingsPage() {
   const [changingWorkspace, setChangingWorkspace] = useState(false)
   const [persistentActive, setPersistentActive] = useState<boolean | null>(null)
   const [requestingPersistence, setRequestingPersistence] = useState(false)
+  const [mediaCacheCapInput, setMediaCacheCapInput] = useState<string>(
+    formatCacheCapGb(DEFAULT_MEDIA_CACHE_CAP_BYTES / BYTES_PER_GB),
+  )
+  const [savingMediaCacheCap, setSavingMediaCacheCap] = useState(false)
+  const [mediaCacheCapStatus, setMediaCacheCapStatus] = useState('')
 
   const loadWorkspaceInfo = useCallback(async () => {
     const name = getWorkspaceName()
@@ -35,6 +58,12 @@ export default function SettingsPage() {
       setPersistentActive(persisted)
     } catch {
       // Storage API may not be available
+    }
+    try {
+      const cacheCapBytes = await getMediaCacheCapBytes()
+      setMediaCacheCapInput(formatCacheCapGb(cacheCapBytes / BYTES_PER_GB))
+    } catch {
+      setMediaCacheCapInput(formatCacheCapGb(DEFAULT_MEDIA_CACHE_CAP_BYTES / BYTES_PER_GB))
     }
   }, [])
 
@@ -55,11 +84,34 @@ export default function SettingsPage() {
     }
   }
 
+  const handleSaveMediaCacheCap = async () => {
+    const requestedGb = Number(mediaCacheCapInput)
+    if (!Number.isFinite(requestedGb) || requestedGb <= 0) {
+      setMediaCacheCapStatus('Enter a valid cache limit greater than 0 GB.')
+      return
+    }
+
+    const capBytes = Math.max(1, Math.floor(requestedGb * BYTES_PER_GB))
+    setSavingMediaCacheCap(true)
+    setMediaCacheCapStatus('')
+    try {
+      await updateWorkspacePreferences({ media_cache_cap_bytes: capBytes })
+      await evictMediaCacheToCap({ capBytes })
+      setMediaCacheCapInput(formatCacheCapGb(capBytes / BYTES_PER_GB))
+      setMediaCacheCapStatus('Saved. Older cached files were removed if needed.')
+      await loadWorkspaceInfo()
+    } catch {
+      setMediaCacheCapStatus('Failed to save media cache limit.')
+    } finally {
+      setSavingMediaCacheCap(false)
+    }
+  }
+
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
-        <p className="text-gray-500 mt-1">Configure your TranscribeAlpha preferences</p>
+        <p className="text-gray-500 mt-1">Configure your TranscribeAlpha preferences.</p>
       </div>
 
       <div className="space-y-6">
@@ -113,6 +165,41 @@ export default function SettingsPage() {
                 <p className="text-sm text-gray-500">Calculating...</p>
               )}
             </div>
+            <div className="py-3 border-b border-gray-100">
+              <p className="font-medium text-gray-900 mb-1">External Media Cache Limit</p>
+              <p className="text-sm text-gray-500 mb-3">
+                Files outside your workspace can be cached locally for reliable playback.
+              </p>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min={1}
+                  step={0.5}
+                  value={mediaCacheCapInput}
+                  onChange={(event) => {
+                    setMediaCacheCapInput(event.target.value)
+                    setMediaCacheCapStatus('')
+                  }}
+                  className="w-32 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                />
+                <span className="text-sm text-gray-600">GB</span>
+                <button
+                  onClick={() => void handleSaveMediaCacheCap()}
+                  disabled={savingMediaCacheCap}
+                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {savingMediaCacheCap ? 'Saving...' : 'Save Limit'}
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Default: 10 GB. Files already inside your workspace are opened directly and do not use this cache.
+              </p>
+              {mediaCacheCapStatus && (
+                <p className={`text-xs mt-2 ${mediaCacheCapStatus.startsWith('Saved') ? 'text-green-600' : 'text-red-600'}`}>
+                  {mediaCacheCapStatus}
+                </p>
+              )}
+            </div>
             <div className="flex items-center justify-between py-3 border-b border-gray-100">
               <div>
                 <p className="font-medium text-gray-900 mb-1">Persistent Storage</p>
@@ -145,7 +232,7 @@ export default function SettingsPage() {
             <div className="py-3">
               <p className="font-medium text-gray-900 mb-1">Data Architecture</p>
               <p className="text-sm text-gray-500">
-                Cases, transcripts, and media links are stored locally in your workspace with IndexedDB support for media handles.
+                Cases and transcripts stay in your workspace. Media inside the workspace is linked directly; media outside is relinkable and can be cached automatically.
               </p>
             </div>
           </div>
