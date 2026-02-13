@@ -743,6 +743,7 @@ export default function TranscribePage() {
             </div>
           </div>
 
+          {/* TODO: Re-enable Gemini model option later
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcription Model</h2>
             <select
@@ -765,6 +766,7 @@ export default function TranscribePage() {
               </p>
             ) : null}
           </div>
+          */}
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="p-4 border-b border-gray-100">
