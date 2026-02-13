@@ -927,7 +927,23 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           if (error instanceof FFmpegCanceledError && !extractionTimedOut) {
             throw new Error('Preparing multichannel audio was canceled.')
           }
-          throw error
+
+          if (sourceFile.size > CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
+            const sizeMb = (sourceFile.size / (1024 * 1024)).toFixed(1)
+            const reason = extractionTimedOut
+              ? 'Preparing this file in the browser took too long.'
+              : 'This file could not be prepared in the browser.'
+            throw new Error(
+              `${reason} The original ${sizeMb} MB file is likely too large to upload directly. ` +
+                'Convert it to MP3 on the Converter page, then try again.',
+            )
+          }
+
+          // Fall back to sending original media when in-browser stereo extraction fails
+          // (e.g. G.729 WAV files that ffmpeg.wasm cannot decode).
+          // AssemblyAI handles multichannel separation server-side.
+          updateJob(jobId, { detail: 'Multichannel extraction unavailable. Uploading original media...' })
+          return sourceFile
         } finally {
           if (timeoutId) window.clearTimeout(timeoutId)
         }
