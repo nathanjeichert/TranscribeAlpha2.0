@@ -14,7 +14,7 @@ import {
   type TranscriptData,
   type TranscriptSummary,
 } from '@/lib/storage'
-import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
 import { getMediaFile, storeMediaHandle } from '@/lib/mediaHandles'
 import { openDB } from '@/lib/idb'
 import {
@@ -654,12 +654,18 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       if (job.convertedCachePath) {
         void deleteFile(job.convertedCachePath).catch(() => undefined)
       }
+      const xhr = abortRef.current.get(job.id)
+      if (xhr) {
+        try { xhr.abort() } catch {}
+      }
+      abortRef.current.delete(job.id)
       jobFilesRef.current.delete(job.id)
       transcriptionInputsRef.current.delete(job.id)
       removeConvertedFromMemory(job.id)
       convertedReloadingRef.current.delete(job.id)
       preparedAudioRef.current.delete(job.id)
       inFlightUploadBytesRef.current.delete(job.id)
+      activeTranscriptionJobIdsRef.current.delete(job.id)
     }
     applyJobsMutation((prev) => prev.filter((job) => !isTerminalStatus(job.status)))
   }, [applyJobsMutation, removeConvertedFromMemory])
@@ -801,7 +807,11 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         delete record.media_workspace_relpath
       }
 
-      if (job?.multichannel) {
+      if (workspaceRelativePath) {
+        delete record.playback_cache_path
+        delete record.playback_cache_content_type
+        void removeMediaCacheEntry(mediaKey).catch(() => undefined)
+      } else if (job?.multichannel) {
         const prepared = preparedAudioRef.current.get(jobId)
         if (prepared) {
           try {
@@ -818,7 +828,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             // Ignore playback-cache write failures; transcript persistence remains primary.
           }
         }
-      } else if (!workspaceRelativePath && activeFile?.file) {
+      } else if (activeFile?.file) {
         try {
           const cached = await cacheMediaForPlayback(mediaKey, activeFile.file, {
             filename: mediaFilename,
@@ -829,9 +839,6 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         } catch {
           // Ignore playback-cache write failures and rely on external handles when available.
         }
-      } else if (workspaceRelativePath) {
-        delete record.playback_cache_path
-        delete record.playback_cache_content_type
       }
 
       await localSaveTranscript(mediaKey, record, caseId)

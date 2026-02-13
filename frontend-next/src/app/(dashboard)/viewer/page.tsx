@@ -20,7 +20,7 @@ import {
   type ClipSequenceRecord,
   type TranscriptData,
 } from '@/lib/storage'
-import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
 import { getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
 import { resolveMediaFileForRecord, resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 import { clipMedia, clipMediaBatch, type ClipBatchRequest } from '@/lib/ffmpegWorker'
@@ -1017,6 +1017,9 @@ export default function ViewerPage() {
           : transcript
 
       if (nextTranscript !== transcript) {
+        if (recoveredWorkspacePath) {
+          await removeMediaCacheEntry(transcript.media_key).catch(() => undefined)
+        }
         const caseId = transcript.case_id && String(transcript.case_id).trim()
           ? String(transcript.case_id)
           : undefined
@@ -1064,6 +1067,7 @@ export default function ViewerPage() {
     if (workspaceRelativePath) {
       delete nextTranscript.playback_cache_path
       delete nextTranscript.playback_cache_content_type
+      await removeMediaCacheEntry(transcript.media_key).catch(() => undefined)
     }
 
     const caseId = transcript.case_id && String(transcript.case_id).trim()

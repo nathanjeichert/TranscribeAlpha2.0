@@ -24,6 +24,8 @@ interface MediaCacheIndex {
   entries: Record<string, MediaCacheEntry>
 }
 
+let indexMutationQueue: Promise<void> = Promise.resolve()
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -103,6 +105,21 @@ async function writeCacheIndex(index: MediaCacheIndex): Promise<void> {
   await writeJSON(MEDIA_CACHE_INDEX_PATH, payload)
 }
 
+async function withIndexLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = indexMutationQueue
+  let release!: () => void
+  indexMutationQueue = new Promise<void>((resolve) => {
+    release = resolve
+  })
+
+  await previous
+  try {
+    return await operation()
+  } finally {
+    release()
+  }
+}
+
 export async function getMediaCacheEntry(mediaKey: string): Promise<MediaCacheEntry | null> {
   const normalizedKey = String(mediaKey || '').trim()
   if (!normalizedKey) return null
@@ -113,38 +130,44 @@ export async function getMediaCacheEntry(mediaKey: string): Promise<MediaCacheEn
 export async function touchMediaCacheEntry(mediaKey: string): Promise<void> {
   const normalizedKey = String(mediaKey || '').trim()
   if (!normalizedKey) return
-  const index = await readCacheIndex()
-  const existing = index.entries[normalizedKey]
-  if (!existing) return
-  index.entries[normalizedKey] = {
-    ...existing,
-    last_used_at: nowIso(),
-  }
-  await writeCacheIndex(index)
+  await withIndexLock(async () => {
+    const index = await readCacheIndex()
+    const existing = index.entries[normalizedKey]
+    if (!existing) return
+    index.entries[normalizedKey] = {
+      ...existing,
+      last_used_at: nowIso(),
+    }
+    await writeCacheIndex(index)
+  })
 }
 
 export async function removeMediaCacheEntry(mediaKey: string): Promise<void> {
   const normalizedKey = String(mediaKey || '').trim()
   if (!normalizedKey) return
-  const index = await readCacheIndex()
-  const existing = index.entries[normalizedKey]
-  if (!existing) return
+  await withIndexLock(async () => {
+    const index = await readCacheIndex()
+    const existing = index.entries[normalizedKey]
+    if (!existing) return
 
-  try {
-    await deleteFile(existing.path)
-  } catch {
-    // File may already be gone.
-  }
+    try {
+      await deleteFile(existing.path)
+    } catch {
+      // File may already be gone.
+    }
 
-  delete index.entries[normalizedKey]
-  await writeCacheIndex(index)
+    delete index.entries[normalizedKey]
+    await writeCacheIndex(index)
+  })
 }
 
-export async function evictMediaCacheToCap(options?: {
-  capBytes?: number
-  preserveMediaKeys?: string[]
-}): Promise<void> {
-  const index = await readCacheIndex()
+async function evictMediaCacheToCapInPlace(
+  index: MediaCacheIndex,
+  options?: {
+    capBytes?: number
+    preserveMediaKeys?: string[]
+  },
+): Promise<void> {
   const preserve = new Set(
     (options?.preserveMediaKeys || [])
       .map((key) => String(key || '').trim())
@@ -178,8 +201,17 @@ export async function evictMediaCacheToCap(options?: {
     totalBytes -= Math.max(0, Number(entry.size_bytes || 0))
     delete index.entries[mediaKey]
   }
+}
 
-  await writeCacheIndex(index)
+export async function evictMediaCacheToCap(options?: {
+  capBytes?: number
+  preserveMediaKeys?: string[]
+}): Promise<void> {
+  await withIndexLock(async () => {
+    const index = await readCacheIndex()
+    await evictMediaCacheToCapInPlace(index, options)
+    await writeCacheIndex(index)
+  })
 }
 
 export async function cacheMediaForPlayback(
@@ -196,31 +228,34 @@ export async function cacheMediaForPlayback(
   const resolvedContentType = options?.contentType || file.type || 'application/octet-stream'
   const ext = chooseCacheExtension(filename, resolvedContentType)
   const cachePath = `cache/playback/${normalizedKey}.${ext}`
+  await withIndexLock(async () => {
+    await writeBinaryFile(cachePath, file)
 
-  const bytes = await file.arrayBuffer()
-  await writeBinaryFile(cachePath, bytes)
-
-  const index = await readCacheIndex()
-  const existing = index.entries[normalizedKey]
-  if (existing && existing.path !== cachePath) {
-    try {
-      await deleteFile(existing.path)
-    } catch {
-      // Previous cache payload may have already been deleted.
+    const index = await readCacheIndex()
+    const existing = index.entries[normalizedKey]
+    if (existing && existing.path !== cachePath) {
+      try {
+        await deleteFile(existing.path)
+      } catch {
+        // Previous cache payload may have already been deleted.
+      }
     }
-  }
 
-  const timestamp = nowIso()
-  index.entries[normalizedKey] = {
-    media_key: normalizedKey,
-    path: cachePath,
-    size_bytes: bytes.byteLength,
-    content_type: resolvedContentType,
-    created_at: existing?.created_at || timestamp,
-    last_used_at: timestamp,
-  }
-  await writeCacheIndex(index)
-  await evictMediaCacheToCap({ preserveMediaKeys: [normalizedKey, ...(options?.preserveMediaKeys || [])] })
+    const timestamp = nowIso()
+    index.entries[normalizedKey] = {
+      media_key: normalizedKey,
+      path: cachePath,
+      size_bytes: file.size,
+      content_type: resolvedContentType,
+      created_at: existing?.created_at || timestamp,
+      last_used_at: timestamp,
+    }
+
+    await evictMediaCacheToCapInPlace(index, {
+      preserveMediaKeys: [normalizedKey, ...(options?.preserveMediaKeys || [])],
+    })
+    await writeCacheIndex(index)
+  })
 
   return {
     path: cachePath,

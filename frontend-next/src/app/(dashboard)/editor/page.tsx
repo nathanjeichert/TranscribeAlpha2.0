@@ -12,7 +12,7 @@ import {
   resolveWorkspaceRelativePathForHandle,
   saveTranscript as localSaveTranscript,
 } from '@/lib/storage'
-import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
 import { getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
 import { resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 
@@ -169,6 +169,7 @@ export default function EditorPage() {
           if (recoveredWorkspacePath) {
             delete updated.playback_cache_path
             delete updated.playback_cache_content_type
+            await removeMediaCacheEntry(mediaKey).catch(() => undefined)
           }
           await localSaveTranscript(mediaKey, updated, caseId)
           setTranscriptData(updated as unknown as TranscriptData)
@@ -211,6 +212,7 @@ export default function EditorPage() {
       if (workspaceRelativePath) {
         delete updated.playback_cache_path
         delete updated.playback_cache_content_type
+        await removeMediaCacheEntry(mediaKey).catch(() => undefined)
       }
 
       await localSaveTranscript(mediaKey, updated, caseId)

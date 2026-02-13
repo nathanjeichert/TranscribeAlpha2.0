@@ -4,7 +4,7 @@ import {
   getFirstAvailableMediaObjectURL,
   getMediaHandlePermissionState,
 } from './mediaHandles'
-import { readBinaryFile, readWorkspaceRelativeFile } from './storage'
+import { readWorkspaceRelativeFile } from './storage'
 
 export type MediaSourceKind = 'workspace-relative' | 'workspace-cache' | 'external-handle'
 
@@ -92,15 +92,18 @@ export async function resolveMediaObjectURLForRecord(
   }
 
   const cachePath = asText(record.playback_cache_path)
-  const cacheContentType = asText(record.playback_cache_content_type) || 'application/octet-stream'
+  const cacheContentType = asText(record.playback_cache_content_type)
   if (cachePath) {
-    const cached = await readBinaryFile(cachePath)
-    if (cached) {
+    const cachedFile = await readWorkspaceRelativeFile(cachePath)
+    if (cachedFile) {
       if (mediaKey) {
         await touchMediaCacheEntry(mediaKey)
       }
+      const playbackBlob = cacheContentType
+        ? new Blob([cachedFile], { type: cacheContentType })
+        : cachedFile
       return {
-        objectUrl: URL.createObjectURL(new Blob([cached], { type: cacheContentType })),
+        objectUrl: URL.createObjectURL(playbackBlob),
         sourceKind: 'workspace-cache',
         reconnectRecommended: false,
       }
@@ -153,15 +156,21 @@ export async function resolveMediaFileForRecord(
   }
 
   const cachePath = asText(record.playback_cache_path)
-  const cacheContentType = asText(record.playback_cache_content_type) || 'application/octet-stream'
+  const cacheContentType = asText(record.playback_cache_content_type)
   if (cachePath) {
-    const cached = await readBinaryFile(cachePath)
-    if (cached) {
+    const cachedFile = await readWorkspaceRelativeFile(cachePath)
+    if (cachedFile) {
       if (mediaKey) {
         await touchMediaCacheEntry(mediaKey)
       }
+      const playbackFile = !cachedFile.type && cacheContentType
+        ? new File([cachedFile], cachedFile.name || (asText(record.media_filename) || `${mediaKey || 'media'}.bin`), {
+            type: cacheContentType,
+            lastModified: cachedFile.lastModified,
+          })
+        : cachedFile
       return {
-        file: new File([cached], asText(record.media_filename) || `${mediaKey || 'media'}.bin`, { type: cacheContentType }),
+        file: playbackFile,
         sourceKind: 'workspace-cache',
         reconnectRecommended: false,
       }
