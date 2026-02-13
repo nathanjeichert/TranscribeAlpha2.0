@@ -44,6 +44,8 @@ export interface TranscriptData {
   media_content_type?: string
   media_handle_id?: string
   media_blob_name?: string
+  playback_cache_path?: string
+  playback_cache_content_type?: string
   case_id?: string | null
   [key: string]: unknown
 }
@@ -96,6 +98,30 @@ export function setupMultiTabDetection(onConflict: () => void): () => void {
   }
 }
 
+// ─── Persistent Storage ────────────────────────────────────────────
+
+export async function requestPersistentStorage(): Promise<boolean> {
+  try {
+    if (navigator.storage?.persist) {
+      return await navigator.storage.persist()
+    }
+  } catch {
+    console.warn('[storage] navigator.storage.persist() failed')
+  }
+  return false
+}
+
+export async function isPersistentStorage(): Promise<boolean> {
+  try {
+    if (navigator.storage?.persisted) {
+      return await navigator.storage.persisted()
+    }
+  } catch {
+    console.warn('[storage] navigator.storage.persisted() check failed')
+  }
+  return false
+}
+
 // ─── Workspace Initialization ───────────────────────────────────────
 
 export async function isWorkspaceConfigured(): Promise<boolean> {
@@ -113,7 +139,14 @@ export async function isWorkspaceConfigured(): Promise<boolean> {
   }
 }
 
-export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null> {
+export type WorkspaceInitStatus = 'ok' | 'no-handle' | 'permission-denied' | 'permission-prompt' | 'error'
+
+export interface WorkspaceInitResult {
+  status: WorkspaceInitStatus
+  handle: FileSystemDirectoryHandle | null
+}
+
+export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
   try {
     const db = await openDB()
     const handle: FileSystemDirectoryHandle | undefined = await new Promise((resolve, reject) => {
@@ -124,19 +157,55 @@ export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null>
       request.onerror = () => reject(request.error)
     })
 
-    if (!handle) return null
+    if (!handle) {
+      console.warn('[storage] No workspace handle found in IndexedDB')
+      return { status: 'no-handle', handle: null }
+    }
 
-    // Request permission
-    const permission = await (handle as any).requestPermission({ mode: 'readwrite' })
-    if (permission !== 'granted') return null
+    // Try queryPermission first (works without user gesture)
+    let permission: PermissionState | string = 'prompt'
+    try {
+      permission = await (handle as any).queryPermission({ mode: 'readwrite' })
+    } catch {
+      // queryPermission may not be available in all browsers
+    }
 
-    // Verify workspace structure
-    await ensureWorkspaceStructure(handle)
-    workspaceHandle = handle
-    return handle
-  } catch {
-    return null
+    if (permission === 'granted') {
+      await ensureWorkspaceStructure(handle)
+      workspaceHandle = handle
+      return { status: 'ok', handle }
+    }
+
+    // Fall back to requestPermission (needs user gesture to succeed)
+    try {
+      permission = await (handle as any).requestPermission({ mode: 'readwrite' })
+    } catch {
+      console.warn('[storage] requestPermission() threw — likely no user gesture')
+      return { status: 'permission-prompt', handle: null }
+    }
+
+    if (permission === 'granted') {
+      await ensureWorkspaceStructure(handle)
+      workspaceHandle = handle
+      return { status: 'ok', handle }
+    }
+
+    if (permission === 'denied') {
+      console.warn('[storage] Permission denied for workspace handle')
+      return { status: 'permission-denied', handle: null }
+    }
+
+    console.warn('[storage] Permission not granted (status: %s) — likely needs user gesture', permission)
+    return { status: 'permission-prompt', handle: null }
+  } catch (err) {
+    console.warn('[storage] initWorkspaceDetailed error:', err)
+    return { status: 'error', handle: null }
   }
+}
+
+export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null> {
+  const result = await initWorkspaceDetailed()
+  return result.handle
 }
 
 export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirectoryHandle; isExisting: boolean }> {
@@ -174,6 +243,9 @@ export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirect
     request.onerror = () => reject(request.error)
   })
 
+  // Request persistent storage (runs in user-gesture context from folder picker)
+  await requestPersistentStorage()
+
   workspaceHandle = handle
   return { handle, isExisting }
 }
@@ -183,6 +255,7 @@ async function ensureWorkspaceStructure(root: FileSystemDirectoryHandle): Promis
   await root.getDirectoryHandle('uncategorized', { create: true })
   const cache = await root.getDirectoryHandle('cache', { create: true })
   await cache.getDirectoryHandle('converted', { create: true })
+  await cache.getDirectoryHandle('playback', { create: true })
 }
 
 // ─── Low-Level File Operations ──────────────────────────────────────

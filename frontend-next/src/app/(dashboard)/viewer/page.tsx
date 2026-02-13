@@ -11,6 +11,7 @@ import {
   getTranscript,
   listCaseClips,
   listCaseSequences,
+  readBinaryFile,
   saveClip,
   saveTranscript,
   saveSequence,
@@ -293,6 +294,7 @@ export default function ViewerPage() {
   const searchParams = useSearchParams()
   const queryMediaKey = searchParams.get('key')
   const queryCaseId = searchParams.get('case')
+  const queryHighlightLineId = searchParams.get('highlight')
 
   const { activeMediaKey, setActiveMediaKey } = useDashboard()
 
@@ -314,6 +316,7 @@ export default function ViewerPage() {
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchCursor, setSearchCursor] = useState(0)
+  const [highlightLineId, setHighlightLineId] = useState<string | null>(queryHighlightLineId)
 
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -499,6 +502,19 @@ export default function ViewerPage() {
   const loadMediaForTranscript = useCallback(async (record: ViewerTranscript) => {
     revokeMediaUrl()
     setMediaLoading(true)
+
+    if (record.playback_cache_path) {
+      const cached = await readBinaryFile(record.playback_cache_path)
+      if (cached) {
+        const contentType = record.playback_cache_content_type || 'audio/ogg'
+        const objectUrl = URL.createObjectURL(new Blob([cached], { type: contentType }))
+        blobUrlRef.current = objectUrl
+        setMediaUrl(objectUrl)
+        setMediaAvailable(true)
+        setMediaLoading(false)
+        return
+      }
+    }
 
     const handleId = record.media_handle_id || record.media_key
     const objectUrl = await getMediaObjectURL(handleId)
@@ -962,6 +978,27 @@ export default function ViewerPage() {
   useEffect(() => {
     setSearchCursor(0)
   }, [searchQuery])
+
+  // Scroll to highlighted line from case search results
+  useEffect(() => {
+    if (!highlightLineId || !transcript || isLoading) return
+    // Wait for DOM to render
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const target = lineRefs.current[highlightLineId]
+        if (!target) return
+        programmaticScrollRef.current = true
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        setSelectedLineId(highlightLineId)
+        setTimeout(() => {
+          programmaticScrollRef.current = false
+        }, PROGRAMMATIC_SCROLL_RESET_MS)
+        // Auto-clear highlight after 4 seconds
+        setTimeout(() => setHighlightLineId(null), 4000)
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [highlightLineId, transcript, isLoading])
 
   const relinkMedia = useCallback(async () => {
     if (!transcript) return
@@ -2191,12 +2228,15 @@ export default function ViewerPage() {
                                 const currentMatch = currentSearchLineId === line.id
                                 const lineDisplay = splitSpeakerPrefix(line)
 
+                                const highlighted = highlightLineId === line.id
+
                                 const lineClasses = [
                                   'group grid cursor-pointer grid-cols-[36px_minmax(0,1fr)] gap-2 px-1 font-mono text-[12pt] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/30',
                                   active ? 'bg-amber-100/80' : '',
-                                  selected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/70' : '',
+                                  selected && !highlighted ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/70' : '',
                                   match ? 'bg-amber-50' : '',
                                   currentMatch ? 'outline outline-1 outline-amber-400' : '',
+                                  highlighted ? 'ring-2 ring-inset ring-yellow-400 bg-yellow-100 animate-pulse' : '',
                                 ]
 
                                 return (

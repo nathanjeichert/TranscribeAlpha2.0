@@ -12,6 +12,7 @@ frontend-next/node_modules/
 .env.local
 .env.production.local
 .env.development.local
+.env.cloudrun.local
 
 # Secrets (never commit these!)
 users.json

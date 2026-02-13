@@ -66,6 +66,7 @@ export default function JobsPage() {
   const {
     jobs,
     getConvertedFile,
+    resolveConvertedFile,
     retryJob,
     cancelJob,
     removeJob,
@@ -195,6 +196,7 @@ export default function JobsPage() {
         <div className="divide-y divide-gray-100">
           {activeJobs.map((job) => {
             const converted = job.kind === 'conversion' ? getConvertedFile(job.id) : null
+            const hasPersistedOutput = job.kind === 'conversion' && Boolean(job.convertedCachePath)
             const isBusy = busyJobId === job.id
 
             return (
@@ -215,10 +217,14 @@ export default function JobsPage() {
                 </div>
 
                 <div className="flex gap-2 flex-wrap">
-                  {job.kind === 'conversion' && converted ? (
+                  {job.kind === 'conversion' && (converted || hasPersistedOutput) ? (
                     <button
                       type="button"
-                      onClick={() => downloadFile(converted)}
+                      onClick={async () => {
+                        const file = converted || (await resolveConvertedFile(job.id))
+                        if (!file) return
+                        downloadFile(file)
+                      }}
                       className="btn-outline px-3 py-2 text-sm"
                     >
                       Download
@@ -258,6 +264,7 @@ export default function JobsPage() {
         <div className="divide-y divide-gray-100">
           {recentJobs.map((job) => {
             const converted = job.kind === 'conversion' ? getConvertedFile(job.id) : null
+            const hasPersistedOutput = job.kind === 'conversion' && Boolean(job.convertedCachePath)
             const isBusy = busyJobId === job.id
 
             return (
@@ -288,10 +295,14 @@ export default function JobsPage() {
                     </button>
                   ) : null}
 
-                  {job.kind === 'conversion' && converted ? (
+                  {job.kind === 'conversion' && (converted || hasPersistedOutput) ? (
                     <button
                       type="button"
-                      onClick={() => downloadFile(converted)}
+                      onClick={async () => {
+                        const file = converted || (await resolveConvertedFile(job.id))
+                        if (!file) return
+                        downloadFile(file)
+                      }}
                       className="btn-outline px-3 py-2 text-sm"
                     >
                       Download

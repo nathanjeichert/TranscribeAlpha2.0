@@ -100,6 +100,31 @@ def load_users_from_secret_manager() -> Dict[str, dict]:
         return {}
 
 
+def save_users_to_secret_manager(users_dict: Dict[str, dict]) -> None:
+    """
+    Save users back to Google Secret Manager by adding a new secret version.
+    Also invalidates the in-memory cache.
+    """
+    global _users_cache, _cache_timestamp
+
+    client = get_secret_manager_client()
+    if not client or not PROJECT_ID:
+        raise RuntimeError("Secret Manager not available")
+
+    users_list = list(users_dict.values())
+    secret_data = json.dumps({"users": users_list}, indent=2)
+
+    parent = f"projects/{PROJECT_ID}/secrets/{SECRET_NAME}"
+    client.add_secret_version(
+        request={"parent": parent, "payload": {"data": secret_data.encode("UTF-8")}}
+    )
+
+    # Update cache immediately
+    _users_cache = users_dict
+    _cache_timestamp = datetime.now(timezone.utc)
+    logger.info("Saved %d users to Secret Manager", len(users_dict))
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     try:
@@ -131,6 +156,39 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
         return None
 
     logger.info(f"User '{username}' authenticated successfully")
+    return user
+
+
+def register_user(username: str, password: str) -> dict:
+    """
+    Complete registration for a pending user by setting their password.
+    Returns the updated user data.
+    Raises ValueError for validation errors, RuntimeError for storage errors.
+    """
+    if not username or not password:
+        raise ValueError("Username and password are required")
+
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters")
+
+    users = load_users_from_secret_manager()
+    user = users.get(username)
+
+    if not user:
+        raise ValueError("Username not found. Contact your administrator for an invitation.")
+
+    if user.get("status") != "pending":
+        raise ValueError("This account has already been registered.")
+
+    # Hash password and activate user
+    user["password_hash"] = get_password_hash(password)
+    user["status"] = "active"
+    user["registered_at"] = datetime.now(timezone.utc).isoformat()
+
+    users[username] = user
+    save_users_to_secret_manager(users)
+
+    logger.info(f"User '{username}' completed registration")
     return user
 
 

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
-import { getWorkspaceName, getStorageEstimate, clearWorkspace, pickAndInitWorkspace } from '@/lib/storage'
+import { getWorkspaceName, getStorageEstimate, clearWorkspace, pickAndInitWorkspace, isPersistentStorage, requestPersistentStorage } from '@/lib/storage'
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
@@ -13,11 +13,13 @@ function formatBytes(bytes: number): string {
 }
 
 export default function SettingsPage() {
-  const { appVariant } = useDashboard()
+  const { appVariant, memoryLimitMB, setMemoryLimitMB } = useDashboard()
 
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
   const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
   const [changingWorkspace, setChangingWorkspace] = useState(false)
+  const [persistentActive, setPersistentActive] = useState<boolean | null>(null)
+  const [requestingPersistence, setRequestingPersistence] = useState(false)
 
   const loadWorkspaceInfo = useCallback(async () => {
     const name = getWorkspaceName()
@@ -27,6 +29,12 @@ export default function SettingsPage() {
       setStorageEstimate(estimate)
     } catch {
       // Workspace may not be accessible
+    }
+    try {
+      const persisted = await isPersistentStorage()
+      setPersistentActive(persisted)
+    } catch {
+      // Storage API may not be available
     }
   }, [])
 
@@ -105,12 +113,72 @@ export default function SettingsPage() {
                 <p className="text-sm text-gray-500">Calculating...</p>
               )}
             </div>
+            <div className="flex items-center justify-between py-3 border-b border-gray-100">
+              <div>
+                <p className="font-medium text-gray-900 mb-1">Persistent Storage</p>
+                {persistentActive === null ? (
+                  <p className="text-sm text-gray-500">Checking...</p>
+                ) : persistentActive ? (
+                  <p className="text-sm text-green-600">Active &mdash; browser will not evict your workspace data</p>
+                ) : (
+                  <p className="text-sm text-amber-600">Not active &mdash; browser may clear stored data under storage pressure</p>
+                )}
+              </div>
+              {persistentActive === false && (
+                <button
+                  onClick={async () => {
+                    setRequestingPersistence(true)
+                    try {
+                      const granted = await requestPersistentStorage()
+                      setPersistentActive(granted)
+                    } finally {
+                      setRequestingPersistence(false)
+                    }
+                  }}
+                  disabled={requestingPersistence}
+                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {requestingPersistence ? 'Requesting...' : 'Request Persistence'}
+                </button>
+              )}
+            </div>
             <div className="py-3">
               <p className="font-medium text-gray-900 mb-1">Data Architecture</p>
               <p className="text-sm text-gray-500">
                 Cases, transcripts, and media links are stored locally in your workspace with IndexedDB support for media handles.
               </p>
             </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Performance</h2>
+          <div className="space-y-4">
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <p className="font-medium text-gray-900">Memory Limit</p>
+                <span className="text-sm font-semibold text-gray-700">{memoryLimitMB} MB</span>
+              </div>
+              <input
+                type="range"
+                min={256}
+                max={4096}
+                step={256}
+                value={memoryLimitMB}
+                onChange={(event) => setMemoryLimitMB(Number(event.target.value))}
+                className="w-full accent-primary-600"
+              />
+              <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
+                <span>256 MB</span>
+                <span>4096 MB</span>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600">
+              Higher values allow more parallel processing for faster batch transcription. Lower values reduce memory pressure on devices with limited RAM.
+            </p>
+            <p className="text-xs text-amber-700">
+              Warning: setting this too high may crash the browser, especially when other apps are running.
+            </p>
           </div>
         </div>
 

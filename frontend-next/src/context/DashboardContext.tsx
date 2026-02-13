@@ -3,21 +3,27 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react'
 import { getAuthHeaders, getCurrentUser } from '@/utils/auth'
 import {
+  deleteFile,
   listCases as localListCases,
   listUncategorizedTranscripts as localListUncategorized,
   listTranscriptsInCase,
+  readBinaryFile,
   saveTranscript as localSaveTranscript,
+  writeBinaryFile,
   type TranscriptData,
   type TranscriptSummary,
 } from '@/lib/storage'
-import { storeMediaBlob, storeMediaHandle } from '@/lib/mediaHandles'
+import { getMediaFile, storeMediaBlob, storeMediaHandle } from '@/lib/mediaHandles'
+import { openDB } from '@/lib/idb'
 import {
   FFmpegCanceledError,
   cancelActiveFFmpegJob,
   convertToPlayable,
   detectCodec,
   extractAudio,
+  extractAudioStereo,
   readConvertedFromCache,
+  setFFmpegMemoryLimitMB,
   writeConvertedToCache,
   type CodecInfo,
 } from '@/lib/ffmpegWorker'
@@ -67,12 +73,25 @@ export type JobRecord = {
   transcriptionModel?: 'assemblyai' | 'gemini'
   speakersExpected?: number | null
   sourceFilename?: string | null
+  sourceMediaRefId?: string | null
+  caseName?: string
+  caseNumber?: string
+  firmName?: string
+  inputDate?: string
+  inputTime?: string
+  location?: string
+  speakerNames?: string
+  multichannel?: boolean
+  channelLabels?: Record<number, string>
 
   unloadSensitive: boolean
 
   // Conversion metadata (serializable)
   codec?: CodecInfo | null
   needsConversion?: boolean
+  convertedCachePath?: string | null
+  convertedFilename?: string | null
+  convertedContentType?: string | null
 }
 
 export type TranscriptionJobInput = {
@@ -90,15 +109,26 @@ export type TranscriptionJobInput = {
   location: string
   speakers_expected?: number | null
   speaker_names?: string
+  multichannel?: boolean
+  channelLabels?: Record<number, string>
 }
 
-const MAX_PERSISTED_JOBS = 200
-const JOB_STORAGE_PREFIX = 'ta_jobs_v1:'
+const MAX_PERSISTED_JOBS = 3000
+const JOB_STORAGE_PREFIX = 'ta_jobs_v2:'
+const LEGACY_JOB_STORAGE_PREFIX = 'ta_jobs_v1:'
+const JOBS_STORE = 'jobs'
 
 const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024
 const CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS = 7 * 60 * 1000
 const CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 512 * 1024 * 1024
 const CRIMINAL_TRANSCRIBE_REQUEST_TIMEOUT_MS = 16 * 60 * 1000
+const MAX_IN_MEMORY_CONVERTED_FILES = 8
+const MEMORY_LIMIT_KEY = 'ta_memory_limit_mb'
+const DEFAULT_MEMORY_LIMIT_MB = 1024
+const MIN_MEMORY_LIMIT_MB = 256
+const MAX_MEMORY_LIMIT_MB = 4096
+const MIN_CONCURRENT_UPLOADS = 2
+const MAX_CONCURRENT_UPLOADS = 50
 
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'm4v', 'webm'])
 const COMPRESSED_AUDIO_EXTENSIONS = new Set(['mp3', 'm4a', 'aac', 'ogg', 'opus', 'wma'])
@@ -110,6 +140,13 @@ type ActiveFileEntry = {
 }
 
 type TranscriptionRuntimeInput = Omit<TranscriptionJobInput, 'file' | 'fileHandle'>
+
+type MemoryUsage = {
+  convertedFiles: number
+  preparedAudio: number
+  jobFiles: number
+  inFlightUploads: number
+}
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -139,6 +176,151 @@ function isLikelyCompressedAudioSource(file: File): boolean {
   return COMPRESSED_AUDIO_EXTENSIONS.has(getFileExtension(file.name))
 }
 
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function getFilenameExtension(filename: string): string {
+  const dot = filename.lastIndexOf('.')
+  if (dot === -1 || dot === filename.length - 1) return 'bin'
+  return filename.slice(dot + 1).toLowerCase()
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+function clampMemoryLimitMB(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_MEMORY_LIMIT_MB
+  const rounded = Math.floor(value)
+  return Math.max(MIN_MEMORY_LIMIT_MB, Math.min(MAX_MEMORY_LIMIT_MB, rounded))
+}
+
+function getStoredMemoryLimitMB(): number {
+  try {
+    const stored = localStorage.getItem(MEMORY_LIMIT_KEY)
+    if (!stored) return DEFAULT_MEMORY_LIMIT_MB
+    return clampMemoryLimitMB(parseInt(stored, 10))
+  } catch {
+    return DEFAULT_MEMORY_LIMIT_MB
+  }
+}
+
+function normalizeChannelLabels(value: unknown): Record<number, string> | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const labels: Record<number, string> = {}
+  for (const [rawKey, rawLabel] of Object.entries(value as Record<string, unknown>)) {
+    const key = Number(rawKey)
+    if (!Number.isInteger(key) || key <= 0) continue
+    const label = String(rawLabel || '').trim()
+    if (!label) continue
+    labels[key] = label
+  }
+  return Object.keys(labels).length ? labels : undefined
+}
+
+function buildConvertedOutputPath(jobId: string, convertedFile: File): string {
+  const ext = getFilenameExtension(convertedFile.name)
+  return `cache/converted-jobs/${jobId}.${ext}`
+}
+
+function normalizePersistedJobs(rawJobs: unknown): JobRecord[] {
+  if (!Array.isArray(rawJobs)) return []
+
+  const loaded: JobRecord[] = []
+  for (const entry of rawJobs) {
+    if (!entry || typeof entry !== 'object') continue
+    const job = entry as Partial<JobRecord>
+    if (!job.id || !job.kind || !job.status) continue
+    loaded.push({
+      id: String(job.id),
+      kind: job.kind as JobKind,
+      status: job.status as JobStatus,
+      title: String(job.title || 'Job'),
+      detail: getString(job.detail),
+      progress: typeof job.progress === 'number' ? job.progress : undefined,
+      error: getString(job.error),
+      fileSizeBytes: typeof job.fileSizeBytes === 'number' ? job.fileSizeBytes : undefined,
+      createdAt: String(job.createdAt || nowIso()),
+      updatedAt: String(job.updatedAt || nowIso()),
+      mediaKey: getString(job.mediaKey),
+      caseId: typeof job.caseId === 'string' ? job.caseId : null,
+      transcriptionModel: job.transcriptionModel as JobRecord['transcriptionModel'],
+      speakersExpected: typeof job.speakersExpected === 'number' ? job.speakersExpected : null,
+      sourceFilename: getString(job.sourceFilename) ?? null,
+      sourceMediaRefId: getString(job.sourceMediaRefId) ?? null,
+      caseName: getString(job.caseName),
+      caseNumber: getString(job.caseNumber),
+      firmName: getString(job.firmName),
+      inputDate: getString(job.inputDate),
+      inputTime: getString(job.inputTime),
+      location: getString(job.location),
+      speakerNames: getString(job.speakerNames),
+      multichannel: typeof job.multichannel === 'boolean' ? job.multichannel : false,
+      channelLabels: normalizeChannelLabels(job.channelLabels),
+      unloadSensitive: Boolean(job.unloadSensitive),
+      codec: (job.codec as CodecInfo | null | undefined) ?? undefined,
+      needsConversion: typeof job.needsConversion === 'boolean' ? job.needsConversion : undefined,
+      convertedCachePath: getString(job.convertedCachePath) ?? null,
+      convertedFilename: getString(job.convertedFilename) ?? null,
+      convertedContentType: getString(job.convertedContentType) ?? null,
+    })
+  }
+
+  const normalized = loaded.map((job): JobRecord => {
+    if (isTerminalStatus(job.status)) return job
+    return {
+      ...job,
+      status: 'failed',
+      error:
+        job.error ||
+        'This job stopped because the page was reloaded or closed. Use Retry to continue.',
+      unloadSensitive: false,
+      updatedAt: nowIso(),
+    }
+  })
+
+  return normalized.slice(Math.max(0, normalized.length - MAX_PERSISTED_JOBS))
+}
+
+async function readPersistedJobs(userKey: string, legacyKey: string): Promise<JobRecord[]> {
+  try {
+    const db = await openDB()
+    const idbValue = await new Promise<unknown>((resolve, reject) => {
+      const tx = db.transaction(JOBS_STORE, 'readonly')
+      const store = tx.objectStore(JOBS_STORE)
+      const request = store.get(userKey)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const normalized = normalizePersistedJobs(idbValue)
+    if (normalized.length > 0) return normalized
+  } catch {
+    // fall through to legacy storage
+  }
+
+  try {
+    const legacy = localStorage.getItem(legacyKey)
+    if (!legacy) return []
+    return normalizePersistedJobs(JSON.parse(legacy))
+  } catch {
+    return []
+  }
+}
+
+async function writePersistedJobs(userKey: string, jobs: JobRecord[]): Promise<void> {
+  const db = await openDB()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(JOBS_STORE, 'readwrite')
+    const store = tx.objectStore(JOBS_STORE)
+    const request = store.put(jobs.slice(Math.max(0, jobs.length - MAX_PERSISTED_JOBS)), userKey)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
 interface DashboardContextValue {
   // Cases
   cases: CaseMeta[]
@@ -158,6 +340,8 @@ interface DashboardContextValue {
   // App variant
   appVariant: 'oncue' | 'criminal'
   variantResolved: boolean
+  memoryLimitMB: number
+  setMemoryLimitMB: (value: number) => void
 
   // Jobs (global)
   jobs: JobRecord[]
@@ -167,6 +351,7 @@ interface DashboardContextValue {
   startConversionQueue: (options?: { promptLargeFiles?: boolean }) => Promise<void>
   stopConversionQueue: () => void
   getConvertedFile: (jobId: string) => File | null
+  resolveConvertedFile: (jobId: string) => Promise<File | null>
   retryJob: (jobId: string) => void
   cancelJob: (jobId: string) => Promise<void>
   removeJob: (jobId: string) => void
@@ -185,16 +370,23 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [activeMediaKey, setActiveMediaKey] = useState<string | null>(null)
   const [appVariant, setAppVariant] = useState<'oncue' | 'criminal'>('oncue')
   const [variantResolved, setVariantResolved] = useState(false)
+  const [memoryLimitMB, setMemoryLimitMBState] = useState<number>(DEFAULT_MEMORY_LIMIT_MB)
 
   const [jobs, setJobs] = useState<JobRecord[]>([])
   const jobsRef = useRef<JobRecord[]>([])
   const jobsUserKeyRef = useRef<string | null>(null)
+  const jobsHydratedRef = useRef(false)
 
   const jobFilesRef = useRef<Map<string, ActiveFileEntry>>(new Map())
   const transcriptionInputsRef = useRef<Map<string, TranscriptionRuntimeInput>>(new Map())
   const convertedFilesRef = useRef<Map<string, File>>(new Map())
+  const convertedReloadingRef = useRef<Set<string>>(new Set())
+  const convertedOrderRef = useRef<string[]>([])
+  const convertedBytesRef = useRef(0)
   const preparedAudioRef = useRef<Map<string, File>>(new Map())
   const abortRef = useRef<Map<string, XMLHttpRequest>>(new Map())
+  const inFlightUploadBytesRef = useRef<Map<string, number>>(new Map())
+  const activeTranscriptionJobIdsRef = useRef<Set<string>>(new Set())
 
   const transcriptionRunnerActiveRef = useRef(false)
   const conversionRunnerActiveRef = useRef(false)
@@ -216,61 +408,48 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       })
   }, [])
 
+  useEffect(() => {
+    setMemoryLimitMBState(getStoredMemoryLimitMB())
+  }, [])
+
+  const setMemoryLimitMB = useCallback((value: number) => {
+    const clamped = clampMemoryLimitMB(value)
+    setMemoryLimitMBState(clamped)
+    try {
+      localStorage.setItem(MEMORY_LIMIT_KEY, String(clamped))
+    } catch {
+      // Ignore localStorage errors.
+    }
+  }, [])
+
+  useEffect(() => {
+    setFFmpegMemoryLimitMB(memoryLimitMB)
+  }, [memoryLimitMB])
+
   // Initialize per-user job persistence key
   useEffect(() => {
     const user = getCurrentUser()
     const username = user?.username || 'unknown'
-    jobsUserKeyRef.current = `${JOB_STORAGE_PREFIX}${username}`
+    const idbKey = `${JOB_STORAGE_PREFIX}${username}`
+    const legacyKey = `${LEGACY_JOB_STORAGE_PREFIX}${username}`
+    jobsUserKeyRef.current = idbKey
+    jobsHydratedRef.current = false
 
-    try {
-      const raw = localStorage.getItem(jobsUserKeyRef.current)
-      if (!raw) return
-      const parsed = JSON.parse(raw) as unknown
-      if (!Array.isArray(parsed)) return
-
-      const loaded: JobRecord[] = []
-      for (const entry of parsed) {
-        if (!entry || typeof entry !== 'object') continue
-        const job = entry as Partial<JobRecord>
-        if (!job.id || !job.kind || !job.status) continue
-        loaded.push({
-          id: String(job.id),
-          kind: job.kind as JobKind,
-          status: job.status as JobStatus,
-          title: String(job.title || 'Job'),
-          detail: typeof job.detail === 'string' ? job.detail : undefined,
-          progress: typeof job.progress === 'number' ? job.progress : undefined,
-          error: typeof job.error === 'string' ? job.error : undefined,
-          fileSizeBytes: typeof job.fileSizeBytes === 'number' ? job.fileSizeBytes : undefined,
-          createdAt: String(job.createdAt || nowIso()),
-          updatedAt: String(job.updatedAt || nowIso()),
-          mediaKey: typeof job.mediaKey === 'string' ? job.mediaKey : undefined,
-          caseId: typeof job.caseId === 'string' ? job.caseId : null,
-          transcriptionModel: job.transcriptionModel as any,
-          speakersExpected: typeof job.speakersExpected === 'number' ? job.speakersExpected : null,
-          sourceFilename: typeof job.sourceFilename === 'string' ? job.sourceFilename : null,
-          unloadSensitive: Boolean(job.unloadSensitive),
-          codec: (job.codec as CodecInfo | null | undefined) ?? undefined,
-          needsConversion: typeof job.needsConversion === 'boolean' ? job.needsConversion : undefined,
-        })
+    let canceled = false
+    void (async () => {
+      const loaded = await readPersistedJobs(idbKey, legacyKey)
+      if (canceled) return
+      setJobs(loaded)
+      jobsHydratedRef.current = true
+      try {
+        localStorage.removeItem(legacyKey)
+      } catch {
+        // Ignore cleanup failures.
       }
+    })()
 
-      const normalized: JobRecord[] = loaded.map((job): JobRecord => {
-        if (isTerminalStatus(job.status)) return job
-        // Client-side work cannot resume after reload.
-        return {
-          ...job,
-          status: 'failed',
-          error: job.error || 'Interrupted by reload.',
-          unloadSensitive: false,
-          updatedAt: nowIso(),
-        }
-      })
-
-      const start = Math.max(0, normalized.length - MAX_PERSISTED_JOBS)
-      setJobs(normalized.slice(start))
-    } catch {
-      // Ignore corrupt or inaccessible localStorage.
+    return () => {
+      canceled = true
     }
   }, [])
 
@@ -278,14 +457,17 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     jobsRef.current = jobs
   }, [jobs])
 
-  // Persist jobs to localStorage (metadata only)
+  // Persist jobs metadata to IndexedDB.
   useEffect(() => {
     const key = jobsUserKeyRef.current
-    if (!key) return
-    try {
-      localStorage.setItem(key, JSON.stringify(jobs.slice(0, MAX_PERSISTED_JOBS)))
-    } catch {
-      // Ignore storage failures
+    if (!key || !jobsHydratedRef.current) return
+
+    const timeout = window.setTimeout(() => {
+      void writePersistedJobs(key, jobs).catch(() => undefined)
+    }, 250)
+
+    return () => {
+      window.clearTimeout(timeout)
     }
   }, [jobs])
 
@@ -306,6 +488,120 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     }
   }, [activeMediaKey])
 
+  const removeConvertedFromMemory = useCallback((jobId: string) => {
+    const existing = convertedFilesRef.current.get(jobId)
+    if (existing) {
+      convertedBytesRef.current = Math.max(0, convertedBytesRef.current - existing.size)
+    }
+    convertedFilesRef.current.delete(jobId)
+    convertedOrderRef.current = convertedOrderRef.current.filter((id) => id !== jobId)
+  }, [])
+
+  const getCurrentMemoryUsage = useCallback((): MemoryUsage => {
+    let preparedAudio = 0
+    preparedAudioRef.current.forEach((file) => {
+      preparedAudio += file.size
+    })
+
+    let jobFiles = 0
+    for (const job of jobsRef.current) {
+      if (job.kind !== 'transcription') continue
+      if (!(job.status === 'queued' || job.status === 'running' || job.status === 'finalizing')) continue
+      const active = jobFilesRef.current.get(job.id)
+      if (active?.file) {
+        jobFiles += active.file.size
+      }
+    }
+
+    let inFlightUploads = 0
+    inFlightUploadBytesRef.current.forEach((estimatedBytes) => {
+      inFlightUploads += estimatedBytes
+    })
+
+    return {
+      convertedFiles: convertedBytesRef.current,
+      preparedAudio,
+      jobFiles,
+      inFlightUploads,
+    }
+  }, [])
+
+  const getTotalUsedBytes = useCallback((): number => {
+    const usage = getCurrentMemoryUsage()
+    return usage.convertedFiles + usage.preparedAudio + usage.jobFiles + usage.inFlightUploads
+  }, [getCurrentMemoryUsage])
+
+  const getMemoryLimitBytes = useCallback((): number => memoryLimitMB * 1024 * 1024, [memoryLimitMB])
+
+  const getAvailableBudgetBytes = useCallback((): number => {
+    const available = getMemoryLimitBytes() - getTotalUsedBytes()
+    return Math.max(0, available)
+  }, [getMemoryLimitBytes, getTotalUsedBytes])
+
+  const calculateAverageQueuedFileSize = useCallback((): number => {
+    let total = 0
+    let count = 0
+    for (const job of jobsRef.current) {
+      if (job.kind !== 'transcription' || job.status !== 'queued') continue
+      const active = jobFilesRef.current.get(job.id)
+      if (!active?.file) continue
+      total += active.file.size
+      count += 1
+    }
+    if (!count) return 1 * 1024 * 1024
+    return total / count
+  }, [])
+
+  const getMaxConcurrentUploads = useCallback((): number => {
+    const available = getAvailableBudgetBytes()
+    const avgFileSize = calculateAverageQueuedFileSize()
+    const perSlotCost = Math.max(avgFileSize + 2 * 1024 * 1024, 3 * 1024 * 1024)
+    const slots = Math.floor(available / perSlotCost)
+    return Math.max(MIN_CONCURRENT_UPLOADS, Math.min(slots, MAX_CONCURRENT_UPLOADS))
+  }, [calculateAverageQueuedFileSize, getAvailableBudgetBytes])
+
+  const getConvertedFileBudgetBytes = useCallback((): number => {
+    return Math.floor(memoryLimitMB * 0.25 * 1024 * 1024)
+  }, [memoryLimitMB])
+
+  const storeConvertedInMemory = useCallback(
+    (jobId: string, file: File) => {
+      removeConvertedFromMemory(jobId)
+      convertedFilesRef.current.set(jobId, file)
+      convertedOrderRef.current.push(jobId)
+      convertedBytesRef.current += file.size
+
+      while (
+        convertedOrderRef.current.length > MAX_IN_MEMORY_CONVERTED_FILES ||
+        convertedBytesRef.current > getConvertedFileBudgetBytes()
+      ) {
+        const evictId = convertedOrderRef.current.shift()
+        if (!evictId) break
+        if (evictId === jobId) {
+          convertedOrderRef.current.push(evictId)
+          break
+        }
+        const evictFile = convertedFilesRef.current.get(evictId)
+        if (evictFile) {
+          convertedBytesRef.current = Math.max(0, convertedBytesRef.current - evictFile.size)
+          convertedFilesRef.current.delete(evictId)
+        }
+      }
+    },
+    [getConvertedFileBudgetBytes, removeConvertedFromMemory],
+  )
+
+  const persistConvertedOutput = useCallback(async (jobId: string, convertedFile: File): Promise<string | null> => {
+    const outputPath = buildConvertedOutputPath(jobId, convertedFile)
+    try {
+      const payload = await convertedFile.arrayBuffer()
+      await writeBinaryFile(outputPath, payload)
+      return outputPath
+    } catch {
+      return null
+    }
+  }, [])
+
   const updateJob = useCallback((jobId: string, updater: Partial<JobRecord> | ((job: JobRecord) => JobRecord)) => {
     setJobs((prev) =>
       prev.map((job) => {
@@ -317,17 +613,70 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const removeJob = useCallback((jobId: string) => {
+    const existing = jobsRef.current.find((job) => job.id === jobId)
+    if (existing?.convertedCachePath) {
+      void deleteFile(existing.convertedCachePath).catch(() => undefined)
+    }
     jobFilesRef.current.delete(jobId)
     transcriptionInputsRef.current.delete(jobId)
-    convertedFilesRef.current.delete(jobId)
+    removeConvertedFromMemory(jobId)
+    convertedReloadingRef.current.delete(jobId)
     preparedAudioRef.current.delete(jobId)
     abortRef.current.delete(jobId)
+    inFlightUploadBytesRef.current.delete(jobId)
+    activeTranscriptionJobIdsRef.current.delete(jobId)
     setJobs((prev) => prev.filter((job) => job.id !== jobId))
-  }, [])
+  }, [removeConvertedFromMemory])
 
   const getConvertedFile = useCallback((jobId: string) => {
     return convertedFilesRef.current.get(jobId) ?? null
   }, [])
+
+  const resolveConvertedFile = useCallback(async (jobId: string): Promise<File | null> => {
+    const existing = convertedFilesRef.current.get(jobId)
+    if (existing) return existing
+
+    const job = jobsRef.current.find((entry) => entry.id === jobId)
+    if (!job || job.kind !== 'conversion' || !job.needsConversion) return null
+
+    if (job.convertedCachePath && !convertedReloadingRef.current.has(jobId)) {
+      convertedReloadingRef.current.add(jobId)
+      try {
+        const bytes = await readBinaryFile(job.convertedCachePath)
+        if (bytes) {
+          const restored = new File([bytes], job.convertedFilename || `${job.title}_converted`, {
+            type: job.convertedContentType || 'application/octet-stream',
+            lastModified: Date.now(),
+          })
+          storeConvertedInMemory(jobId, restored)
+          return restored
+        }
+      } finally {
+        convertedReloadingRef.current.delete(jobId)
+      }
+    }
+
+    const active = jobFilesRef.current.get(jobId)
+    if (!active?.file) return null
+
+    try {
+      const cached = await readConvertedFromCache(active.file)
+      if (!cached) return null
+      storeConvertedInMemory(jobId, cached)
+
+      if (!job.convertedCachePath) {
+        const cachePath = await persistConvertedOutput(jobId, cached)
+        updateJob(jobId, {
+          convertedCachePath: cachePath,
+          convertedFilename: cached.name,
+          convertedContentType: cached.type || 'application/octet-stream',
+        })
+      }
+      return cached
+    } catch {
+      return null
+    }
+  }, [persistConvertedOutput, storeConvertedInMemory, updateJob])
 
   const refreshCases = useCallback(async () => {
     setCasesLoading(true)
@@ -380,7 +729,24 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       const job = jobsRef.current.find((entry) => entry.id === jobId)
       const caseId = job?.caseId ? String(job.caseId) : undefined
 
-      const record = transcriptPayload as unknown as TranscriptData
+      const record = { ...(transcriptPayload as Record<string, unknown>) } as TranscriptData
+
+      if (job?.multichannel) {
+        const prepared = preparedAudioRef.current.get(jobId)
+        if (prepared) {
+          const normalizedType = prepared.type || 'audio/ogg'
+          const extension = prepared.name.endsWith('.mp3') || normalizedType === 'audio/mpeg' ? 'mp3' : 'ogg'
+          const playbackPath = `cache/playback/${mediaKey}.${extension}`
+          try {
+            await writeBinaryFile(playbackPath, await prepared.arrayBuffer())
+            record.playback_cache_path = playbackPath
+            record.playback_cache_content_type = extension === 'mp3' ? 'audio/mpeg' : 'audio/ogg'
+          } catch {
+            // Ignore playback-cache write failures; transcript persistence remains primary.
+          }
+        }
+      }
+
       await localSaveTranscript(mediaKey, record, caseId)
 
       const activeFile = jobFilesRef.current.get(jobId)
@@ -417,8 +783,85 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     [refreshCases, refreshRecentTranscripts],
   )
 
+  const waitForPreparedAudioCapacity = useCallback(
+    async (jobId: string) => {
+      let announced = false
+      while (preparedAudioRef.current.size >= getMaxConcurrentUploads()) {
+        if (!announced) {
+          updateJob(jobId, { detail: 'Waiting for an available upload slot...' })
+          announced = true
+        }
+        await sleep(200)
+      }
+    },
+    [getMaxConcurrentUploads, updateJob],
+  )
+
+  const waitForMemoryBudget = useCallback(
+    async (jobId: string, requiredBytes: number) => {
+      const startedAt = Date.now()
+      let announced = false
+      while (getAvailableBudgetBytes() < requiredBytes) {
+        if (!announced) {
+          updateJob(jobId, { detail: 'Waiting for memory budget...' })
+          announced = true
+        }
+        if (Date.now() - startedAt > CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS) {
+          throw new Error('Memory budget limit reached. Increase Memory Limit in Settings or reduce batch size.')
+        }
+        await sleep(250)
+      }
+    },
+    [getAvailableBudgetBytes, updateJob],
+  )
+
   const prepareUploadFile = useCallback(
     async (jobId: string, sourceFile: File): Promise<File> => {
+      const job = jobsRef.current.find((entry) => entry.id === jobId)
+
+      if (job?.multichannel) {
+        const cached = preparedAudioRef.current.get(jobId)
+        if (cached) return cached
+
+        await waitForPreparedAudioCapacity(jobId)
+        const estimatedStereoBytes = Math.max(Math.floor(sourceFile.size * 0.5), 3 * 1024 * 1024)
+        await waitForMemoryBudget(jobId, estimatedStereoBytes)
+
+        updateJob(jobId, {
+          detail: 'Converting for multichannel upload...',
+        })
+
+        let extractionTimedOut = false
+        let timeoutId: number | null = null
+        try {
+          const extractionPromise = extractAudioStereo(sourceFile, (ratio) => {
+            updateJob(jobId, {
+              detail: `Converting for multichannel upload... ${Math.round(ratio * 100)}%`,
+            })
+          })
+
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = window.setTimeout(() => {
+              extractionTimedOut = true
+              cancelActiveFFmpegJob()
+              reject(new Error('Preparing multichannel audio took too long in this tab.'))
+            }, CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS)
+          })
+
+          const extracted = await Promise.race([extractionPromise, timeoutPromise])
+          preparedAudioRef.current.set(jobId, extracted)
+          updateJob(jobId, { detail: 'Multichannel audio ready. Preparing upload...' })
+          return extracted
+        } catch (error) {
+          if (error instanceof FFmpegCanceledError && !extractionTimedOut) {
+            throw new Error('Preparing multichannel audio was canceled.')
+          }
+          throw error
+        } finally {
+          if (timeoutId) window.clearTimeout(timeoutId)
+        }
+      }
+
       // If it's already a compressed audio file (not video), upload directly.
       if (!isLikelyVideoSource(sourceFile) && isLikelyCompressedAudioSource(sourceFile)) {
         return sourceFile
@@ -426,6 +869,10 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
       const cached = preparedAudioRef.current.get(jobId)
       if (cached) return cached
+
+      await waitForPreparedAudioCapacity(jobId)
+      const estimatedExtractionBytes = Math.max(Math.floor(sourceFile.size * 0.35), 3 * 1024 * 1024)
+      await waitForMemoryBudget(jobId, estimatedExtractionBytes)
 
       updateJob(jobId, {
         detail: 'Extracting compressed mono audio for upload...',
@@ -444,7 +891,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           timeoutId = window.setTimeout(() => {
             extractionTimedOut = true
             cancelActiveFFmpegJob()
-            reject(new Error('Audio extraction timed out in browser'))
+            reject(new Error('Preparing the upload took too long in this tab.'))
           }, CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS)
         })
 
@@ -454,15 +901,17 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         return extracted
       } catch (error) {
         if (error instanceof FFmpegCanceledError && !extractionTimedOut) {
-          throw new Error('Audio extraction canceled.')
+          throw new Error('Preparing audio was canceled.')
         }
 
         if (sourceFile.size > CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
           const sizeMb = (sourceFile.size / (1024 * 1024)).toFixed(1)
-          const reason = extractionTimedOut ? 'Audio extraction timed out in browser.' : 'Audio extraction failed in browser.'
+          const reason = extractionTimedOut
+            ? 'Preparing this file in the browser took too long.'
+            : 'This file could not be prepared in the browser.'
           throw new Error(
-            `${reason} Skipping direct upload of the ${sizeMb} MB original file because it is likely to exceed server upload timeout. ` +
-              'Use the Converter page (or desktop FFmpeg) to create an MP3, then retry.',
+            `${reason} The original ${sizeMb} MB file is likely too large to upload directly. ` +
+              'Convert it to MP3 on the Converter page, then try again.',
           )
         }
 
@@ -473,7 +922,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         if (timeoutId) window.clearTimeout(timeoutId)
       }
     },
-    [updateJob],
+    [updateJob, waitForMemoryBudget, waitForPreparedAudioCapacity],
   )
 
   const submitTranscriptionJob = useCallback(
@@ -497,12 +946,23 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       if (input.speaker_names?.trim()) {
         form.append('speaker_names', input.speaker_names.trim())
       }
+      if (input.multichannel) {
+        form.append('multichannel', 'true')
+        if (input.channelLabels && Object.keys(input.channelLabels).length > 0) {
+          form.append('channel_labels', JSON.stringify(input.channelLabels))
+        }
+      }
 
       const endpoint = '/api/transcribe'
+      const uploadSlotBytes = Math.max(uploadFile.size + 2 * 1024 * 1024, 3 * 1024 * 1024)
+      inFlightUploadBytesRef.current.set(jobId, uploadSlotBytes)
 
       await new Promise<void>((resolve, reject) => {
         const request = new XMLHttpRequest()
         abortRef.current.set(jobId, request)
+        const clearInFlight = () => {
+          inFlightUploadBytesRef.current.delete(jobId)
+        }
 
         request.open('POST', endpoint, true)
         request.responseType = 'json'
@@ -530,6 +990,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         request.onload = async () => {
           abortRef.current.delete(jobId)
+          clearInFlight()
 
           const responseData =
             request.response ??
@@ -575,6 +1036,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         request.onerror = () => {
           abortRef.current.delete(jobId)
+          clearInFlight()
           const message = 'Upload failed. Please try again.'
           updateJob(jobId, { status: 'failed', unloadSensitive: false, error: message, detail: 'Failed' })
           reject(new Error(message))
@@ -582,6 +1044,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         request.onabort = () => {
           abortRef.current.delete(jobId)
+          clearInFlight()
           updateJob(jobId, { status: 'canceled', unloadSensitive: false, error: 'Canceled.', detail: 'Canceled' })
           const err = new Error('Canceled')
           err.name = 'AbortError'
@@ -590,8 +1053,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         request.ontimeout = () => {
           abortRef.current.delete(jobId)
+          clearInFlight()
           const message =
-            'Transcription request timed out. For large media, convert to MP3 first (Converter page or desktop FFmpeg) and retry.'
+            'This upload took too long. Convert the file to MP3 on the Converter page, then try again.'
           updateJob(jobId, { status: 'failed', unloadSensitive: false, error: message, detail: 'Failed' })
           reject(new Error(message))
         }
@@ -607,59 +1071,118 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     transcriptionRunnerActiveRef.current = true
 
     try {
-      while (true) {
-        const nextJob = jobsRef.current.find(
-          (job) => job.kind === 'transcription' && job.status === 'queued',
-        )
-        if (!nextJob) break
+      const worker = async (workerIndex: number) => {
+        while (true) {
+          const hasQueuedJobs = jobsRef.current.some(
+            (job) => job.kind === 'transcription' && job.status === 'queued',
+          )
+          if (!hasQueuedJobs) return
 
-        const activeFile = jobFilesRef.current.get(nextJob.id)
-        if (!activeFile?.file) {
-          updateJob(nextJob.id, {
-            status: 'failed',
-            unloadSensitive: false,
-            detail: 'Failed',
-            error: 'File not available (try adding the file again).',
-          })
-          continue
-        }
-
-        const input = transcriptionInputsRef.current.get(nextJob.id)
-        if (!input) {
-          updateJob(nextJob.id, {
-            status: 'failed',
-            unloadSensitive: false,
-            detail: 'Failed',
-            error: 'Job input metadata missing.',
-          })
-          continue
-        }
-
-        updateJob(nextJob.id, { status: 'running', unloadSensitive: true, detail: 'Preparing...' })
-
-        try {
-          const fileForUpload = await prepareUploadFile(nextJob.id, activeFile.file)
-          const latest = jobsRef.current.find((entry) => entry.id === nextJob.id)
-          if (latest?.status === 'canceled') {
+          const allowedSlots = getMaxConcurrentUploads()
+          if (workerIndex >= allowedSlots) {
+            await sleep(150)
             continue
           }
-          await submitTranscriptionJob(nextJob.id, input, fileForUpload)
-        } catch (err) {
-          if (err instanceof Error && err.name === 'AbortError') {
-            updateJob(nextJob.id, { status: 'canceled', unloadSensitive: false, detail: 'Canceled', error: 'Canceled.' })
-          } else {
-            const message = err instanceof Error ? err.message : 'Transcription failed.'
-            updateJob(nextJob.id, { status: 'failed', unloadSensitive: false, detail: 'Failed', error: message })
+
+          const nextJob = jobsRef.current.find(
+            (job) =>
+              job.kind === 'transcription' &&
+              job.status === 'queued' &&
+              !activeTranscriptionJobIdsRef.current.has(job.id),
+          )
+          if (!nextJob) {
+            await sleep(100)
+            continue
           }
-        } finally {
-          // Free extracted audio cache for this job once it has completed submission.
-          preparedAudioRef.current.delete(nextJob.id)
+
+          activeTranscriptionJobIdsRef.current.add(nextJob.id)
+          updateJob(nextJob.id, { status: 'running', unloadSensitive: true, detail: 'Preparing...' })
+
+          try {
+            let activeFile = jobFilesRef.current.get(nextJob.id)
+            if (!activeFile?.file && nextJob.sourceMediaRefId) {
+              try {
+                const restored = await getMediaFile(nextJob.sourceMediaRefId)
+                if (restored) {
+                  activeFile = {
+                    file: restored,
+                    originalFileName: nextJob.sourceFilename || restored.name,
+                    fileHandle: null,
+                  }
+                  jobFilesRef.current.set(nextJob.id, activeFile)
+                }
+              } catch {
+                // best effort
+              }
+            }
+            if (!activeFile?.file) {
+              updateJob(nextJob.id, {
+                status: 'failed',
+                unloadSensitive: false,
+                detail: 'Failed',
+                error: 'The source file is no longer available in this tab. Please re-add it and try again.',
+              })
+              continue
+            }
+
+            let input = transcriptionInputsRef.current.get(nextJob.id)
+            if (!input && nextJob.mediaKey && nextJob.transcriptionModel) {
+              input = {
+                originalFileName: nextJob.sourceFilename || nextJob.title,
+                mediaKey: nextJob.mediaKey,
+                transcriptionModel: nextJob.transcriptionModel,
+                caseId: nextJob.caseId ?? null,
+                case_name: nextJob.caseName || '',
+                case_number: nextJob.caseNumber || '',
+                firm_name: nextJob.firmName || '',
+                input_date: nextJob.inputDate || '',
+                input_time: nextJob.inputTime || '',
+                location: nextJob.location || '',
+                speakers_expected: nextJob.speakersExpected ?? null,
+                speaker_names: nextJob.speakerNames || '',
+                multichannel: Boolean(nextJob.multichannel),
+                channelLabels: nextJob.channelLabels,
+              }
+              transcriptionInputsRef.current.set(nextJob.id, input)
+            }
+            if (!input) {
+              updateJob(nextJob.id, {
+                status: 'failed',
+                unloadSensitive: false,
+                detail: 'Failed',
+                error: 'This job is missing required details. Please remove it and start again.',
+              })
+              continue
+            }
+
+            const fileForUpload = await prepareUploadFile(nextJob.id, activeFile.file)
+            const latest = jobsRef.current.find((entry) => entry.id === nextJob.id)
+            if (latest?.status === 'canceled') {
+              continue
+            }
+            await submitTranscriptionJob(nextJob.id, input, fileForUpload)
+          } catch (err) {
+            if (err instanceof Error && err.name === 'AbortError') {
+              updateJob(nextJob.id, { status: 'canceled', unloadSensitive: false, detail: 'Canceled', error: 'Canceled.' })
+            } else {
+              const message = err instanceof Error ? err.message : 'Transcription failed.'
+              updateJob(nextJob.id, { status: 'failed', unloadSensitive: false, detail: 'Failed', error: message })
+            }
+          } finally {
+            preparedAudioRef.current.delete(nextJob.id)
+            inFlightUploadBytesRef.current.delete(nextJob.id)
+            activeTranscriptionJobIdsRef.current.delete(nextJob.id)
+          }
         }
       }
+
+      const workers = Array.from({ length: MAX_CONCURRENT_UPLOADS }, (_, index) => worker(index))
+      await Promise.allSettled(workers)
     } finally {
       transcriptionRunnerActiveRef.current = false
+      activeTranscriptionJobIdsRef.current.clear()
     }
-  }, [prepareUploadFile, submitTranscriptionJob, updateJob])
+  }, [getMaxConcurrentUploads, prepareUploadFile, submitTranscriptionJob, updateJob])
 
   const enqueueTranscriptionJobs = useCallback(
     (items: TranscriptionJobInput[]) => {
@@ -686,6 +1209,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           location: item.location,
           speakers_expected: item.speakers_expected ?? null,
           speaker_names: item.speaker_names,
+          multichannel: Boolean(item.multichannel),
+          channelLabels: normalizeChannelLabels(item.channelLabels),
         })
 
         // Store handle immediately when available so reloads can still playback/relink.
@@ -707,6 +1232,16 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           transcriptionModel: item.transcriptionModel,
           speakersExpected: typeof item.speakers_expected === 'number' ? item.speakers_expected : null,
           sourceFilename: item.originalFileName || null,
+          sourceMediaRefId: item.fileHandle ? item.mediaKey : null,
+          caseName: item.case_name,
+          caseNumber: item.case_number,
+          firmName: item.firm_name,
+          inputDate: item.input_date,
+          inputTime: item.input_time,
+          location: item.location,
+          speakerNames: item.speaker_names,
+          multichannel: Boolean(item.multichannel),
+          channelLabels: normalizeChannelLabels(item.channelLabels),
           unloadSensitive: false,
         }
         return job
@@ -749,22 +1284,26 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         return combined.slice(Math.max(0, combined.length - MAX_PERSISTED_JOBS))
       })
 
-      await Promise.allSettled(
-        newJobs.map(async (job) => {
-          const active = jobFilesRef.current.get(job.id)
-          if (!active?.file) return
-          try {
-            const codec = await detectCodec(active.file)
-            if (codec.needsConversion) {
-              updateJob(job.id, { codec, needsConversion: true, detail: 'Ready', status: 'queued' })
-            } else {
-              updateJob(job.id, { codec, needsConversion: false, detail: 'Already OK', status: 'succeeded' })
-            }
-          } catch {
-            updateJob(job.id, { codec: null, needsConversion: true, detail: 'Skipped', status: 'failed', error: 'Could not detect format.' })
+      for (const job of newJobs) {
+        const active = jobFilesRef.current.get(job.id)
+        if (!active?.file) continue
+        try {
+          const codec = await detectCodec(active.file)
+          if (codec.needsConversion) {
+            updateJob(job.id, { codec, needsConversion: true, detail: 'Ready', status: 'queued' })
+          } else {
+            updateJob(job.id, { codec, needsConversion: false, detail: 'Already OK', status: 'succeeded' })
           }
-        }),
-      )
+        } catch {
+          updateJob(job.id, {
+            codec: null,
+            needsConversion: true,
+            detail: 'Skipped',
+            status: 'failed',
+            error: 'We could not read this file format. Please try converting it again.',
+          })
+        }
+      }
     },
     [updateJob],
   )
@@ -787,7 +1326,11 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
           const active = jobFilesRef.current.get(next.id)
           if (!active?.file) {
-            updateJob(next.id, { status: 'failed', detail: 'Failed', error: 'File not available.' })
+            updateJob(next.id, {
+              status: 'failed',
+              detail: 'Failed',
+              error: 'The source file is no longer available in this tab. Please add it again.',
+            })
             continue
           }
 
@@ -810,6 +1353,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
           try {
             let cached: File | null = null
+            let outputPath: string | null = null
             try {
               cached = await readConvertedFromCache(active.file)
             } catch (cacheReadError) {
@@ -817,8 +1361,17 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             }
 
             if (cached) {
-              convertedFilesRef.current.set(next.id, cached)
-              updateJob(next.id, { status: 'succeeded', unloadSensitive: false, detail: 'Converted', progress: 1 })
+              storeConvertedInMemory(next.id, cached)
+              outputPath = await persistConvertedOutput(next.id, cached)
+              updateJob(next.id, {
+                status: 'succeeded',
+                unloadSensitive: false,
+                detail: 'Converted',
+                progress: 1,
+                convertedCachePath: outputPath,
+                convertedFilename: cached.name,
+                convertedContentType: cached.type || 'application/octet-stream',
+              })
               continue
             }
 
@@ -826,7 +1379,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
               updateJob(next.id, { progress: ratio, detail: 'Converting...' })
             })
 
-            convertedFilesRef.current.set(next.id, converted)
+            storeConvertedInMemory(next.id, converted)
 
             try {
               await writeConvertedToCache(active.file, converted)
@@ -834,10 +1387,25 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
               console.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
             }
 
-            updateJob(next.id, { status: 'succeeded', unloadSensitive: false, detail: 'Converted', progress: 1 })
+            outputPath = await persistConvertedOutput(next.id, converted)
+
+            updateJob(next.id, {
+              status: 'succeeded',
+              unloadSensitive: false,
+              detail: 'Converted',
+              progress: 1,
+              convertedCachePath: outputPath,
+              convertedFilename: converted.name,
+              convertedContentType: converted.type || 'application/octet-stream',
+            })
           } catch (err) {
             if (err instanceof FFmpegCanceledError || stopConversionRequestedRef.current) {
-              updateJob(next.id, { status: 'canceled', unloadSensitive: false, detail: 'Canceled', error: 'Conversion canceled.' })
+              updateJob(next.id, {
+                status: 'canceled',
+                unloadSensitive: false,
+                detail: 'Canceled',
+                error: 'Conversion was canceled.',
+              })
               break
             }
             const msg = err instanceof Error ? err.message : 'Conversion failed.'
@@ -849,7 +1417,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         stopConversionRequestedRef.current = false
       }
     },
-    [updateJob],
+    [persistConvertedOutput, storeConvertedInMemory, updateJob],
   )
 
   const startConversionQueue = useCallback(
@@ -872,20 +1440,32 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       if (job.kind === 'conversion') {
         const active = jobFilesRef.current.get(jobId)
         if (!active?.file) {
-          updateJob(jobId, { status: 'failed', error: 'File not available.' })
+          updateJob(jobId, {
+            status: 'failed',
+            error: 'The source file is no longer available in this tab. Please add it again.',
+          })
           return
         }
-        updateJob(jobId, { status: 'queued', error: '', detail: 'Ready', progress: 0 })
+        removeConvertedFromMemory(jobId)
+        updateJob(jobId, {
+          status: 'queued',
+          error: '',
+          detail: 'Ready',
+          progress: 0,
+          needsConversion: true,
+        })
         void runConversionQueue()
         return
       }
 
       if (job.kind === 'transcription') {
+        preparedAudioRef.current.delete(jobId)
+        inFlightUploadBytesRef.current.delete(jobId)
         updateJob(jobId, { status: 'queued', error: '', detail: 'Queued', unloadSensitive: false })
         void runTranscriptionQueue()
       }
     },
-    [runConversionQueue, runTranscriptionQueue, updateJob],
+    [removeConvertedFromMemory, runConversionQueue, runTranscriptionQueue, updateJob],
   )
 
   const cancelJob = useCallback(
@@ -907,6 +1487,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           try { xhr.abort() } catch {}
           abortRef.current.delete(jobId)
         }
+        inFlightUploadBytesRef.current.delete(jobId)
+        activeTranscriptionJobIdsRef.current.delete(jobId)
+        preparedAudioRef.current.delete(jobId)
 
         updateJob(jobId, { status: 'canceled', unloadSensitive: false, detail: 'Canceled' })
       }
@@ -939,6 +1522,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         setActiveMediaKey,
         appVariant,
         variantResolved,
+        memoryLimitMB,
+        setMemoryLimitMB,
         jobs,
         activeJobCount,
         enqueueTranscriptionJobs,
@@ -946,6 +1531,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         startConversionQueue,
         stopConversionQueue,
         getConvertedFile,
+        resolveConvertedFile,
         retryJob,
         cancelJob,
         removeJob,

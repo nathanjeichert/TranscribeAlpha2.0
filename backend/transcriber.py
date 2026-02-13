@@ -7,7 +7,7 @@ import re
 import tempfile
 import logging
 import shutil
-from typing import List, Optional
+from typing import Dict, List, Optional
 import sys
 
 # Python 3.9+ type hint compatibility
@@ -341,6 +341,31 @@ def build_assemblyai_config(speakers_expected: Optional[int] = None) -> "aai.Tra
     return aai.TranscriptionConfig(**config_kwargs)
 
 
+def build_assemblyai_multichannel_config() -> "aai.TranscriptionConfig":
+    """Build AssemblyAI config for channel-separated jail-call transcription."""
+    if not ASSEMBLYAI_AVAILABLE:
+        raise RuntimeError("AssemblyAI SDK not installed. Run: pip install assemblyai")
+
+    prompt = (
+        "Produce a verbatim transcript. Include disfluencies and fillers (um, uh, er, ah, hmm, mhm, like, you know, I mean), "
+        "repetitions (I I, the the), restarts (I was- I went), stutters (th-that, b-but), "
+        "and informal speech (gonna, wanna, gotta)."
+    )
+
+    config_kwargs = {
+        "speech_models": ["universal-3-pro"],
+        "prompt": prompt,
+        "format_text": True,
+        "multichannel": True,
+    }
+    if "temperature" in inspect.signature(aai.TranscriptionConfig).parameters:
+        config_kwargs["temperature"] = 0.1
+    else:
+        logger.warning("AssemblyAI SDK does not support `temperature`; upgrade to assemblyai>=0.50.0")
+
+    return aai.TranscriptionConfig(**config_kwargs)
+
+
 def turns_from_assemblyai_response(response: object, include_timestamps: bool = True) -> List[TranscriptTurn]:
     """
     Convert an AssemblyAI transcript response into our TranscriptTurn format.
@@ -417,6 +442,101 @@ def turns_from_assemblyai_response(response: object, include_timestamps: bool = 
         )
     )
     return turns
+
+
+def turns_from_assemblyai_multichannel_response(
+    response: object,
+    channel_labels: Optional[Dict[int, str]] = None,
+    include_timestamps: bool = True,
+) -> List[TranscriptTurn]:
+    """
+    Convert an AssemblyAI multichannel response into TranscriptTurn format.
+
+    AssemblyAI multichannel utterances include `channel` instead of `speaker`.
+    """
+    if not response:
+        return []
+
+    transcript = getattr(response, "transcript", None) or response
+    utterances = getattr(transcript, "utterances", None) or []
+
+    normalized_labels: Dict[int, str] = {}
+    if channel_labels:
+        for raw_key, raw_value in channel_labels.items():
+            try:
+                channel_index = int(raw_key)
+            except (TypeError, ValueError):
+                continue
+            label = str(raw_value or "").strip()
+            if channel_index > 0 and label:
+                normalized_labels[channel_index] = label
+
+    turns: List[TranscriptTurn] = []
+    for utterance in utterances:
+        channel_raw = getattr(utterance, "channel", None)
+        try:
+            channel_index = int(channel_raw)
+        except (TypeError, ValueError):
+            channel_index = 1
+
+        speaker_name = normalized_labels.get(channel_index) or f"CHANNEL {channel_index}"
+
+        timestamp_str = None
+        if include_timestamps and getattr(utterance, "start", None) is not None:
+            start_ms = float(getattr(utterance, "start"))
+            start_seconds = start_ms / 1000.0
+            minutes = int(start_seconds // 60)
+            seconds = int(start_seconds % 60)
+            timestamp_str = f"[{minutes:02d}:{seconds:02d}]"
+
+        word_timestamps: List[WordTimestamp] = []
+        words = getattr(utterance, "words", None) or []
+        for word in words:
+            word_text = getattr(word, "text", "")
+            if not word_text:
+                continue
+
+            start_val = getattr(word, "start", None)
+            end_val = getattr(word, "end", None)
+            if start_val is None or end_val is None:
+                continue
+
+            confidence_val = getattr(word, "confidence", None)
+            word_timestamps.append(
+                WordTimestamp(
+                    text=str(word_text),
+                    start=float(start_val),
+                    end=float(end_val),
+                    confidence=float(confidence_val) if confidence_val is not None else None,
+                    speaker=speaker_name,
+                )
+            )
+
+        turns.append(
+            TranscriptTurn(
+                speaker=speaker_name,
+                text=str(getattr(utterance, "text", "") or ""),
+                timestamp=timestamp_str,
+                words=word_timestamps if word_timestamps else None,
+            )
+        )
+
+    if turns:
+        return mark_continuation_turns(turns)
+
+    text_value = str(getattr(transcript, "text", "") or "").strip()
+    if not text_value:
+        return []
+
+    fallback_speaker = normalized_labels.get(1) or "CHANNEL 1"
+    return [
+        TranscriptTurn(
+            speaker=fallback_speaker,
+            text=text_value,
+            timestamp="[00:00]" if include_timestamps else None,
+            words=None,
+        )
+    ]
 
 
 def get_media_duration(file_path: str) -> Optional[float]:

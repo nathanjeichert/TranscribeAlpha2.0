@@ -59,6 +59,7 @@ export default function ConverterPage() {
     retryJob,
     removeJob,
     getConvertedFile,
+    resolveConvertedFile,
   } = useDashboard()
 
   const [pageError, setPageError] = useState('')
@@ -180,7 +181,7 @@ export default function ConverterPage() {
     const converted: File[] = []
     for (const job of conversionJobs) {
       if (job.status !== 'succeeded' || !job.needsConversion) continue
-      const file = getConvertedFile(job.id)
+      const file = await resolveConvertedFile(job.id)
       if (file) converted.push(file)
     }
     if (!converted.length) {
@@ -232,7 +233,7 @@ export default function ConverterPage() {
     } finally {
       setZipBusy(false)
     }
-  }, [conversionJobs, getConvertedFile])
+  }, [conversionJobs, resolveConvertedFile])
 
   const clearAll = useCallback(() => {
     if (isConverting) return
@@ -352,8 +353,9 @@ export default function ConverterPage() {
         <div className="divide-y divide-gray-100">
           {conversionJobs.map((job) => {
             const convertedFile = job.needsConversion ? getConvertedFile(job.id) : null
+            const hasPersistedOutput = Boolean(job.convertedCachePath)
             const downloadUnavailable =
-              job.status === 'succeeded' && job.needsConversion && !convertedFile
+              job.status === 'succeeded' && job.needsConversion && !convertedFile && !hasPersistedOutput
 
             return (
             <div key={job.id} className="p-4 flex flex-wrap items-center gap-4">
@@ -396,17 +398,21 @@ export default function ConverterPage() {
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => {
-                  if (!convertedFile) return
-                  downloadFile(convertedFile)
-                }}
-                disabled={!convertedFile}
-                className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Download
-              </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const file = convertedFile || (await resolveConvertedFile(job.id))
+                    if (!file) {
+                      setPageError('This converted file is no longer available. Please convert it again.')
+                      return
+                    }
+                    downloadFile(file)
+                  }}
+                  disabled={!convertedFile && !hasPersistedOutput}
+                  className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Download
+                </button>
 
               <button
                 type="button"

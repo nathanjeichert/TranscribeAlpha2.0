@@ -18,11 +18,12 @@ export const routes = {
     if (!mediaKey) return base
     return `${base}?key=${encodeURIComponent(mediaKey)}`
   },
-  viewer: (mediaKey?: string, caseId?: string) => {
+  viewer: (mediaKey?: string, caseId?: string, highlightLineId?: string) => {
     const base = withTrailingSlash('/viewer')
     const params = new URLSearchParams()
     if (mediaKey) params.set('key', mediaKey)
     if (caseId) params.set('case', caseId)
+    if (highlightLineId) params.set('highlight', highlightLineId)
     const query = params.toString()
     return query ? `${base}?${query}` : base
   },

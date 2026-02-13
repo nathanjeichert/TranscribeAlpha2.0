@@ -35,6 +35,21 @@ This codebase supports **two deployment variants** controlled by the `APP_VARIAN
 - Branding ("TranscribeAlpha")
 - Lines per page (25)
 
+## Branch & Release Workflow
+
+Use these branches consistently:
+
+| Branch | Purpose | Deploy Expectation |
+|--------|---------|--------------------|
+| `main` | Production/live website source of truth | May trigger Cloud Build/Cloud Run deploys |
+| `alpha` | Pre-live integration/testing branch | Should be safe for ongoing work not ready for production |
+
+Agent commit/PR rules:
+- Default all new work to the `alpha` branch unless explicitly told to target `main`.
+- Do not open PRs directly to `main` unless the change is approved for live deployment.
+- Promote changes with a deliberate PR from `alpha` to `main` after validation.
+- Keep Cloud Build triggers scoped to `main` branch only to avoid build-cost churn from `alpha` commits.
+
 ## Codebase Architecture
 
 ```
@@ -90,7 +105,8 @@ TranscribeAlpha/
 ├── scripts/                   # Admin utility scripts
 │   ├── add_user.sh           # Add user to Secret Manager
 │   ├── list_users.sh         # List all users
-│   └── remove_user.sh        # Remove user
+│   ├── remove_user.sh        # Remove user
+│   └── run_cloudrun_local.sh # Build/run local container with Cloud Run-like settings
 │
 ├── main.py                    # Entry point (Hypercorn server)
 ├── Dockerfile                 # Multi-stage build (accepts APP_VARIANT build arg)
@@ -309,6 +325,10 @@ Set up two triggers in Google Cloud Console, each pointing to a different cloudb
 | OnCue | `cloudbuild-oncue.yaml` | `transcribealpha-assemblyai` | `oncue` |
 | Criminal | `cloudbuild-criminal.yaml` | `transcribealpha-criminal` | `criminal` |
 
+Important trigger configuration:
+- Restrict trigger branch filters to `^main$`.
+- Do not auto-deploy from `alpha`.
+
 ### Manual Deployment
 
 ```bash
@@ -321,19 +341,31 @@ gcloud builds submit --config cloudbuild-criminal.yaml \
   --substitutions=_ASSEMBLYAI_API_KEY=your_key
 ```
 
-### Local Testing with Docker
+### Local Testing with Docker (Cloud Run Parity)
+
+Preferred one-command path:
 
 ```bash
-# Build oncue variant
+cp .env.cloudrun.example .env.cloudrun.local
+./scripts/run_cloudrun_local.sh oncue
+```
+
+This helper script:
+- Builds from the same `Dockerfile` used for Cloud Run
+- Uses Cloud Run-like runtime settings (`ENVIRONMENT=production`, `PORT=8080`, `HOST=0.0.0.0`)
+- Applies Cloud Run-like container limits (`--cpus=1`, `--memory=2g`)
+
+Manual fallback:
+
+```bash
 docker build --build-arg APP_VARIANT=oncue -t transcribealpha-oncue .
-
-# Build criminal variant
-docker build --build-arg APP_VARIANT=criminal -t transcribealpha-criminal .
-
-# Run locally
-docker run -p 8080:8080 \
+docker run --rm -it -p 8080:8080 \
+  --cpus=1 --memory=2g \
   -e APP_VARIANT=oncue \
-  -e ASSEMBLYAI_API_KEY=xxx \
+  -e ENVIRONMENT=production \
+  -e PORT=8080 \
+  -e HOST=0.0.0.0 \
+  --env-file .env.cloudrun.local \
   transcribealpha-oncue
 ```
 
@@ -398,4 +430,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-02-09*
+*Last updated: 2026-02-11*

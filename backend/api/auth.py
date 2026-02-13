@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 try:
     from ..auth import (
         authenticate_user,
+        register_user,
         create_access_token,
         create_refresh_token,
         get_current_user,
@@ -15,6 +16,7 @@ except ImportError:
     try:
         from auth import (
             authenticate_user,
+            register_user,
             create_access_token,
             create_refresh_token,
             get_current_user,
@@ -23,6 +25,7 @@ except ImportError:
     except ImportError:
         import auth as auth_module
         authenticate_user = auth_module.authenticate_user
+        register_user = auth_module.register_user
         create_access_token = auth_module.create_access_token
         create_refresh_token = auth_module.create_refresh_token
         get_current_user = auth_module.get_current_user
@@ -69,6 +72,57 @@ async def login(credentials: Dict = Body(...)):
     )
 
     logger.info("User '%s' logged in successfully", username)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "username": username,
+            "role": user.get("role", "user"),
+        },
+    }
+
+
+@router.post("/api/auth/register")
+async def register(credentials: Dict = Body(...)):
+    """
+    Complete registration for a pre-approved (pending) user.
+
+    Request body:
+    {
+        "username": "string",
+        "password": "string",
+        "password_confirm": "string"
+    }
+    """
+    username = credentials.get("username")
+    password = credentials.get("password")
+    password_confirm = credentials.get("password_confirm")
+
+    if not username or not password or not password_confirm:
+        raise HTTPException(status_code=400, detail="All fields are required")
+
+    if password != password_confirm:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+
+    try:
+        user = register_user(username, password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        logger.error("Registration storage error: %s", e)
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
+
+    # Auto-login: return tokens so the user doesn't have to log in again
+    access_token = create_access_token(
+        data={"sub": username, "role": user.get("role", "user")}
+    )
+    refresh_token = create_refresh_token(
+        data={"sub": username, "role": user.get("role", "user")}
+    )
+
+    logger.info("User '%s' registered and logged in", username)
 
     return {
         "access_token": access_token,
