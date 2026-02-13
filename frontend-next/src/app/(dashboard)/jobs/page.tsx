@@ -70,6 +70,7 @@ export default function JobsPage() {
     retryJob,
     cancelJob,
     removeJob,
+    clearTerminalJobs,
   } = useDashboard()
 
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
@@ -99,6 +100,10 @@ export default function JobsPage() {
 
   const failedConversions = useMemo(() => {
     return jobs.filter((job) => job.kind === 'conversion' && (job.status === 'failed' || job.status === 'canceled'))
+  }, [jobs])
+
+  const terminalJobCount = useMemo(() => {
+    return jobs.filter((job) => isTerminal(job.status)).length
   }, [jobs])
 
   return (
@@ -185,6 +190,14 @@ export default function JobsPage() {
             className="btn-outline px-3 py-2 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Retry Failed Conversions ({failedConversions.length})
+          </button>
+          <button
+            type="button"
+            disabled={batchBusy || terminalJobCount === 0}
+            onClick={() => clearTerminalJobs()}
+            className="btn-outline px-3 py-2 text-sm text-red-600 border-red-200 hover:bg-red-50 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            Clear History ({terminalJobCount})
           </button>
         </div>
       </div>

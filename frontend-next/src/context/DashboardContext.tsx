@@ -355,6 +355,7 @@ interface DashboardContextValue {
   retryJob: (jobId: string) => void
   cancelJob: (jobId: string) => Promise<void>
   removeJob: (jobId: string) => void
+  clearTerminalJobs: () => void
 }
 
 const DashboardContext = createContext<DashboardContextValue | null>(null)
@@ -512,7 +513,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     let jobFiles = 0
     for (const job of jobsRef.current) {
       if (job.kind !== 'transcription') continue
-      if (!(job.status === 'queued' || job.status === 'running' || job.status === 'finalizing')) continue
+      if (!(job.status === 'running' || job.status === 'finalizing')) continue
       const active = jobFilesRef.current.get(job.id)
       if (active?.file) {
         jobFiles += active.file.size
@@ -637,6 +638,22 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     inFlightUploadBytesRef.current.delete(jobId)
     activeTranscriptionJobIdsRef.current.delete(jobId)
     applyJobsMutation((prev) => prev.filter((job) => job.id !== jobId))
+  }, [applyJobsMutation, removeConvertedFromMemory])
+
+  const clearTerminalJobs = useCallback(() => {
+    const toRemove = jobsRef.current.filter((job) => isTerminalStatus(job.status))
+    for (const job of toRemove) {
+      if (job.convertedCachePath) {
+        void deleteFile(job.convertedCachePath).catch(() => undefined)
+      }
+      jobFilesRef.current.delete(job.id)
+      transcriptionInputsRef.current.delete(job.id)
+      removeConvertedFromMemory(job.id)
+      convertedReloadingRef.current.delete(job.id)
+      preparedAudioRef.current.delete(job.id)
+      inFlightUploadBytesRef.current.delete(job.id)
+    }
+    applyJobsMutation((prev) => prev.filter((job) => !isTerminalStatus(job.status)))
   }, [applyJobsMutation, removeConvertedFromMemory])
 
   const getConvertedFile = useCallback((jobId: string) => {
@@ -1547,6 +1564,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         retryJob,
         cancelJob,
         removeJob,
+        clearTerminalJobs,
       }}
     >
       {children}
