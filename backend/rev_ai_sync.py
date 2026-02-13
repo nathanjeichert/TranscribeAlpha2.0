@@ -55,9 +55,7 @@ class RevAIAligner:
             "source_config": {
                 "url": audio_url
             },
-            "source_transcript_config": {
-                "transcript_text": transcript_text
-            }
+            "transcript_text": transcript_text
         }
 
         if metadata:
