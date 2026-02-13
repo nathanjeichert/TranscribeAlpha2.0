@@ -93,6 +93,7 @@ export default function ConverterPage() {
   const failedCount = useMemo(() => {
     return conversionJobs.filter((job) => job.status === 'failed' || job.status === 'canceled').length
   }, [conversionJobs])
+  const showStickyActionBar = conversionJobs.length > 0
 
   const addFiles = useCallback(
     async (incoming: File[]) => {
@@ -243,7 +244,7 @@ export default function ConverterPage() {
   }, [conversionJobs, isConverting, removeJob])
 
   return (
-    <div className="p-8 max-w-6xl mx-auto space-y-6">
+    <div className={`p-8 max-w-6xl mx-auto space-y-6 ${showStickyActionBar ? 'pb-36 sm:pb-32' : ''}`}>
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Media Converter</h1>
         <p className="text-gray-600 mt-1">
@@ -431,6 +432,58 @@ export default function ConverterPage() {
           )}
         </div>
       </div>
+
+      {showStickyActionBar && (
+        <div className="fixed inset-x-0 bottom-0 z-40">
+          <div className="mx-auto max-w-6xl px-4 pb-4 sm:px-6 lg:px-8">
+            <div className="rounded-xl border border-gray-200 bg-white shadow-xl">
+              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {conversionJobs.length} file{conversionJobs.length !== 1 ? 's' : ''} in converter
+                  </p>
+                  <p className="text-xs text-gray-600">
+                    {isConverting
+                      ? runningJob
+                        ? `Converting ${runningJob.title}${typeof runningJob.progress === 'number' ? ` (${Math.round(runningJob.progress * 100)}%)` : ''}`
+                        : 'Conversion running.'
+                      : `${totals.readyCount} ready, ${totals.convertedCount} converted${failedCount ? `, ${failedCount} failed` : ''}.`}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 sm:flex-nowrap">
+                  {!isConverting && failedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={retryFailed}
+                      className="btn-outline px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Retry Failed ({failedCount})
+                    </button>
+                  )}
+                  {!isConverting && totals.convertedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={downloadAllZip}
+                      disabled={zipBusy}
+                      className="btn-outline px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {zipBusy ? 'Building ZIP...' : 'Download ZIP'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={isConverting ? handleStop : convertReadyFiles}
+                    disabled={!isConverting && totals.readyCount === 0}
+                    className="btn-primary px-5 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isConverting ? 'Stop' : 'Convert All'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
