@@ -446,7 +446,13 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     void (async () => {
       const loaded = await readPersistedJobs(idbKey, legacyKey)
       if (canceled) return
-      applyJobsMutation(() => loaded)
+      applyJobsMutation((current) => {
+        // Merge: keep any in-flight jobs that were enqueued before hydration finished,
+        // and add loaded (persisted) jobs that aren't already present.
+        const currentIds = new Set(current.map((j) => j.id))
+        const merged = [...current, ...loaded.filter((j) => !currentIds.has(j.id))]
+        return merged.slice(Math.max(0, merged.length - MAX_PERSISTED_JOBS))
+      })
       jobsHydratedRef.current = true
       try {
         localStorage.removeItem(legacyKey)
@@ -460,9 +466,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     }
   }, [applyJobsMutation])
 
-  useEffect(() => {
-    jobsRef.current = jobs
-  }, [jobs])
+  // Note: jobsRef.current is kept in sync by applyJobsMutation (immediate write).
+  // A useEffect sync here would be harmful — it fires after React renders and can
+  // revert jobsRef.current to a stale snapshot while workers are mid-processing.
 
   // Persist jobs metadata to IndexedDB.
   useEffect(() => {
@@ -1144,6 +1150,15 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
               }
             }
             if (!activeFile?.file) {
+              console.warn(
+                '[TranscribeAlpha] File missing for job',
+                nextJob.id,
+                '| title:', nextJob.title,
+                '| sourceMediaRefId:', nextJob.sourceMediaRefId,
+                '| jobFilesRef size:', jobFilesRef.current.size,
+                '| jobsRef queued count:', jobsRef.current.filter((j) => j.kind === 'transcription' && j.status === 'queued').length,
+                '| hydrated:', jobsHydratedRef.current,
+              )
               updateJob(nextJob.id, {
                 status: 'failed',
                 unloadSensitive: false,
