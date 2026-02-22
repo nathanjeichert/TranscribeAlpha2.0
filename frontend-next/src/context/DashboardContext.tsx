@@ -543,7 +543,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
   const getTotalUsedBytes = useCallback((): number => {
     const usage = getCurrentMemoryUsage()
-    return usage.convertedFiles + usage.preparedAudio + usage.jobFiles + usage.inFlightUploads
+    // jobFiles is excluded: File objects from the filesystem are lazy references,
+    // not in-memory blobs. Real memory is tracked by preparedAudio and inFlightUploads.
+    return usage.convertedFiles + usage.preparedAudio + usage.inFlightUploads
   }, [getCurrentMemoryUsage])
 
   const getMemoryLimitBytes = useCallback((): number => memoryLimitMB * 1024 * 1024, [memoryLimitMB])
