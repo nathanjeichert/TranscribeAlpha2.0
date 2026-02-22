@@ -137,7 +137,7 @@ export async function resolveMediaObjectURLForRecord(
 
 export async function resolveMediaFileForRecord(
   record: MediaRecordShape,
-  options?: { requestPermission?: boolean },
+  options?: { requestPermission?: boolean; skipCache?: boolean },
 ): Promise<MediaFileResolution> {
   const mediaKey = asText(record.media_key)
   const workspacePath = asText(record.media_workspace_relpath)
@@ -155,24 +155,26 @@ export async function resolveMediaFileForRecord(
     }
   }
 
-  const cachePath = asText(record.playback_cache_path)
-  const cacheContentType = asText(record.playback_cache_content_type)
-  if (cachePath) {
-    const cachedFile = await readWorkspaceRelativeFile(cachePath)
-    if (cachedFile) {
-      if (mediaKey) {
-        await touchMediaCacheEntry(mediaKey)
-      }
-      const playbackFile = !cachedFile.type && cacheContentType
-        ? new File([cachedFile], cachedFile.name || (asText(record.media_filename) || `${mediaKey || 'media'}.bin`), {
-            type: cacheContentType,
-            lastModified: cachedFile.lastModified,
-          })
-        : cachedFile
-      return {
-        file: playbackFile,
-        sourceKind: 'workspace-cache',
-        reconnectRecommended: false,
+  if (!options?.skipCache) {
+    const cachePath = asText(record.playback_cache_path)
+    const cacheContentType = asText(record.playback_cache_content_type)
+    if (cachePath) {
+      const cachedFile = await readWorkspaceRelativeFile(cachePath)
+      if (cachedFile) {
+        if (mediaKey) {
+          await touchMediaCacheEntry(mediaKey)
+        }
+        const playbackFile = !cachedFile.type && cacheContentType
+          ? new File([cachedFile], cachedFile.name || (asText(record.media_filename) || `${mediaKey || 'media'}.bin`), {
+              type: cacheContentType,
+              lastModified: cachedFile.lastModified,
+            })
+          : cachedFile
+        return {
+          file: playbackFile,
+          sourceKind: 'workspace-cache',
+          reconnectRecommended: false,
+        }
       }
     }
   }

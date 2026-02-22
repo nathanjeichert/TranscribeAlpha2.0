@@ -771,9 +771,14 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         activeFile?.originalFileName ||
         activeFile?.file.name ||
         'media'
+      const backendContentType =
+        (transcriptPayload.media_content_type as string | undefined) || ''
+      const originalFileType = activeFile?.file.type || ''
+      // Prefer the original file's video type over the backend's extracted-audio type
       const mediaContentType =
-        (transcriptPayload.media_content_type as string | undefined) ||
-        activeFile?.file.type ||
+        (originalFileType.startsWith('video/') ? originalFileType : '') ||
+        backendContentType ||
+        originalFileType ||
         'application/octet-stream'
 
       const record = { ...(transcriptPayload as Record<string, unknown>) } as TranscriptData

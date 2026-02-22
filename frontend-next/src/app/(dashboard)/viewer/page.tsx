@@ -1824,7 +1824,7 @@ export default function ViewerPage() {
       const payload = linesToViewerPayload(transcript)
       const transcriptJson = escapeScriptBoundary(JSON.stringify(payload))
 
-      const resolvedMedia = await resolveMediaFileForRecord(transcript, { requestPermission: true })
+      const resolvedMedia = await resolveMediaFileForRecord(transcript, { requestPermission: true, skipCache: true })
       const mediaFile = resolvedMedia.file
       if (!mediaFile) {
         throw new Error(

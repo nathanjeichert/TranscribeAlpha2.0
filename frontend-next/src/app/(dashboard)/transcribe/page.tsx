@@ -156,7 +156,7 @@ export default function TranscribePage() {
     return {
       id: buildQueueId(),
       file,
-      originalFileName: file.name,
+      originalFileName: fileHandle?.name || file.name,
       fileHandle: fileHandle ?? null,
       speaker_names: '',
       speakers_expected: '',
