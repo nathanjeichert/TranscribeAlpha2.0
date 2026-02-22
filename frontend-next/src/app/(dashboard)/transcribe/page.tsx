@@ -212,6 +212,13 @@ export default function TranscribePage() {
   )
 
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    // When showOpenFilePicker is available, the parent onClick already handles file
+    // selection via handleOpenFilePicker (which returns FileSystemFileHandles with
+    // correct long filenames). Ignore the <input> change to avoid Windows 8.3 names.
+    if (typeof (window as any).showOpenFilePicker === 'function') {
+      event.target.value = ''
+      return
+    }
     const files = event.target.files
     if (!files || files.length === 0) return
     addFilesToQueue(Array.from(files).map((file) => ({ file })))
