@@ -236,12 +236,16 @@ export default function EditorPage() {
     const blob = new Blob([byteArray], { type: mimeType })
 
     const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
+    const blobUrl = URL.createObjectURL(blob)
+    link.href = blobUrl
     link.download = filename
     document.body.appendChild(link)
     link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(link.href)
+    // Defer cleanup so the browser has time to initiate the download
+    setTimeout(() => {
+      document.body.removeChild(link)
+      URL.revokeObjectURL(blobUrl)
+    }, 1500)
   }
 
   const generateFilename = (baseName: string, extension: string) => {

@@ -1575,7 +1575,7 @@ export default function TranscriptEditor({
               </div>
             </div>
 
-            <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_220px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-primary-600">
+            <div className="grid grid-cols-[70px_170px_minmax(0,1fr)_140px] border-b border-primary-200 bg-primary-100 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-primary-600">
               <div>Pg:Ln</div>
               <div>Speaker</div>
               <div>Utterance</div>
@@ -1607,7 +1607,7 @@ export default function TranscriptEditor({
                           ? 'bg-yellow-200'
                           : 'bg-white hover:bg-primary-200'
                   const rowClasses = [
-                    'grid grid-cols-[70px_170px_minmax(0,1fr)_220px] items-start gap-5 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
+                    'grid grid-cols-[70px_170px_minmax(0,1fr)_140px] items-start gap-3 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
                     rowBackgroundClass,
                     isSelected ? 'ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : '',
                   ]
@@ -1664,7 +1664,7 @@ export default function TranscriptEditor({
                         )}
                       </div>
                       <div
-                        className="min-w-0 cursor-text whitespace-pre-wrap font-mono text-primary-800 pr-6"
+                        className="min-w-0 cursor-text whitespace-pre-wrap break-words font-mono text-primary-800"
                         onClick={(event) => {
                           event.stopPropagation()
                           if (!isSelected) {

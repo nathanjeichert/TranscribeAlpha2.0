@@ -2185,7 +2185,7 @@ export default function ViewerPage() {
                     <audio
                       ref={audioRef}
                       {...playerSharedProps}
-                      className="hidden"
+                      className="w-full shrink-0"
                     />
                     <div className="relative min-h-0 flex-1 rounded-xl overflow-hidden bg-gradient-to-b from-slate-800 to-slate-900">
                       <div className="absolute inset-0 flex items-center px-6">
