@@ -352,7 +352,6 @@ export default function TranscribePage() {
   const hasQueue = queue.length > 0
   const canProceedToConfig = hasQueue
   const canProceedToStart = hasQueue
-  const showStickyActionBar = (step === 'upload' && canProceedToConfig) || (step === 'configure' && hasQueue)
   const currentStepIndex = wizardSteps.findIndex((wizardStep) => wizardStep.key === step)
 
   const canNavigateToStep = (targetStep: WizardStep) => {
@@ -410,7 +409,7 @@ export default function TranscribePage() {
   }, [enqueueTranscriptionJobs, formData, getEffectiveCaseId, jailCallMode, queue, router])
 
   return (
-    <div className={`p-8 max-w-6xl mx-auto ${showStickyActionBar ? 'pb-36 sm:pb-32' : ''}`}>
+    <div className="p-8 max-w-6xl mx-auto">
       <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">New Transcript</h1>
@@ -900,42 +899,6 @@ export default function TranscribePage() {
             >
               {isBatchSelection ? 'Submit Jobs' : 'Submit Job'}
             </button>
-          </div>
-        </div>
-      )}
-
-      {showStickyActionBar && (
-        <div className="fixed inset-x-0 bottom-0 z-40">
-          <div className="mx-auto max-w-6xl px-4 pb-4 sm:px-6 lg:px-8">
-            <div className="rounded-xl border border-gray-200 bg-white shadow-xl">
-              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-gray-900">
-                    {queue.length} file{queue.length !== 1 ? 's' : ''} queued
-                  </p>
-                  <p className="text-xs text-gray-600">
-                    {step === 'upload'
-                      ? 'Continue to configure case details and per-file options.'
-                      : 'Ready to submit this batch to Jobs.'}
-                  </p>
-                </div>
-                <div className="flex gap-2 sm:flex-nowrap">
-                  {step === 'configure' && (
-                    <button type="button" onClick={() => setStep('upload')} className="btn-outline px-4 py-2">
-                      Back
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={step === 'upload' ? () => setStep('configure') : handleStart}
-                    disabled={step === 'upload' ? !canProceedToConfig : !canProceedToStart}
-                    className="btn-primary px-5 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {step === 'upload' ? 'Continue' : isBatchSelection ? 'Submit Jobs' : 'Submit Job'}
-                  </button>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       )}
