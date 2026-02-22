@@ -102,6 +102,16 @@ export default function TranscribePage() {
     }
   }, [searchParams])
 
+  // Auto-populate case_name when a case is selected
+  useEffect(() => {
+    if (formData.case_id) {
+      const selectedCase = cases.find((c) => c.case_id === formData.case_id)
+      if (selectedCase && !formData.case_name) {
+        setFormData((prev) => ({ ...prev, case_name: selectedCase.name }))
+      }
+    }
+  }, [formData.case_id, formData.case_name, cases])
+
   const caseNameById = useMemo(() => {
     const map = new Map<string, string>()
     for (const c of cases) {
@@ -705,7 +715,15 @@ export default function TranscribePage() {
               <select
                 name="case_id"
                 value={formData.case_id}
-                onChange={(event) => setFormData((prev) => ({ ...prev, case_id: event.target.value }))}
+                onChange={(event) => {
+                  const nextCaseId = event.target.value
+                  const matchedCase = cases.find((c) => c.case_id === nextCaseId)
+                  setFormData((prev) => ({
+                    ...prev,
+                    case_id: nextCaseId,
+                    case_name: matchedCase ? matchedCase.name : prev.case_name,
+                  }))
+                }}
                 className="input-field flex-1"
               >
                 <option value="">No case (uncategorized)</option>

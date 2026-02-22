@@ -35,9 +35,9 @@ except ImportError:
     from models import TranscriptTurn
 
 try:
-    from ..rev_ai_sync import RevAIAligner
+    from ..rev_ai_sync import RevAIAligner, normalize_alignment_token
 except ImportError:
-    from rev_ai_sync import RevAIAligner
+    from rev_ai_sync import RevAIAligner, normalize_alignment_token
 
 try:
     from ..storage import save_upload_to_tempfile
@@ -642,6 +642,26 @@ async def serve_resync_media(token: str):
     )
 
 
+@router.get("/api/resync-transcript/{token}", include_in_schema=False)
+async def serve_resync_transcript(token: str):
+    """Serve the temporary transcript text file for Rev AI alignment."""
+    _cleanup_resync_media_registry()
+    entry = _RESYNC_MEDIA_REGISTRY.get(token)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Transcript token not found or expired")
+
+    file_path = str(entry.get("path") or "")
+    if not file_path or not os.path.exists(file_path):
+        _RESYNC_MEDIA_REGISTRY.pop(token, None)
+        raise HTTPException(status_code=404, detail="Transcript file not found")
+
+    return FileResponse(
+        file_path,
+        media_type="text/plain",
+        filename="transcript.txt",
+    )
+
+
 @router.post("/api/resync")
 async def resync_transcript(
     request: Request,
@@ -653,7 +673,9 @@ async def resync_transcript(
     _ = current_user
 
     temp_media_path = None
+    temp_transcript_path = None
     resync_media_token = None
+    resync_transcript_token = None
     try:
         session_data = json.loads(transcript_data)
     except (json.JSONDecodeError, TypeError) as exc:
@@ -694,11 +716,31 @@ async def resync_transcript(
         turns_payload = [turn.model_dump() for turn in turns]
         source_turns_payload = session_data.get("source_turns")
 
+        # Build cleaned transcript text for Rev AI (API requires transcript served as a URL)
+        plain_text_words = []
+        for turn in turns_payload:
+            for token in turn.get("text", "").split():
+                clean_parts = normalize_alignment_token(token)
+                plain_text_words.extend(clean_parts)
+        transcript_plain_text = " ".join(plain_text_words)
+
+        transcript_url = None
+        if transcript_plain_text.strip():
+            fd, temp_transcript_path = tempfile.mkstemp(suffix=".txt", prefix="resync_transcript_")
+            os.write(fd, transcript_plain_text.encode("utf-8"))
+            os.close(fd)
+            resync_transcript_token = _register_resync_media(
+                temp_transcript_path, "text/plain", "transcript.txt"
+            )
+            transcript_url = str(request.url_for("serve_resync_transcript", token=resync_transcript_token))
+
         updated_turns_payload = await anyio.to_thread.run_sync(
-            aligner.align_transcript,
-            turns_payload,
-            audio_url,
-            source_turns_payload,
+            lambda: aligner.align_transcript(
+                turns_payload,
+                audio_url=audio_url,
+                source_turns=source_turns_payload,
+                transcript_url=transcript_url,
+            ),
         )
         updated_turns = [TranscriptTurn(**turn) for turn in updated_turns_payload]
 
@@ -747,9 +789,16 @@ async def resync_transcript(
     finally:
         if resync_media_token:
             _RESYNC_MEDIA_REGISTRY.pop(resync_media_token, None)
+        if resync_transcript_token:
+            _RESYNC_MEDIA_REGISTRY.pop(resync_transcript_token, None)
         if temp_media_path and os.path.exists(temp_media_path):
             try:
                 os.remove(temp_media_path)
+            except OSError:
+                pass
+        if temp_transcript_path and os.path.exists(temp_transcript_path):
+            try:
+                os.remove(temp_transcript_path)
             except OSError:
                 pass
 

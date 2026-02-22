@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
 import TranscriptEditor, { EditorSessionResponse, EditorSaveResponse } from '@/components/TranscriptEditor'
@@ -22,6 +22,7 @@ type TranscriptData = EditorSessionResponse & {
 }
 
 export default function EditorPage() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const { activeMediaKey, setActiveMediaKey, refreshRecentTranscripts, appVariant } = useDashboard()
 
@@ -315,21 +316,6 @@ export default function EditorPage() {
 
   return (
     <div className="h-full flex flex-col">
-      {mediaKey && (
-        <div className="px-6 pt-4">
-          <Link
-            href={routes.viewer(mediaKey)}
-            className="inline-flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-medium text-primary-700 hover:bg-primary-100"
-          >
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-            View in Viewer
-          </Link>
-        </div>
-      )}
-
       {!mediaAvailable && (
         <MediaMissingBanner
           mediaKey={mediaKey}
@@ -355,6 +341,7 @@ export default function EditorPage() {
         onSessionChange={handleSessionChange}
         onSaveComplete={handleSaveComplete}
         onRequestMediaImport={handleRelinkMedia}
+        onOpenViewer={() => router.push(routes.viewer(mediaKey))}
       />
     </div>
   )

@@ -47,25 +47,36 @@ class RevAIAligner:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
-    def submit_alignment_job(self, audio_url: str, transcript_text: str, metadata: str = "") -> str:
-        """Submit alignment job to Rev AI using an audio URL and transcript text."""
+    def submit_alignment_job(self, audio_url: str, transcript_text: str, metadata: str = "", transcript_url: Optional[str] = None) -> str:
+        """Submit alignment job to Rev AI using an audio URL and transcript (URL or inline text)."""
         url = f"{REV_AI_ALIGNMENT_BASE_URL}/jobs"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "source_config": {
                 "url": audio_url
             },
-            "source_transcript_config": {
-                "transcript_text": transcript_text
-            }
         }
+
+        # Rev AI requires transcript as a URL; fall back to inline text only if no URL provided
+        if transcript_url:
+            payload["source_transcript_config"] = {
+                "url": transcript_url
+            }
+        else:
+            payload["source_transcript_config"] = {
+                "url": transcript_url or "",
+                "transcript_text": transcript_text,
+            }
 
         if metadata:
             payload["metadata"] = metadata
 
         logger.info("Submitting alignment job to Rev AI: %s", url)
         logger.info("Audio URL: %s...", audio_url[:100])
-        logger.info("Transcript text length: %d", len(transcript_text))
+        if transcript_url:
+            logger.info("Transcript URL: %s...", transcript_url[:100])
+        else:
+            logger.info("Transcript text length: %d", len(transcript_text))
 
         response = requests.post(url, headers=self.headers, json=payload)
 
@@ -121,6 +132,7 @@ class RevAIAligner:
         turns: List[dict],
         audio_url: Optional[str] = None,
         source_turns: Optional[List[dict]] = None,
+        transcript_url: Optional[str] = None,
     ) -> List[dict]:
         """
         Align transcript with audio using Rev AI Forced Alignment API.
@@ -173,7 +185,7 @@ class RevAIAligner:
 
             # Submit job
             logger.info("Submitting alignment job with %d words", len(plain_text_words))
-            job_id = self.submit_alignment_job(final_audio_url, full_text_for_api)
+            job_id = self.submit_alignment_job(final_audio_url, full_text_for_api, transcript_url=transcript_url)
             logger.info("Alignment job submitted: %s", job_id)
 
             # Wait for result

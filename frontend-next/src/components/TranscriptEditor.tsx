@@ -79,6 +79,7 @@ interface TranscriptEditorProps {
   onSessionChange: (session: EditorSessionResponse) => void
   onSaveComplete: (result: EditorSaveResponse) => void
   onRequestMediaImport?: () => void
+  onOpenViewer?: () => void
   onOpenHistory?: () => void
   onGeminiRefine?: () => void
   isGeminiBusy?: boolean
@@ -307,6 +308,7 @@ export default function TranscriptEditor({
   onSessionChange,
   onSaveComplete,
   onRequestMediaImport,
+  onOpenViewer,
   onOpenHistory,
   onGeminiRefine,
   isGeminiBusy,
@@ -416,9 +418,13 @@ export default function TranscriptEditor({
 
   const scrollTranscriptToLine = useCallback((lineId: string, behavior: ScrollBehavior = 'smooth') => {
     const target = lineRefs.current[lineId]
-    if (!target) return
+    const container = transcriptScrollRef.current
+    if (!target || !container) return
     programmaticScrollRef.current = true
-    target.scrollIntoView({ block: 'center', behavior })
+    // Scroll within the editor container only, not the whole page
+    const targetTop = target.offsetTop - container.offsetTop
+    const targetCenter = targetTop - container.clientHeight / 2 + target.clientHeight / 2
+    container.scrollTo({ top: targetCenter, behavior })
     if (scrollReleaseTimerRef.current) {
       window.clearTimeout(scrollReleaseTimerRef.current)
     }
@@ -1323,6 +1329,18 @@ export default function TranscriptEditor({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {onOpenViewer && (
+              <button
+                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium inline-flex items-center gap-1.5"
+                onClick={onOpenViewer}
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                View in Viewer
+              </button>
+            )}
             <button
               className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
               onClick={handleDownloadPdf}

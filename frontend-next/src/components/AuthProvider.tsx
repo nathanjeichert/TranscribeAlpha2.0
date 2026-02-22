@@ -54,21 +54,5 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     return <LoginModal onLoginSuccess={handleLoginSuccess} />;
   }
 
-  return (
-    <>
-      {/* User info bar */}
-      <div className="bg-primary-800 text-white px-4 py-2 flex justify-between items-center shadow-md">
-        <div className="text-sm">
-          Signed in as <span className="font-semibold">{user?.username}</span>
-        </div>
-        <button
-          onClick={handleLogout}
-          className="text-sm bg-red-600 hover:bg-red-500 px-4 py-1.5 rounded font-medium transition-colors shadow-sm"
-        >
-          Sign Out
-        </button>
-      </div>
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }

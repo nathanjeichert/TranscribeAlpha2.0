@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
+import { getCurrentUser, logout } from '@/utils/auth'
 import { evictMediaCacheToCap } from '@/lib/mediaCache'
 import {
   DEFAULT_MEDIA_CACHE_CAP_BYTES,
@@ -32,6 +33,7 @@ function formatCacheCapGb(value: number): string {
 
 export default function SettingsPage() {
   const { appVariant, memoryLimitMB, setMemoryLimitMB } = useDashboard()
+  const [currentUserName] = useState(() => getCurrentUser()?.username || '')
 
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
   const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
@@ -134,6 +136,25 @@ export default function SettingsPage() {
               </div>
               <span className="text-gray-600">2.0.0</span>
             </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Account</h2>
+          <div className="flex items-center justify-between py-3">
+            <div>
+              <p className="font-medium text-gray-900">Signed in as</p>
+              <p className="text-sm text-gray-500">{currentUserName || 'Unknown'}</p>
+            </div>
+            <button
+              onClick={() => {
+                logout()
+                window.location.reload()
+              }}
+              className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 font-medium text-sm rounded-lg transition-colors"
+            >
+              Sign Out
+            </button>
           </div>
         </div>
 

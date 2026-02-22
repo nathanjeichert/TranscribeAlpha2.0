@@ -2146,17 +2146,17 @@ export default function ViewerPage() {
 
               <div className="min-h-0 flex-1 p-3">
                 {isVideo ? (
-                  /* Video element: layout differs by mode */
-                  viewerMode === 'caption' ? (
-                    <div className="flex h-full min-h-0 flex-col gap-3">
-                      <div className="relative min-h-0 flex-1 rounded-xl border border-blue-200 bg-white">
-                        <video
-                          ref={videoRef}
-                          {...playerSharedProps}
-                          className="h-full w-full rounded-xl bg-black object-contain"
-                        />
-                        {mediaStatusOverlay}
-                      </div>
+                  /* Video element: single element, layout changes by mode */
+                  <div className={viewerMode === 'caption' ? 'flex h-full min-h-0 flex-col gap-3' : 'relative h-full'}>
+                    <div className={viewerMode === 'caption' ? 'relative min-h-0 flex-1 rounded-xl border border-blue-200 bg-white' : 'h-full rounded-xl border border-stone-300 bg-stone-50'}>
+                      <video
+                        ref={videoRef}
+                        {...playerSharedProps}
+                        className="h-full w-full rounded-xl bg-black object-contain"
+                      />
+                      {mediaStatusOverlay}
+                    </div>
+                    {viewerMode === 'caption' && (
                       <div className="shrink-0 max-h-[24vh] overflow-y-auto rounded-xl border border-stone-300 bg-[#fffef8] px-6 py-4 shadow-sm">
                         <div className="space-y-2 font-mono">
                           <div className="text-base text-stone-400">{captionWindow.prev2}</div>
@@ -2168,17 +2168,8 @@ export default function ViewerPage() {
                           <div className="text-base text-stone-400">{captionWindow.next2}</div>
                         </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="relative h-full rounded-xl border border-stone-300 bg-stone-50">
-                      <video
-                        ref={videoRef}
-                        {...playerSharedProps}
-                        className="h-full w-full rounded-xl bg-black object-contain"
-                      />
-                      {mediaStatusOverlay}
-                    </div>
-                  )
+                    )}
+                  </div>
                 ) : (
                   /* Audio: waveform always mounted, captions shown below in caption mode */
                   <div className="flex h-full min-h-0 flex-col gap-3">
@@ -2430,22 +2421,6 @@ export default function ViewerPage() {
                           <button
                             type="button"
                             className="btn-outline px-2 py-1 text-xs"
-                            disabled={!canEditClips}
-                            onClick={() => setClipStart(formatClock(currentTime))}
-                          >
-                            Set Start
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-outline px-2 py-1 text-xs"
-                            disabled={!canEditClips}
-                            onClick={() => setClipEnd(formatClock(currentTime))}
-                          >
-                            Set End
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-outline px-2 py-1 text-xs"
                             disabled={!canEditClips || !selectedLineId}
                             onClick={() => {
                               const selected = transcript?.lines.find((line) => line.id === selectedLineId)
@@ -2459,8 +2434,16 @@ export default function ViewerPage() {
                             className="btn-outline px-2 py-1 text-xs"
                             disabled={!canEditClips || !selectedLineId}
                             onClick={() => {
-                              const selected = transcript?.lines.find((line) => line.id === selectedLineId)
-                              if (selected) setClipEnd(formatClock(selected.end))
+                              if (!transcript) return
+                              const selectedIdx = transcript.lines.findIndex((line) => line.id === selectedLineId)
+                              if (selectedIdx < 0) return
+                              const nextLine = transcript.lines[selectedIdx + 1]
+                              if (nextLine) {
+                                setClipEnd(formatClock(Math.max(0, nextLine.start - 0.1)))
+                              } else {
+                                // Last line: use the selected line's end time
+                                setClipEnd(formatClock(transcript.lines[selectedIdx].end))
+                              }
                             }}
                           >
                             End from line
