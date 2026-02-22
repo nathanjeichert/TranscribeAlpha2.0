@@ -187,6 +187,8 @@ Audio/Video → ASR (AssemblyAI or Gemini) → PDF + OnCue XML + HTML Viewer
 If `REV_AI_API_KEY` is not configured, re-sync is skipped.
 The alignment step preserves original text (punctuation, capitalization) while only updating timestamps.
 
+**Rev AI integration detail:** The alignment API requires both audio and transcript served as URLs (not inline text). The `/api/resync` endpoint writes cleaned transcript text to a temp file and serves it via `/api/resync-transcript/{token}`, matching the pattern used for media files.
+
 **Line timing rules**
 - Generated line timestamps enforce a 1.25s minimum duration by expanding into adjacent gaps without overlap.
 - User-edited line timings are preserved (minimum-duration enforcement is skipped during manual saves).
@@ -430,4 +432,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-02-11*
+*Last updated: 2026-02-22*
