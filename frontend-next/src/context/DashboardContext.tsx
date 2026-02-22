@@ -1250,6 +1250,9 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             }
 
             const fileForUpload = await prepareUploadFile(nextJob.id, activeFile.file)
+            // Release prepared audio now — the file has been handed to FormData
+            // and inFlightUploadBytesRef will track memory from here.
+            preparedAudioRef.current.delete(nextJob.id)
             const latest = jobsRef.current.find((entry) => entry.id === nextJob.id)
             if (latest?.status === 'canceled') {
               continue

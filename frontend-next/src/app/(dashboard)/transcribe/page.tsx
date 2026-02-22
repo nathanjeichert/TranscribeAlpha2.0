@@ -167,7 +167,7 @@ export default function TranscribePage() {
   }, [])
 
   const addFilesToQueue = useCallback(
-    (incoming: File[]) => {
+    (incoming: { file: File; handle?: FileSystemFileHandle | null }[]) => {
       if (!incoming.length) return
 
       setPageError('')
@@ -187,17 +187,19 @@ export default function TranscribePage() {
       const dropped = incoming.length - accepted.length
 
       const nextItems: QueueItem[] = []
-      for (const file of accepted) {
-        const signature = buildFileSignature(file)
+      const acceptedFiles: File[] = []
+      for (const entry of accepted) {
+        const signature = buildFileSignature(entry.file)
         if (existingSignatures.has(signature)) {
           duplicateCount += 1
         }
         existingSignatures.add(signature)
-        nextItems.push(createQueueItem(file))
+        nextItems.push(createQueueItem(entry.file, entry.handle))
+        acceptedFiles.push(entry.file)
       }
 
       setQueue([...baseQueue, ...nextItems])
-      void inspectForJailCalls(accepted)
+      void inspectForJailCalls(acceptedFiles)
 
       if (duplicateCount > 0) {
         setPageNotice(`${duplicateCount} duplicate file(s) were added. Duplicates are allowed and will be processed.`)
@@ -212,16 +214,42 @@ export default function TranscribePage() {
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
     if (!files || files.length === 0) return
-    addFilesToQueue(Array.from(files))
+    addFilesToQueue(Array.from(files).map((file) => ({ file })))
     event.target.value = ''
   }
 
   const handleDrop = useCallback(
-    (event: React.DragEvent) => {
+    async (event: React.DragEvent) => {
       event.preventDefault()
+      const items = event.dataTransfer.items
       const files = event.dataTransfer.files
       if (!files || files.length === 0) return
-      addFilesToQueue(Array.from(files))
+
+      // Try to get FileSystemFileHandles for long filenames on Windows
+      const entries: { file: File; handle?: FileSystemFileHandle | null }[] = []
+      if (items?.length && typeof (items[0] as any).getAsFileSystemHandle === 'function') {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          if (item.kind !== 'file') continue
+          try {
+            const handle = await (item as any).getAsFileSystemHandle() as FileSystemFileHandle | null
+            if (handle && handle.kind === 'file') {
+              const file = await handle.getFile()
+              entries.push({ file, handle })
+            } else {
+              entries.push({ file: files[i] })
+            }
+          } catch {
+            entries.push({ file: files[i] })
+          }
+        }
+      } else {
+        for (let i = 0; i < files.length; i++) {
+          entries.push({ file: files[i] })
+        }
+      }
+
+      addFilesToQueue(entries)
     },
     [addFilesToQueue],
   )
@@ -534,8 +562,17 @@ export default function TranscribePage() {
                 : `Choose one or more audio/video files. Select multiple files to submit a batch (up to ${MAX_BATCH_FILES}).`}
             </p>
 
-            <label
-              htmlFor="media-upload"
+            {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+            <div
+              onClick={(e) => {
+                // Use showOpenFilePicker when available to get FileSystemFileHandles (avoids Windows 8.3 short filenames)
+                if (typeof (window as any).showOpenFilePicker === 'function') {
+                  e.preventDefault()
+                  handleOpenFilePicker()
+                } else {
+                  fileInputRef.current?.click()
+                }
+              }}
               onDrop={handleDrop}
               onDragOver={handleDragOver}
               className="block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors border-gray-300 hover:border-primary-400 hover:bg-primary-50"
@@ -560,15 +597,7 @@ export default function TranscribePage() {
                 </div>
                 <div className="text-sm text-gray-500">Supports MP4, MOV, AVI, WAV, MP3, FLAC and more</div>
               </div>
-            </label>
-
-            <button
-              type="button"
-              onClick={handleOpenFilePicker}
-              className="mt-3 w-full py-2.5 text-sm font-medium text-primary-700 bg-primary-50 border border-primary-200 rounded-lg hover:bg-primary-100 transition-colors"
-            >
-              Browse Files (preserves file access for playback)
-            </button>
+            </div>
           </div>
 
           {queue.length > 0 && (
