@@ -1,4 +1,4 @@
-"""HTML viewer rendering utilities for criminal/DA-PD variant."""
+"""HTML viewer rendering utilities."""
 from __future__ import annotations
 
 import json

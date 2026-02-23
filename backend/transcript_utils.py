@@ -353,7 +353,6 @@ def resolve_media_filename(title_data: dict, media_blob_name: Optional[str] = No
 
 
 def build_variant_exports(
-    app_variant: str,
     line_entries: List[dict],
     title_data: dict,
     audio_duration: float,
@@ -362,8 +361,7 @@ def build_variant_exports(
     media_content_type: Optional[str],
     oncue_xml: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Build base64 XML + standalone viewer exports for all variants."""
-    _ = app_variant  # Kept for call-site compatibility.
+    """Build base64 XML + standalone viewer exports."""
     if oncue_xml is None:
         raise ValueError("oncue_xml is required")
 

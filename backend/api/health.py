@@ -2,11 +2,6 @@ import os
 
 from fastapi import APIRouter
 
-try:
-    from ..config import APP_VARIANT
-except ImportError:
-    from config import APP_VARIANT
-
 router = APIRouter()
 
 
@@ -16,6 +11,5 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "TranscribeAlpha",
-        "variant": APP_VARIANT,
         "assemblyai_api_key_configured": bool(os.getenv("ASSEMBLYAI_API_KEY")),
     }

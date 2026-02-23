@@ -15,23 +15,20 @@ import {
 const SIDEBAR_COLLAPSED_KEY = 'dashboard_sidebar_collapsed'
 
 function WorkspaceGate({ children }: { children: React.ReactNode }) {
-  const { variantResolved, refreshCases, refreshRecentTranscripts, jobs } = useDashboard()
+  const { refreshCases, refreshRecentTranscripts, jobs } = useDashboard()
   const [ready, setReady] = useState(false)
   const [checking, setChecking] = useState(true)
   const [showSetup, setShowSetup] = useState(false)
   const [multiTabWarning, setMultiTabWarning] = useState(false)
   const [needsReconnect, setNeedsReconnect] = useState(false)
 
-  // Multi-tab detection for all variants.
+  // Multi-tab detection.
   useEffect(() => {
-    if (!variantResolved) return
     const cleanup = setupMultiTabDetection(() => setMultiTabWarning(true))
     return cleanup
-  }, [variantResolved])
+  }, [])
 
   const checkWorkspace = useCallback(async () => {
-    if (!variantResolved) return
-
     const configured = await isWorkspaceConfigured()
     if (!configured) {
       setShowSetup(true)
@@ -64,7 +61,7 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
         setChecking(false)
         return
     }
-  }, [refreshCases, refreshRecentTranscripts, variantResolved])
+  }, [refreshCases, refreshRecentTranscripts])
 
   useEffect(() => {
     checkWorkspace()
@@ -99,20 +96,6 @@ function WorkspaceGate({ children }: { children: React.ReactNode }) {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [hasUnloadSensitiveJobs])
-
-  if (!variantResolved) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50">
-        <div className="text-center">
-          <div className="w-12 h-12 mx-auto mb-4 relative">
-            <div className="absolute inset-0 border-4 border-primary-200 rounded-full" />
-            <div className="absolute inset-0 border-4 border-primary-600 rounded-full border-t-transparent animate-spin" />
-          </div>
-          <p className="text-gray-500">Loading...</p>
-        </div>
-      </div>
-    )
-  }
 
   if (checking) {
     return (

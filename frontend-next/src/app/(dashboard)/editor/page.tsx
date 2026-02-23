@@ -24,7 +24,7 @@ type TranscriptData = EditorSessionResponse & {
 export default function EditorPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { activeMediaKey, setActiveMediaKey, refreshRecentTranscripts, appVariant } = useDashboard()
+  const { activeMediaKey, setActiveMediaKey, refreshRecentTranscripts, oncueXmlEnabled } = useDashboard()
 
   const [mediaKey, setMediaKey] = useState<string | null>(null)
   const [transcriptData, setTranscriptData] = useState<TranscriptData | null>(null)
@@ -335,7 +335,7 @@ export default function EditorPage() {
         docxBase64={transcriptData?.docx_base64}
         xmlBase64={transcriptData?.oncue_xml_base64}
         viewerHtmlBase64={transcriptData?.viewer_html_base64}
-        appVariant={appVariant}
+        oncueXmlEnabled={oncueXmlEnabled}
         onDownload={downloadFile}
         buildFilename={generateFilename}
         onSessionChange={handleSessionChange}

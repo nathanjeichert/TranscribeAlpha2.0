@@ -125,6 +125,7 @@ const CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS = 7 * 60 * 1000
 const CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 512 * 1024 * 1024
 const CRIMINAL_TRANSCRIBE_REQUEST_TIMEOUT_MS = 16 * 60 * 1000
 const MAX_IN_MEMORY_CONVERTED_FILES = 8
+const ONCUE_XML_ENABLED_KEY = 'ta_oncue_xml_enabled'
 const MEMORY_LIMIT_KEY = 'ta_memory_limit_mb'
 const DEFAULT_MEMORY_LIMIT_MB = 1024
 const MIN_MEMORY_LIMIT_MB = 256
@@ -339,9 +340,9 @@ interface DashboardContextValue {
   activeMediaKey: string | null
   setActiveMediaKey: (key: string | null) => void
 
-  // App variant
-  appVariant: 'oncue' | 'criminal'
-  variantResolved: boolean
+  // Settings
+  oncueXmlEnabled: boolean
+  setOncueXmlEnabled: (value: boolean) => void
   memoryLimitMB: number
   setMemoryLimitMB: (value: number) => void
 
@@ -371,8 +372,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [recentLoading, setRecentLoading] = useState(true)
 
   const [activeMediaKey, setActiveMediaKey] = useState<string | null>(null)
-  const [appVariant, setAppVariant] = useState<'oncue' | 'criminal'>('oncue')
-  const [variantResolved, setVariantResolved] = useState(false)
+  const [oncueXmlEnabled, setOncueXmlEnabledState] = useState(false)
   const [memoryLimitMB, setMemoryLimitMBState] = useState<number>(DEFAULT_MEMORY_LIMIT_MB)
 
   const [jobs, setJobs] = useState<JobRecord[]>([])
@@ -401,20 +401,23 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     setJobs(next)
   }, [])
 
-  // Fetch app config
+  // Read OnCue XML setting from localStorage
   useEffect(() => {
-    fetch('/api/config')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.variant === 'criminal' || data.variant === 'oncue') {
-          setAppVariant(data.variant)
-        }
-        setVariantResolved(true)
-      })
-      .catch(() => {
-        setAppVariant('oncue')
-        setVariantResolved(true)
-      })
+    try {
+      const stored = localStorage.getItem(ONCUE_XML_ENABLED_KEY)
+      if (stored === 'true') setOncueXmlEnabledState(true)
+    } catch {
+      // Ignore localStorage errors
+    }
+  }, [])
+
+  const setOncueXmlEnabled = useCallback((value: boolean) => {
+    setOncueXmlEnabledState(value)
+    try {
+      localStorage.setItem(ONCUE_XML_ENABLED_KEY, value ? 'true' : 'false')
+    } catch {
+      // Ignore localStorage errors
+    }
   }, [])
 
   useEffect(() => {
@@ -1601,13 +1604,6 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     return jobs.filter((job) => !isTerminalStatus(job.status)).length
   }, [jobs])
 
-  // Initial load - only after variant is resolved
-  useEffect(() => {
-    if (!variantResolved) return
-    refreshCases()
-    refreshRecentTranscripts()
-  }, [variantResolved, refreshCases, refreshRecentTranscripts])
-
   return (
     <DashboardContext.Provider
       value={{
@@ -1620,8 +1616,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         refreshRecentTranscripts,
         activeMediaKey,
         setActiveMediaKey,
-        appVariant,
-        variantResolved,
+        oncueXmlEnabled,
+        setOncueXmlEnabled,
         memoryLimitMB,
         setMemoryLimitMB,
         jobs,

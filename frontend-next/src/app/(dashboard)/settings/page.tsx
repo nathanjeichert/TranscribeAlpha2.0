@@ -32,7 +32,7 @@ function formatCacheCapGb(value: number): string {
 }
 
 export default function SettingsPage() {
-  const { appVariant, memoryLimitMB, setMemoryLimitMB } = useDashboard()
+  const { oncueXmlEnabled, setOncueXmlEnabled, memoryLimitMB, setMemoryLimitMB } = useDashboard()
   const [currentUserName] = useState(() => getCurrentUser()?.username || '')
 
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
@@ -120,15 +120,6 @@ export default function SettingsPage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Application</h2>
           <div className="space-y-4">
-            <div className="flex items-center justify-between py-3 border-b border-gray-100">
-              <div>
-                <p className="font-medium text-gray-900">App Variant</p>
-                <p className="text-sm text-gray-500">Primary export emphasis</p>
-              </div>
-              <span className="px-3 py-1 bg-primary-100 text-primary-700 rounded-full text-sm font-medium capitalize">
-                {appVariant}
-              </span>
-            </div>
             <div className="flex items-center justify-between py-3 border-b border-gray-100">
               <div>
                 <p className="font-medium text-gray-900">Version</p>
@@ -292,6 +283,26 @@ export default function SettingsPage() {
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Export Formats</h2>
+          <div className="flex items-center justify-between py-3 mb-4 border-b border-gray-100">
+            <div>
+              <p className="font-medium text-gray-900">Enable OnCue XML Export</p>
+              <p className="text-sm text-gray-500">Show the &ldquo;Export XML&rdquo; button in the editor for OnCue-compatible XML downloads</p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={oncueXmlEnabled}
+              onClick={() => setOncueXmlEnabled(!oncueXmlEnabled)}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                oncueXmlEnabled ? 'bg-primary-600' : 'bg-gray-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  oncueXmlEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="flex items-center gap-3 mb-2">

@@ -1,17 +1,15 @@
 steps:
-  # Build the container image for Criminal (DA/PD) variant
+  # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
-      - '--build-arg'
-      - 'APP_VARIANT=criminal'
       - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-criminal:$COMMIT_SHA'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA'
       - '.'
 
   # Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-criminal:$COMMIT_SHA']
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA']
 
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -21,7 +19,7 @@ steps:
       - 'deploy'
       - 'transcribealpha-criminal'
       - '--image'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-criminal:$COMMIT_SHA'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA'
       - '--region'
       - 'us-central1'
       - '--platform'
@@ -39,11 +37,11 @@ steps:
       - '8080'
       - '--use-http2'
       - '--set-env-vars'
-      - 'APP_VARIANT=criminal,ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},GEMINI_MODEL_NAME=${_GEMINI_MODEL_NAME},JWT_SECRET_KEY=${_JWT_SECRET_KEY},REV_AI_API_KEY=${_REV_AI_API_KEY},ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
+      - 'ASSEMBLYAI_API_KEY=${_ASSEMBLYAI_API_KEY},GEMINI_API_KEY=${_GEMINI_API_KEY},GEMINI_MODEL_NAME=${_GEMINI_MODEL_NAME},JWT_SECRET_KEY=${_JWT_SECRET_KEY},REV_AI_API_KEY=${_REV_AI_API_KEY},ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}'
 
 # Store images in Google Artifact Registry
 images:
-  - us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app-criminal:$COMMIT_SHA
+  - us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA
 
 # Substitution variables (set these in Cloud Build trigger)
 substitutions:

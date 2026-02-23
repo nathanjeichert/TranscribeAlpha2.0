@@ -20,9 +20,9 @@ except ImportError:
     from auth import get_current_user
 
 try:
-    from ..config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
+    from ..config import DEFAULT_LINES_PER_PAGE
 except ImportError:
-    from config import DEFAULT_LINES_PER_PAGE, APP_VARIANT
+    from config import DEFAULT_LINES_PER_PAGE
 
 try:
     from ..gemini import run_gemini_edit, transcribe_with_gemini
@@ -141,10 +141,9 @@ def _register_resync_media(path: str, media_type: str, filename: str) -> str:
 
 @router.get("/api/config")
 async def get_app_config():
-    """Return app configuration including variant and enabled export formats."""
+    """Return app configuration including enabled export formats."""
     return JSONResponse(
         {
-            "variant": APP_VARIANT,
             "features": {
                 "oncue_xml": True,
                 "viewer_html": True,
@@ -603,7 +602,6 @@ async def transcribe(
         media_filename = resolve_media_filename(title_data, None, fallback=display_filename or "media.mp4")
         transcript_data.update(
             build_variant_exports(
-                APP_VARIANT,
                 line_payloads,
                 title_data,
                 duration_seconds or 0,
@@ -760,7 +758,6 @@ async def resync_transcript(
             fallback=media_file.filename or "media.mp4",
         )
         exports = build_variant_exports(
-            APP_VARIANT,
             new_line_entries,
             title_data,
             audio_duration,
@@ -914,7 +911,6 @@ async def gemini_refine_local(
             fallback=media_file.filename or "media.mp4",
         )
         exports = build_variant_exports(
-            APP_VARIANT,
             updated_lines,
             title_data,
             normalized_duration,

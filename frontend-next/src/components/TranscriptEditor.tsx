@@ -73,7 +73,7 @@ interface TranscriptEditorProps {
   docxBase64?: string | null
   xmlBase64?: string | null
   viewerHtmlBase64?: string | null
-  appVariant?: 'oncue' | 'criminal'
+  oncueXmlEnabled?: boolean
   onDownload: (base64Data: string, filename: string, mimeType: string) => void
   buildFilename: (baseName: string, extension: string) => string
   onSessionChange: (session: EditorSessionResponse) => void
@@ -302,7 +302,7 @@ export default function TranscriptEditor({
   docxBase64,
   xmlBase64,
   viewerHtmlBase64,
-  appVariant = 'oncue',
+  oncueXmlEnabled = false,
   onDownload,
   buildFilename,
   onSessionChange,
@@ -1348,21 +1348,20 @@ export default function TranscriptEditor({
             >
               Export PDF
             </button>
-            {appVariant === 'oncue' ? (
+            <button
+              className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
+              onClick={handleDownloadViewer}
+              disabled={!activeMediaKey}
+            >
+              Export Player
+            </button>
+            {oncueXmlEnabled && (
               <button
                 className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
                 onClick={handleDownloadXml}
                 disabled={!activeMediaKey}
               >
                 Export XML
-              </button>
-            ) : (
-              <button
-                className="px-3 py-1.5 rounded-lg border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 text-sm font-medium disabled:opacity-40"
-                onClick={handleDownloadViewer}
-                disabled={!activeMediaKey}
-              >
-                Export Player
               </button>
             )}
             <button

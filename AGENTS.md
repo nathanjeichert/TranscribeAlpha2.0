@@ -16,24 +16,13 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 | Deployment | Google Cloud Run (backend proxy) |
 | HTTP Server | Hypercorn (HTTP/2 support) |
 
-## App Variants
+## Export Formats
 
-This codebase supports **two deployment variants** controlled by the `APP_VARIANT` environment variable:
+All transcripts generate three export formats: PDF, OnCue XML, and HTML Viewer.
 
-| Variant | Value | Export Formats | Target Users |
-|---------|-------|----------------|--------------|
-| **OnCue** | `oncue` (default) | PDF + OnCue XML + HTML Viewer | Legal software integration |
-| **Criminal** | `criminal` | PDF + HTML Viewer + OnCue XML | DA/PD offices |
-
-**What differs between variants:**
-- Export action priority/labeling (`oncue` emphasizes XML first; `criminal` emphasizes HTML viewer first)
-
-**What stays the same:**
-- All features (transcription, editor, Gemini refinement, Rev AI resync, clips, cases)
-- Local workspace + IndexedDB persistence model
-- PDF export formatting
-- Branding ("TranscribeAlpha")
-- Lines per page (25)
+- **PDF** and **HTML Viewer** exports are always visible in the editor toolbar.
+- **OnCue XML** export is gated by a user setting ("Enable OnCue XML Export") in Settings, off by default. The XML is always generated server-side regardless of this setting, so enabling it is retroactive for existing transcripts.
+- The setting is stored in `localStorage` (`ta_oncue_xml_enabled`) and exposed via `DashboardContext`.
 
 ## Branch & Release Workflow
 
@@ -56,7 +45,7 @@ Agent commit/PR rules:
 TranscribeAlpha/
 ├── backend/                    # Python backend (FastAPI)
 │   ├── server.py              # FastAPI app wiring (routers, middleware, static files)
-│   ├── config.py              # Env-driven constants (CORS, APP_VARIANT, environment)
+│   ├── config.py              # Env-driven constants (CORS, environment)
 │   ├── models.py              # Pydantic models (TranscriptTurn, WordTimestamp, Gemini structs)
 │   ├── transcript_formatting.py # PDF/XML generation + line timing helpers
 │   ├── transcript_utils.py    # Session serialization + viewer HTML generation
@@ -67,7 +56,7 @@ TranscribeAlpha/
 │   │   ├── auth.py            # Auth endpoints
 │   │   ├── transcripts.py     # Stateless ASR/refine/export/resync endpoints
 │   │   └── health.py          # Health + cleanup endpoints
-│   ├── viewer/                # HTML viewer module (shared by both variants)
+│   ├── viewer/                # HTML viewer module
 │   │   ├── __init__.py        # render_viewer_html() function
 │   │   └── template.html      # Standalone HTML viewer template
 │   ├── transcriber.py         # AssemblyAI integration + media probing
@@ -109,43 +98,16 @@ TranscribeAlpha/
 │   └── run_cloudrun_local.sh # Build/run local container with Cloud Run-like settings
 │
 ├── main.py                    # Entry point (Hypercorn server)
-├── Dockerfile                 # Multi-stage build (accepts APP_VARIANT build arg)
-├── cloudbuild-oncue.yaml      # Cloud Build for oncue variant
-├── cloudbuild-criminal.yaml   # Cloud Build for criminal variant
+├── Dockerfile                 # Multi-stage build
+├── cloudbuild-criminal.yaml   # Cloud Build config
 └── AGENTS.md                  # This file
 ```
 
 ## Key Design Decisions
 
-### App Variant System
+### HTML Viewer
 
-The variant is determined at both build-time and runtime:
-
-**Dockerfile:**
-```dockerfile
-ARG APP_VARIANT=oncue
-ENV APP_VARIANT=${APP_VARIANT}
-```
-
-**config.py:**
-```python
-APP_VARIANT = os.getenv("APP_VARIANT", "oncue")
-```
-
-**API export logic (transcripts.py):**
-```python
-# Always generate both export formats
-transcript_data["oncue_xml_base64"] = ...
-transcript_data["viewer_html_base64"] = ...
-```
-
-**Frontend detection:**
-- Frontend fetches `/api/config` on mount to determine variant
-- Uses variant only to prioritize export actions/labels in UI
-
-### HTML Viewer (Shared)
-
-The HTML viewer (`backend/viewer/template.html`) is designed to match PDF transcript formatting for both variants:
+The HTML viewer (`backend/viewer/template.html`) is designed to match PDF transcript formatting:
 - Font: Courier New 12pt
 - Line spacing: 2.0 (double-spaced)
 - First-line indent: 1 inch for speaker lines
@@ -258,7 +220,7 @@ except ImportError:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/config` | GET | Returns app variant and feature flags |
+| `/api/config` | GET | Returns enabled feature flags |
 | `/api/viewer-template` | GET | Returns standalone HTML viewer template |
 | `/api/convert` | POST | Stateless ffmpeg conversion to browser-playable media |
 | `/api/format-pdf` | POST | Stateless PDF regeneration from line entries |
@@ -303,7 +265,6 @@ Before any refactor, verify:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `APP_VARIANT` | No | `oncue` (default) or `criminal` |
 | `ASSEMBLYAI_API_KEY` | Yes* | AssemblyAI transcription |
 | `GEMINI_API_KEY` | Yes* | Gemini transcription (alt: `GOOGLE_API_KEY`) |
 | `REV_AI_API_KEY` | Recommended | Forced alignment for accurate timestamps |
@@ -316,16 +277,15 @@ Before any refactor, verify:
 
 ## Deployment
 
-This app is designed for **Google Cloud Run** with two separate deployments from the same codebase.
+This app is designed for **Google Cloud Run**.
 
-### Two Cloud Build Triggers
+### Cloud Build
 
-Set up two triggers in Google Cloud Console, each pointing to a different cloudbuild file:
+A single Cloud Build trigger deploys from the `main` branch using `cloudbuild-criminal.yaml`:
 
-| Trigger | Cloudbuild File | Service Name | APP_VARIANT |
-|---------|-----------------|--------------|-------------|
-| OnCue | `cloudbuild-oncue.yaml` | `transcribealpha-assemblyai` | `oncue` |
-| Criminal | `cloudbuild-criminal.yaml` | `transcribealpha-criminal` | `criminal` |
+| Cloudbuild File | Service Name |
+|-----------------|--------------|
+| `cloudbuild-criminal.yaml` | `transcribealpha-criminal` |
 
 Important trigger configuration:
 - Restrict trigger branch filters to `^main$`.
@@ -334,11 +294,6 @@ Important trigger configuration:
 ### Manual Deployment
 
 ```bash
-# Deploy oncue variant
-gcloud builds submit --config cloudbuild-oncue.yaml \
-  --substitutions=_ASSEMBLYAI_API_KEY=your_key
-
-# Deploy criminal variant
 gcloud builds submit --config cloudbuild-criminal.yaml \
   --substitutions=_ASSEMBLYAI_API_KEY=your_key
 ```
@@ -349,7 +304,7 @@ Preferred one-command path:
 
 ```bash
 cp .env.cloudrun.example .env.cloudrun.local
-./scripts/run_cloudrun_local.sh oncue
+./scripts/run_cloudrun_local.sh
 ```
 
 This helper script:
@@ -360,15 +315,14 @@ This helper script:
 Manual fallback:
 
 ```bash
-docker build --build-arg APP_VARIANT=oncue -t transcribealpha-oncue .
+docker build -t transcribealpha .
 docker run --rm -it -p 8080:8080 \
   --cpus=1 --memory=2g \
-  -e APP_VARIANT=oncue \
   -e ENVIRONMENT=production \
   -e PORT=8080 \
   -e HOST=0.0.0.0 \
   --env-file .env.cloudrun.local \
-  transcribealpha-oncue
+  transcribealpha
 ```
 
 ## Common Tasks
@@ -396,14 +350,6 @@ docker run --rm -it -p 8080:8080 \
 - Edit files in `frontend-next/src/components/`
 - Run `npm run build` in `frontend-next/` to regenerate static output
 
-### Add Variant-Specific Logic
-```python
-from config import APP_VARIANT
-
-# Keep variant branching limited to export emphasis/default UI ordering.
-primary_export = "xml" if APP_VARIANT == "oncue" else "viewer"
-```
-
 ### Add User Management Script
 - See existing scripts in `scripts/` for pattern
 - Use `gcloud secrets` for Secret Manager operations
@@ -417,19 +363,19 @@ primary_export = "xml" if APP_VARIANT == "oncue" else "viewer"
 | CORS errors | Check `ENVIRONMENT` variable |
 | Auth failures | Verify `JWT_SECRET_KEY` and Secret Manager access |
 | Large file upload fails | Ensure HTTP/2 is enabled |
-| Wrong export priority | Check `APP_VARIANT` env var and `/api/config` response |
+| OnCue XML not showing | Check "Enable OnCue XML Export" setting in Settings page |
 
 ## Testing Checklist
 
 After any change, verify:
 1. `curl https://your-app.run.app/health` returns 200
-2. `curl https://your-app.run.app/api/config` returns correct variant
+2. `curl https://your-app.run.app/api/config` returns feature flags
 3. File upload completes without error
-4. Transcript download works (PDF + XML + HTML viewer for both variants)
+4. Transcript download works (PDF + HTML viewer; XML when setting is enabled)
 5. Editor loads and saves correctly
 6. Media playback functions
 7. Workspace gate appears when no local workspace is configured
 
 ---
 
-*Last updated: 2026-02-22*
+*Last updated: 2026-02-23*

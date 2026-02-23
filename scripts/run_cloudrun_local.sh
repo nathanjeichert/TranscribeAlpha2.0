@@ -2,13 +2,7 @@
 
 set -euo pipefail
 
-VARIANT="${1:-oncue}"
-ENV_FILE_INPUT="${2:-.env.cloudrun.local}"
-
-if [[ "${VARIANT}" != "oncue" && "${VARIANT}" != "criminal" ]]; then
-  echo "Usage: $0 [oncue|criminal] [env_file]"
-  exit 1
-fi
+ENV_FILE_INPUT="${1:-.env.cloudrun.local}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -19,8 +13,8 @@ else
   ENV_FILE="${REPO_ROOT}/${ENV_FILE_INPUT}"
 fi
 
-IMAGE_TAG="transcribealpha-local:${VARIANT}"
-CONTAINER_NAME="transcribealpha-local-${VARIANT}"
+IMAGE_TAG="transcribealpha-local:latest"
+CONTAINER_NAME="transcribealpha-local"
 PORT="${PORT:-8080}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 DEFAULT_ADC_FILE="${HOME}/.config/gcloud/application_default_credentials.json"
@@ -48,10 +42,9 @@ else
   echo "If auth login fails, run: gcloud auth application-default login"
 fi
 
-echo "Building ${IMAGE_TAG} (variant=${VARIANT}, platform=${DOCKER_PLATFORM})..."
+echo "Building ${IMAGE_TAG} (platform=${DOCKER_PLATFORM})..."
 docker build \
   --platform "${DOCKER_PLATFORM}" \
-  --build-arg "APP_VARIANT=${VARIANT}" \
   -t "${IMAGE_TAG}" \
   "${REPO_ROOT}"
 
@@ -65,7 +58,6 @@ docker run --rm -it \
   --memory="2g" \
   -p "${PORT}:8080" \
   --env-file "${ENV_FILE}" \
-  -e "APP_VARIANT=${VARIANT}" \
   -e "ENVIRONMENT=production" \
   -e "PORT=8080" \
   -e "HOST=0.0.0.0" \
