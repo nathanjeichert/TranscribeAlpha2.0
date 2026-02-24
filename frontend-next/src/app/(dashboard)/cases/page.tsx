@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
+import { type TranscriptListItem } from '@/utils/helpers'
 import {
   createCase as localCreateCase,
   listUncategorizedTranscripts as localListUncategorized,
@@ -13,13 +14,6 @@ import {
   moveTranscriptToCase as localMoveTranscriptToCase,
   type TranscriptSummary,
 } from '@/lib/storage'
-
-interface TranscriptListItem {
-  media_key: string
-  title_label: string
-  updated_at?: string | null
-  line_count?: number
-}
 
 export default function CasesPage() {
   const router = useRouter()

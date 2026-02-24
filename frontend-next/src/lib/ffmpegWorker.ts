@@ -2,6 +2,7 @@ import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
 import { openDB } from './idb'
 import { readBinaryFile, writeBinaryFile } from './storage'
+import { getFileExtension } from '@/utils/helpers'
 
 export type CodecInfo = {
   isStandard: boolean
@@ -147,12 +148,6 @@ function getResetAfterExtractBytes(): number {
 
 export function setFFmpegMemoryLimitMB(limitMb: number): void {
   runtimeMemoryLimitMB = clampMemoryLimitMB(limitMb)
-}
-
-function getFileExtension(filename: string): string {
-  const dotIndex = filename.lastIndexOf('.')
-  if (dotIndex === -1) return ''
-  return filename.slice(dotIndex + 1).toLowerCase()
 }
 
 function replaceExtension(filename: string, extension: string): string {

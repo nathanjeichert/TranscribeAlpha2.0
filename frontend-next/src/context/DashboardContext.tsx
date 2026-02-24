@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react'
 import { getAuthHeaders, getCurrentUser } from '@/utils/auth'
+import { nowIso, sleep, getFileExtension, type TranscriptListItem } from '@/utils/helpers'
 import {
   deleteFile,
   listCases as localListCases,
@@ -37,14 +38,6 @@ interface CaseMeta {
   created_at: string
   updated_at: string
   transcript_count: number
-}
-
-interface TranscriptListItem {
-  media_key: string
-  title_label: string
-  updated_at?: string | null
-  line_count?: number
-  expires_at?: string | null
 }
 
 export type JobKind = 'transcription' | 'conversion' | 'audio_extraction'
@@ -151,18 +144,8 @@ type MemoryUsage = {
   inFlightUploads: number
 }
 
-function nowIso(): string {
-  return new Date().toISOString()
-}
-
-function isTerminalStatus(status: JobStatus): boolean {
+export function isTerminalStatus(status: JobStatus): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'canceled'
-}
-
-function getFileExtension(filename: string): string {
-  const dot = filename.lastIndexOf('.')
-  if (dot === -1) return ''
-  return filename.slice(dot + 1).toLowerCase()
 }
 
 function isLikelyVideoSource(file: File): boolean {
@@ -181,18 +164,6 @@ function isLikelyCompressedAudioSource(file: File): boolean {
 
 function getString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
-}
-
-function getFilenameExtension(filename: string): string {
-  const dot = filename.lastIndexOf('.')
-  if (dot === -1 || dot === filename.length - 1) return 'bin'
-  return filename.slice(dot + 1).toLowerCase()
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms)
-  })
 }
 
 function clampMemoryLimitMB(value: number): number {
@@ -225,7 +196,7 @@ function normalizeChannelLabels(value: unknown): Record<number, string> | undefi
 }
 
 function buildConvertedOutputPath(jobId: string, convertedFile: File): string {
-  const ext = getFilenameExtension(convertedFile.name)
+  const ext = getFileExtension(convertedFile.name) || 'bin'
   return `cache/converted-jobs/${jobId}.${ext}`
 }
 

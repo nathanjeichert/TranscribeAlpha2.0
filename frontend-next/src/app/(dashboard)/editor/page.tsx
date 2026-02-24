@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboard } from '@/context/DashboardContext'
+import { downloadBase64 } from '@/utils/helpers'
 import TranscriptEditor, { EditorSessionResponse, EditorSaveResponse } from '@/components/TranscriptEditor'
 import MediaMissingBanner from '@/components/MediaMissingBanner'
 import { routes } from '@/utils/routes'
@@ -227,28 +228,6 @@ export default function EditorPage() {
     }
   }, [loadTranscript, mediaContentType, mediaFilename, mediaKey, refreshRecentTranscripts])
 
-  const downloadFile = (base64Data: string, filename: string, mimeType: string) => {
-    const byteCharacters = atob(base64Data)
-    const byteNumbers = new Array(byteCharacters.length)
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i)
-    }
-    const byteArray = new Uint8Array(byteNumbers)
-    const blob = new Blob([byteArray], { type: mimeType })
-
-    const link = document.createElement('a')
-    const blobUrl = URL.createObjectURL(blob)
-    link.href = blobUrl
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    // Defer cleanup so the browser has time to initiate the download
-    setTimeout(() => {
-      document.body.removeChild(link)
-      URL.revokeObjectURL(blobUrl)
-    }, 1500)
-  }
-
   const generateFilename = (baseName: string, extension: string) => {
     const caseName = transcriptData?.title_data?.CASE_NAME || ''
     const date = transcriptData?.title_data?.DATE || ''
@@ -336,7 +315,7 @@ export default function EditorPage() {
         xmlBase64={transcriptData?.oncue_xml_base64}
         viewerHtmlBase64={transcriptData?.viewer_html_base64}
         oncueXmlEnabled={oncueXmlEnabled}
-        onDownload={downloadFile}
+        onDownload={downloadBase64}
         buildFilename={generateFilename}
         onSessionChange={handleSessionChange}
         onSaveComplete={handleSaveComplete}

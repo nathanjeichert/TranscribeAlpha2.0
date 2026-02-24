@@ -5,6 +5,7 @@ import {
   writeBinaryFile,
   writeJSON,
 } from './storage'
+import { nowIso } from '@/utils/helpers'
 
 const MEDIA_CACHE_INDEX_PATH = 'cache/playback/index.json'
 const MEDIA_CACHE_VERSION = 1
@@ -25,10 +26,6 @@ interface MediaCacheIndex {
 }
 
 let indexMutationQueue: Promise<void> = Promise.resolve()
-
-function nowIso(): string {
-  return new Date().toISOString()
-}
 
 function getSafeFilenameExtension(filename: string): string {
   const dot = filename.lastIndexOf('.')

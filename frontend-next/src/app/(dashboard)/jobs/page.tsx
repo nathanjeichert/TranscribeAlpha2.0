@@ -2,7 +2,8 @@
 
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
-import { useDashboard, type JobRecord, type JobKind, type JobStatus } from '@/context/DashboardContext'
+import { useDashboard, isTerminalStatus, type JobRecord, type JobKind, type JobStatus } from '@/context/DashboardContext'
+import { downloadFileBlob } from '@/utils/helpers'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import { useRouter } from 'next/navigation'
@@ -10,9 +11,6 @@ import { useRouter } from 'next/navigation'
 type KindFilter = 'all' | JobKind
 type StatusFilter = 'all' | 'active' | 'failed'
 
-function isTerminal(status: JobStatus): boolean {
-  return status === 'succeeded' || status === 'failed' || status === 'canceled'
-}
 
 function statusLabel(job: JobRecord): string {
   if (job.kind === 'conversion') {
@@ -50,17 +48,6 @@ function formatTime(iso: string): string {
   }
 }
 
-function downloadFile(file: File): void {
-  const url = URL.createObjectURL(file)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.name
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-}
-
 export default function JobsPage() {
   const router = useRouter()
   const {
@@ -85,14 +72,14 @@ export default function JobsPage() {
   const filtered = useMemo(() => {
     return sorted.filter((job) => {
       if (kindFilter !== 'all' && job.kind !== kindFilter) return false
-      if (statusFilter === 'active') return !isTerminal(job.status)
+      if (statusFilter === 'active') return !isTerminalStatus(job.status)
       if (statusFilter === 'failed') return job.status === 'failed'
       return true
     })
   }, [kindFilter, sorted, statusFilter])
 
-  const activeJobs = useMemo(() => filtered.filter((job) => !isTerminal(job.status)), [filtered])
-  const recentJobs = useMemo(() => filtered.filter((job) => isTerminal(job.status)), [filtered])
+  const activeJobs = useMemo(() => filtered.filter((job) => !isTerminalStatus(job.status)), [filtered])
+  const recentJobs = useMemo(() => filtered.filter((job) => isTerminalStatus(job.status)), [filtered])
 
   const failedTranscriptions = useMemo(() => {
     return jobs.filter((job) => job.kind === 'transcription' && (job.status === 'failed' || job.status === 'canceled'))
@@ -103,7 +90,7 @@ export default function JobsPage() {
   }, [jobs])
 
   const terminalJobCount = useMemo(() => {
-    return jobs.filter((job) => isTerminal(job.status)).length
+    return jobs.filter((job) => isTerminalStatus(job.status)).length
   }, [jobs])
 
   return (
@@ -236,7 +223,7 @@ export default function JobsPage() {
                       onClick={async () => {
                         const file = converted || (await resolveConvertedFile(job.id))
                         if (!file) return
-                        downloadFile(file)
+                        downloadFileBlob(file)
                       }}
                       className="btn-outline px-3 py-2 text-sm"
                     >
@@ -314,7 +301,7 @@ export default function JobsPage() {
                       onClick={async () => {
                         const file = converted || (await resolveConvertedFile(job.id))
                         if (!file) return
-                        downloadFile(file)
+                        downloadFileBlob(file)
                       }}
                       className="btn-outline px-3 py-2 text-sm"
                     >
