@@ -147,6 +147,169 @@ export function setFFmpegMemoryLimitMB(limitMb: number): void {
   runtimeMemoryLimitMB = clampMemoryLimitMB(limitMb)
 }
 
+// ---------------------------------------------------------------------------
+// Shared operation runner & retry helpers
+// ---------------------------------------------------------------------------
+
+type OperationAttempt = {
+  label: string
+  args: string[]
+  outputName: string
+  /** Extra metadata the caller can attach and read back in buildResultFile. */
+  [key: string]: unknown
+}
+
+type OperationConfig = {
+  /** The source File (after any wav repair). */
+  sourceFile: File
+  /** Progress callback to wire up during the operation. */
+  onProgress?: ProgressCallback | null
+  /** Virtual-FS input filename (e.g. "input.wav"). */
+  inputName: string
+  /** Whether to use WORKERFS for large files. */
+  useWorkerFS: boolean
+  /** Mount point for WORKERFS. */
+  workerFSMount: string
+  /** Full path inside the WORKERFS mount. */
+  workerFSInputPath: string
+  /** Factory returning the ordered list of ffmpeg exec attempts.
+   *  Called after ffmpeg is loaded and prepareAttempts (if any) has run. */
+  getAttempts: () => OperationAttempt[]
+  /** All output filenames that should be cleaned up in finally. */
+  outputFilesToClean: string[]
+  /** Builds the result File from the raw output bytes of a successful attempt. */
+  buildResultFile: (bytes: Uint8Array, attempt: OperationAttempt) => File
+  /** Optional: called to prepare state (e.g. fetch encoder support) before building attempts. Runs after ffmpeg is loaded. */
+  prepareAttempts?: (ffmpeg: FFmpeg) => Promise<void>
+  /** Optional: transforms the final aggregated error before throwing. */
+  normalizeLastError?: (error: Error) => Error
+}
+
+/**
+ * Runs an FFmpeg operation with shared input-mounting, attempt-loop,
+ * progress-wiring, cancellation-checking, and cleanup logic.
+ */
+async function runFFmpegOperation(config: OperationConfig): Promise<File> {
+  const ffmpeg = await getFFmpeg()
+
+  if (config.prepareAttempts) {
+    await config.prepareAttempts(ffmpeg)
+  }
+
+  activeProgressCallback = config.onProgress ?? null
+  let mounted = false
+
+  try {
+    if (config.useWorkerFS) {
+      await ffmpeg.mount('WORKERFS' as never, { files: [config.sourceFile] } as never, config.workerFSMount)
+      mounted = true
+    } else {
+      await ffmpeg.writeFile(config.inputName, await fetchFile(config.sourceFile))
+    }
+
+    const attempts = config.getAttempts()
+    let lastError: Error | null = null
+
+    for (const attempt of attempts) {
+      await removeVirtualFile(ffmpeg, attempt.outputName)
+      try {
+        const exitCode = await ffmpeg.exec(attempt.args)
+        if (exitCode !== 0) {
+          throw new Error(`Operation failed (${attempt.label})`)
+        }
+        const outputData = await ffmpeg.readFile(attempt.outputName)
+        const bytes = toUint8Array(outputData)
+        if (bytes.byteLength === 0) {
+          throw new Error(`Operation produced empty output (${attempt.label})`)
+        }
+        return config.buildResultFile(bytes, attempt)
+      } catch (attemptError) {
+        if (terminatedByUser) {
+          terminatedByUser = false
+          throw new FFmpegCanceledError()
+        }
+        lastError = normalizeError(attemptError)
+      }
+    }
+
+    if (lastError) {
+      throw config.normalizeLastError ? config.normalizeLastError(lastError) : lastError
+    }
+    throw new Error('Operation failed.')
+  } finally {
+    activeProgressCallback = null
+    if (mounted) {
+      try {
+        await ffmpeg.unmount(config.workerFSMount)
+      } catch {
+        // Ignore unmount errors.
+      }
+    } else {
+      await removeVirtualFile(ffmpeg, config.inputName)
+    }
+    for (const outputName of config.outputFilesToClean) {
+      await removeVirtualFile(ffmpeg, outputName)
+    }
+  }
+}
+
+type RetryConfig<T> = {
+  /** The operation to attempt (will be called up to 2 times). */
+  operation: () => Promise<T>
+  /** Called on success (both first attempt and retry). */
+  onSuccess?: (result: T) => void
+  /** Inspects an error before deciding whether to retry or re-throw.
+   *  Throw inside this callback to abort immediately (e.g. for OOM).
+   *  Return normally to proceed with retry / final-throw logic. */
+  classifyError?: (error: Error) => void
+  /** Transforms the final error before re-throwing on the last attempt.
+   *  Only called when the retry also fails and classifyError did not throw. */
+  normalizeLastError?: (error: Error) => Error
+}
+
+/**
+ * Wraps an FFmpeg operation with retry-on-failure + runtime-reset logic.
+ * On first failure (that isn't a cancellation), resets the FFmpeg runtime
+ * and retries once. On second failure, throws the (optionally normalized) error.
+ */
+async function withRetryAndReset<T>(config: RetryConfig<T>): Promise<T> {
+  try {
+    const result = await config.operation()
+    config.onSuccess?.(result)
+    return result
+  } catch (firstError) {
+    if (firstError instanceof FFmpegCanceledError) throw firstError
+    if (terminatedByUser) {
+      terminatedByUser = false
+      throw new FFmpegCanceledError()
+    }
+
+    const normalized = normalizeError(firstError)
+    // classifyError may throw to abort (e.g. for OOM), or return to proceed with retry
+    config.classifyError?.(normalized)
+
+    resetFFmpegRuntime()
+
+    try {
+      const result = await config.operation()
+      config.onSuccess?.(result)
+      return result
+    } catch (secondError) {
+      if (secondError instanceof FFmpegCanceledError) throw secondError
+      if (terminatedByUser) {
+        terminatedByUser = false
+        throw new FFmpegCanceledError()
+      }
+
+      const finalError = normalizeError(secondError)
+      config.classifyError?.(finalError)
+      throw config.normalizeLastError ? config.normalizeLastError(finalError) : finalError
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 function replaceExtension(filename: string, extension: string): string {
   const dotIndex = filename.lastIndexOf('.')
   const base = dotIndex === -1 ? filename : filename.slice(0, dotIndex)
@@ -743,97 +906,44 @@ export async function convertToPlayable(
     const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
     const workerFSMount = '/convert-input'
     const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+    const inputName = `input.${inputExt}`
+    const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-    const runConversionAttempt = async (): Promise<File> => {
-      const ffmpeg = await getFFmpeg()
-      const encoderSupport = await getEncoderSupport(ffmpeg)
-      const inputName = `input.${inputExt}`
-      let mounted = false
+    let encoderSupport: EncoderSupport = { libopus: false, libmp3lame: false }
 
-      activeProgressCallback = onProgress ?? null
-
-      try {
-        if (useWorkerFS) {
-          await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
-          mounted = true
-        } else {
-          await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
-        }
-
-        let lastError: Error | null = null
-        const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
-        const attempts = buildConversionAttempts(sourceFile, effectiveInput, sourceCodec, encoderSupport)
-
-        for (const attempt of attempts) {
-          await removeVirtualFile(ffmpeg, attempt.outputName)
-          try {
-            const exitCode = await ffmpeg.exec(attempt.args)
-            if (exitCode !== 0) {
-              throw new Error(`Conversion failed (${attempt.label})`)
-            }
-
-            const outputData = await ffmpeg.readFile(attempt.outputName)
-            const bytes = toUint8Array(outputData)
-            if (bytes.byteLength === 0) {
-              throw new Error(`Conversion produced an empty output file (${attempt.label})`)
-            }
-
-            return new File([toBlobBuffer(bytes)], getConvertedFilename(file, attempt.outputExtension), {
-              type: attempt.outputMimeType || getMimeTypeFromFilename(attempt.outputName, file),
-            })
-          } catch (attemptError) {
-            if (terminatedByUser) {
-              terminatedByUser = false
-              throw new FFmpegCanceledError()
-            }
-            lastError = normalizeError(attemptError)
-          }
-        }
-
-        if (lastError) {
-          throw normalizeConversionError(lastError, sourceCodec)
-        }
-        throw new Error('Conversion failed.')
-      } finally {
-        activeProgressCallback = null
-        if (mounted) {
-          try {
-            await ffmpeg.unmount(workerFSMount)
-          } catch {
-            // Ignore unmount errors.
-          }
-        } else {
-          await removeVirtualFile(ffmpeg, inputName)
-        }
-        for (const outputName of ['output.wav', 'output.mp4', 'output.ogg', 'output.mp3', 'output-g729.ogg', 'output-g729.mp3', 'output-g729.wav']) {
-          await removeVirtualFile(ffmpeg, outputName)
-        }
-      }
-    }
-
-    try {
-      const converted = await runConversionAttempt()
-      maybeRecycleAfterConversion(sourceFile.size)
-      return converted
-    } catch (firstError) {
-      if (terminatedByUser) {
-        terminatedByUser = false
-        throw new FFmpegCanceledError()
-      }
-      resetFFmpegRuntime()
-      try {
-        const converted = await runConversionAttempt()
-        maybeRecycleAfterConversion(sourceFile.size)
-        return converted
-      } catch (secondError) {
-        if (terminatedByUser) {
-          terminatedByUser = false
-          throw new FFmpegCanceledError()
-        }
-        const normalized = normalizeConversionError(normalizeError(secondError), sourceCodec)
-        throw normalized
-      }
-    }
+    return withRetryAndReset<File>({
+      operation: () =>
+        runFFmpegOperation({
+          sourceFile,
+          onProgress,
+          inputName,
+          useWorkerFS,
+          workerFSMount,
+          workerFSInputPath,
+          prepareAttempts: async (ffmpeg) => {
+            encoderSupport = await getEncoderSupport(ffmpeg)
+          },
+          getAttempts: () =>
+            buildConversionAttempts(sourceFile, effectiveInput, sourceCodec, encoderSupport),
+          outputFilesToClean: [
+            'output.wav', 'output.mp4', 'output.ogg', 'output.mp3',
+            'output-g729.ogg', 'output-g729.mp3', 'output-g729.wav',
+          ],
+          buildResultFile: (bytes, attempt) =>
+            new File(
+              [toBlobBuffer(bytes)],
+              getConvertedFilename(file, (attempt as ConversionAttempt).outputExtension),
+              {
+                type:
+                  (attempt as ConversionAttempt).outputMimeType ||
+                  getMimeTypeFromFilename(attempt.outputName, file),
+              },
+            ),
+          normalizeLastError: (error) => normalizeConversionError(error, sourceCodec),
+        }),
+      onSuccess: () => maybeRecycleAfterConversion(sourceFile.size),
+      normalizeLastError: (error) => normalizeConversionError(error, sourceCodec),
+    })
   })
 }
 
@@ -1027,120 +1137,63 @@ export async function extractAudio(
     const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
     const workerFSMount = '/input'
     const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+    const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-    const runExtractionAttempt = async (): Promise<File> => {
-      const ffmpeg = await getFFmpeg()
-      activeProgressCallback = onProgress ?? null
-      let mounted = false
-      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
-      try {
-        if (useWorkerFS) {
-          await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
-          mounted = true
-        } else {
-          await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
-        }
-
-        const attempts: Array<{ label: string; args: string[] }> = [
-          {
-            label: 'libmp3lame',
-            args: [
-              '-i', effectiveInput,
-              '-map', '0:a:0?',
-              '-vn',
-              '-sn',
-              '-dn',
-              '-ac', '1',
-              '-ar', '16000',
-              '-c:a', 'libmp3lame',
-              '-b:a', '96k',
+    return withRetryAndReset<File>({
+      operation: () =>
+        runFFmpegOperation({
+          sourceFile,
+          onProgress,
+          inputName,
+          useWorkerFS,
+          workerFSMount,
+          workerFSInputPath,
+          getAttempts: () => [
+            {
+              label: 'libmp3lame',
               outputName,
-            ],
-          },
-          {
-            label: 'default-mp3',
-            args: [
-              '-i', effectiveInput,
-              '-map', '0:a:0?',
-              '-vn',
-              '-sn',
-              '-dn',
-              '-ac', '1',
-              '-ar', '16000',
-              '-b:a', '96k',
+              args: [
+                '-i', effectiveInput,
+                '-map', '0:a:0?',
+                '-vn', '-sn', '-dn',
+                '-ac', '1',
+                '-ar', '16000',
+                '-c:a', 'libmp3lame',
+                '-b:a', '96k',
+                outputName,
+              ],
+            },
+            {
+              label: 'default-mp3',
               outputName,
-            ],
-          },
-        ]
-
-        let lastError: Error | null = null
-        for (const attempt of attempts) {
-          await removeVirtualFile(ffmpeg, outputName)
-          try {
-            const exitCode = await ffmpeg.exec(attempt.args)
-            if (exitCode !== 0) {
-              throw new Error(`Audio extraction failed (${attempt.label})`)
-            }
-            const outputData = await ffmpeg.readFile(outputName)
-            const bytes = toUint8Array(outputData)
-            if (bytes.byteLength === 0) {
-              throw new Error(`Audio extraction produced empty output (${attempt.label})`)
-            }
-            return new File([toBlobBuffer(bytes)], replaceExtension(file.name, '_audio.mp3'), {
+              args: [
+                '-i', effectiveInput,
+                '-map', '0:a:0?',
+                '-vn', '-sn', '-dn',
+                '-ac', '1',
+                '-ar', '16000',
+                '-b:a', '96k',
+                outputName,
+              ],
+            },
+          ],
+          outputFilesToClean: [outputName],
+          buildResultFile: (bytes) =>
+            new File([toBlobBuffer(bytes)], replaceExtension(file.name, '_audio.mp3'), {
               type: 'audio/mpeg',
-            })
-          } catch (attemptError) {
-            if (terminatedByUser) {
-              terminatedByUser = false
-              throw new FFmpegCanceledError()
-            }
-            lastError = normalizeError(attemptError)
-          }
-        }
-
-        throw lastError ?? new Error('Audio extraction failed')
-      } finally {
-        activeProgressCallback = null
-        if (mounted) {
-          try { await ffmpeg.unmount(workerFSMount) } catch { /* ignore unmount errors */ }
-        } else {
-          await removeVirtualFile(ffmpeg, inputName)
-        }
-        await removeVirtualFile(ffmpeg, outputName)
-      }
-    }
-
-    try {
-      const extracted = await runExtractionAttempt()
-      if (sourceFile.size >= getResetAfterExtractBytes()) {
-        // Large jobs can leave wasm memory fragmented; recycle runtime between files.
-        resetFFmpegRuntime()
-      }
-      return extracted
-    } catch (firstError) {
-      if (firstError instanceof FFmpegCanceledError) throw firstError
-      const normalized = normalizeError(firstError)
-      if (isOutOfMemoryError(normalized)) {
-        throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
-      }
-
-      resetFFmpegRuntime()
-
-      try {
-        const extracted = await runExtractionAttempt()
+            }),
+        }),
+      onSuccess: () => {
         if (sourceFile.size >= getResetAfterExtractBytes()) {
           resetFFmpegRuntime()
         }
-        return extracted
-      } catch (secondError) {
-        if (secondError instanceof FFmpegCanceledError) throw secondError
-        const finalError = normalizeError(secondError)
-        if (isOutOfMemoryError(finalError)) {
+      },
+      classifyError: (error) => {
+        if (isOutOfMemoryError(error)) {
           throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
         }
-        throw finalError
-      }
-    }
+      },
+    })
   })
 }
 
@@ -1156,145 +1209,94 @@ export async function extractAudioStereo(
     const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
     const workerFSMount = '/input-stereo'
     const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+    const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-    const runExtractionAttempt = async (): Promise<File> => {
-      const ffmpeg = await getFFmpeg()
-      const encoderSupport = await getEncoderSupport(ffmpeg)
-      activeProgressCallback = onProgress ?? null
-      let mounted = false
-      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
+    let encoderSupport: EncoderSupport = { libopus: false, libmp3lame: false }
 
-      const attempts: Array<{ label: string; args: string[]; outputName: string; outputType: string }> = []
-      if (encoderSupport.libopus) {
-        attempts.push({
-          label: 'stereo-opus',
-          args: [
-            '-i', effectiveInput,
-            '-map', '0:a:0?',
-            '-vn',
-            '-sn',
-            '-dn',
-            '-c:a', 'libopus',
-            '-b:a', '32k',
-            '-ar', '8000',
-            'audio-stereo-output.ogg',
-          ],
-          outputName: 'audio-stereo-output.ogg',
-          outputType: 'audio/ogg',
-        })
-      }
-      if (encoderSupport.libmp3lame) {
-        attempts.push({
-          label: 'stereo-mp3',
-          args: [
-            '-i', effectiveInput,
-            '-map', '0:a:0?',
-            '-vn',
-            '-sn',
-            '-dn',
-            '-c:a', 'libmp3lame',
-            '-b:a', '64k',
-            '-ar', '8000',
-            'audio-stereo-output.mp3',
-          ],
-          outputName: 'audio-stereo-output.mp3',
-          outputType: 'audio/mpeg',
-        })
-      }
-      attempts.push({
-        label: 'stereo-pcm-fallback',
-        args: [
-          '-i', effectiveInput,
-          '-map', '0:a:0?',
-          '-vn',
-          '-sn',
-          '-dn',
-          '-acodec', 'pcm_s16le',
-          '-ar', '8000',
-          'audio-stereo-output.wav',
-        ],
-        outputName: 'audio-stereo-output.wav',
-        outputType: 'audio/wav',
-      })
-
-      try {
-        if (useWorkerFS) {
-          await ffmpeg.mount('WORKERFS' as never, { files: [sourceFile] } as never, workerFSMount)
-          mounted = true
-        } else {
-          await ffmpeg.writeFile(inputName, await fetchFile(sourceFile))
-        }
-
-        let lastError: Error | null = null
-        for (const attempt of attempts) {
-          await removeVirtualFile(ffmpeg, attempt.outputName)
-          try {
-            const exitCode = await ffmpeg.exec(attempt.args)
-            if (exitCode !== 0) {
-              throw new Error(`Stereo audio extraction failed (${attempt.label})`)
+    return withRetryAndReset<File>({
+      operation: () =>
+        runFFmpegOperation({
+          sourceFile,
+          onProgress,
+          inputName,
+          useWorkerFS,
+          workerFSMount,
+          workerFSInputPath,
+          prepareAttempts: async (ffmpeg) => {
+            encoderSupport = await getEncoderSupport(ffmpeg)
+          },
+          getAttempts: () => {
+            const attempts: OperationAttempt[] = []
+            if (encoderSupport.libopus) {
+              attempts.push({
+                label: 'stereo-opus',
+                outputName: 'audio-stereo-output.ogg',
+                outputType: 'audio/ogg',
+                args: [
+                  '-i', effectiveInput,
+                  '-map', '0:a:0?',
+                  '-vn', '-sn', '-dn',
+                  '-c:a', 'libopus',
+                  '-b:a', '32k',
+                  '-ar', '8000',
+                  'audio-stereo-output.ogg',
+                ],
+              })
             }
-            const outputData = await ffmpeg.readFile(attempt.outputName)
-            const bytes = toUint8Array(outputData)
-            if (bytes.byteLength === 0) {
-              throw new Error(`Stereo audio extraction produced empty output (${attempt.label})`)
+            if (encoderSupport.libmp3lame) {
+              attempts.push({
+                label: 'stereo-mp3',
+                outputName: 'audio-stereo-output.mp3',
+                outputType: 'audio/mpeg',
+                args: [
+                  '-i', effectiveInput,
+                  '-map', '0:a:0?',
+                  '-vn', '-sn', '-dn',
+                  '-c:a', 'libmp3lame',
+                  '-b:a', '64k',
+                  '-ar', '8000',
+                  'audio-stereo-output.mp3',
+                ],
+              })
             }
-            const ext = attempt.outputName.split('.').pop() || 'ogg'
-            return new File([toBlobBuffer(bytes)], replaceExtension(file.name, `_audio_stereo.${ext}`), {
-              type: attempt.outputType,
+            attempts.push({
+              label: 'stereo-pcm-fallback',
+              outputName: 'audio-stereo-output.wav',
+              outputType: 'audio/wav',
+              args: [
+                '-i', effectiveInput,
+                '-map', '0:a:0?',
+                '-vn', '-sn', '-dn',
+                '-acodec', 'pcm_s16le',
+                '-ar', '8000',
+                'audio-stereo-output.wav',
+              ],
             })
-          } catch (attemptError) {
-            if (terminatedByUser) {
-              terminatedByUser = false
-              throw new FFmpegCanceledError()
-            }
-            lastError = normalizeError(attemptError)
-          }
-        }
-
-        throw lastError ?? new Error('Stereo audio extraction failed')
-      } finally {
-        activeProgressCallback = null
-        if (mounted) {
-          try { await ffmpeg.unmount(workerFSMount) } catch { /* ignore unmount errors */ }
-        } else {
-          await removeVirtualFile(ffmpeg, inputName)
-        }
-        for (const outputName of ['audio-stereo-output.ogg', 'audio-stereo-output.mp3', 'audio-stereo-output.wav']) {
-          await removeVirtualFile(ffmpeg, outputName)
-        }
-      }
-    }
-
-    try {
-      const extracted = await runExtractionAttempt()
-      if (sourceFile.size >= getResetAfterExtractBytes()) {
-        resetFFmpegRuntime()
-      }
-      return extracted
-    } catch (firstError) {
-      if (firstError instanceof FFmpegCanceledError) throw firstError
-      const normalized = normalizeError(firstError)
-      if (isOutOfMemoryError(normalized)) {
-        throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
-      }
-
-      resetFFmpegRuntime()
-
-      try {
-        const extracted = await runExtractionAttempt()
+            return attempts
+          },
+          outputFilesToClean: [
+            'audio-stereo-output.ogg', 'audio-stereo-output.mp3', 'audio-stereo-output.wav',
+          ],
+          buildResultFile: (bytes, attempt) => {
+            const ext = attempt.outputName.split('.').pop() || 'ogg'
+            return new File(
+              [toBlobBuffer(bytes)],
+              replaceExtension(file.name, `_audio_stereo.${ext}`),
+              { type: (attempt.outputType as string) || 'audio/ogg' },
+            )
+          },
+        }),
+      onSuccess: () => {
         if (sourceFile.size >= getResetAfterExtractBytes()) {
           resetFFmpegRuntime()
         }
-        return extracted
-      } catch (secondError) {
-        if (secondError instanceof FFmpegCanceledError) throw secondError
-        const finalError = normalizeError(secondError)
-        if (isOutOfMemoryError(finalError)) {
+      },
+      classifyError: (error) => {
+        if (isOutOfMemoryError(error)) {
           throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
         }
-        throw finalError
-      }
-    }
+      },
+    })
   })
 }
 
