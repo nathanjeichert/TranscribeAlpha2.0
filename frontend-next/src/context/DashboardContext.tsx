@@ -16,6 +16,7 @@ import {
   type TranscriptSummary,
 } from '@/lib/storage'
 import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { logger } from '@/utils/logger'
 import { getMediaFile, storeMediaHandle } from '@/lib/mediaHandles'
 import { idbGet, idbPut } from '@/lib/idb'
 import {
@@ -684,7 +685,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       const uncategorized = await localListUncategorized()
       setUncategorizedCount(uncategorized.length)
     } catch (err) {
-      console.error('Failed to fetch cases:', err)
+      logger.error('Failed to fetch cases:', err)
     } finally {
       setCasesLoading(false)
     }
@@ -711,7 +712,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         })),
       )
     } catch (err) {
-      console.error('Failed to fetch transcripts:', err)
+      logger.error('Failed to fetch transcripts:', err)
     } finally {
       setRecentLoading(false)
     }
@@ -1163,8 +1164,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
               }
             }
             if (!activeFile?.file) {
-              console.warn(
-                '[TranscribeAlpha] File missing for job',
+              logger.warn(
+                'File missing for job',
                 nextJob.id,
                 '| title:', nextJob.title,
                 '| sourceMediaRefId:', nextJob.sourceMediaRefId,
@@ -1416,7 +1417,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             try {
               cached = await readConvertedFromCache(active.file)
             } catch (cacheReadError) {
-              console.warn('Converter cache read failed, continuing with conversion.', cacheReadError)
+              logger.warn('Converter cache read failed, continuing with conversion.', cacheReadError)
             }
 
             if (cached) {
@@ -1443,7 +1444,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             try {
               await writeConvertedToCache(active.file, converted)
             } catch (cacheWriteError) {
-              console.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
+              logger.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
             }
 
             outputPath = await persistConvertedOutput(next.id, converted)

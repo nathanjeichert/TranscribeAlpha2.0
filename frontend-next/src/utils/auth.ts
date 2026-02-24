@@ -3,6 +3,8 @@
  * Handles token storage, refresh, and API authentication
  */
 
+import { logger } from '@/utils/logger'
+
 export interface User {
   username: string;
   role: string;
@@ -76,7 +78,7 @@ export async function logout(): Promise<void> {
       });
     }
   } catch (error) {
-    console.error('Logout error:', error);
+    logger.error('Logout error:', error);
   } finally {
     clearAuth();
     // Reload the page to show login screen
@@ -111,7 +113,7 @@ export async function refreshAccessToken(): Promise<string | null> {
     localStorage.setItem('access_token', data.access_token);
     return data.access_token;
   } catch (error) {
-    console.error('Token refresh error:', error);
+    logger.error('Token refresh error:', error);
     clearAuth();
     return null;
   }

@@ -14,6 +14,7 @@ import {
   moveTranscriptToCase as localMoveTranscriptToCase,
   type TranscriptSummary,
 } from '@/lib/storage'
+import { logger } from '@/utils/logger'
 
 export default function CasesPage() {
   const router = useRouter()
@@ -53,7 +54,7 @@ export default function CasesPage() {
         })),
       )
     } catch (err) {
-      console.error('Failed to load uncategorized transcripts:', err)
+      logger.error('Failed to load uncategorized transcripts:', err)
     } finally {
       setLoadingUncategorized(false)
     }

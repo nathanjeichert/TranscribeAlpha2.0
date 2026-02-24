@@ -1,4 +1,5 @@
 import { idbGet, idbPut, idbDelete } from './idb'
+import { logger } from '@/utils/logger'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -182,7 +183,7 @@ export async function requestPersistentStorage(): Promise<boolean> {
       return await navigator.storage.persist()
     }
   } catch {
-    console.warn('[storage] navigator.storage.persist() failed')
+    logger.warn('navigator.storage.persist() failed')
   }
   return false
 }
@@ -193,7 +194,7 @@ export async function isPersistentStorage(): Promise<boolean> {
       return await navigator.storage.persisted()
     }
   } catch {
-    console.warn('[storage] navigator.storage.persisted() check failed')
+    logger.warn('navigator.storage.persisted() check failed')
   }
   return false
 }
@@ -221,7 +222,7 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
     const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
 
     if (!handle) {
-      console.warn('[storage] No workspace handle found in IndexedDB')
+      logger.warn('No workspace handle found in IndexedDB')
       return { status: 'no-handle', handle: null }
     }
 
@@ -243,7 +244,7 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
     try {
       permission = await handle.requestPermission({ mode: 'readwrite' })
     } catch {
-      console.warn('[storage] requestPermission() threw — likely no user gesture')
+      logger.warn('requestPermission() threw — likely no user gesture')
       return { status: 'permission-prompt', handle: null }
     }
 
@@ -254,14 +255,14 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
     }
 
     if (permission === 'denied') {
-      console.warn('[storage] Permission denied for workspace handle')
+      logger.warn('Permission denied for workspace handle')
       return { status: 'permission-denied', handle: null }
     }
 
-    console.warn('[storage] Permission not granted (status: %s) — likely needs user gesture', permission)
+    logger.warn('Permission not granted (status: %s) — likely needs user gesture', permission)
     return { status: 'permission-prompt', handle: null }
   } catch (err) {
-    console.warn('[storage] initWorkspaceDetailed error:', err)
+    logger.warn('initWorkspaceDetailed error:', err)
     return { status: 'error', handle: null }
   }
 }

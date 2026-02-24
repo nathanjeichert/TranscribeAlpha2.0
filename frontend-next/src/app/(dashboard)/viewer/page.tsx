@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
+import { logger } from '@/utils/logger'
 import {
   deleteClip,
   deleteSequence,
@@ -1845,7 +1846,7 @@ export default function ViewerPage() {
       const mediaPlaceholder = '<script id="media-data" type="application/octet-stream"></script>'
       const htmlWithMedia = html.replace(mediaPlaceholder, mediaTag)
       if (htmlWithMedia === html) {
-        console.warn('Standalone viewer template is missing media placeholder script tag.')
+        logger.warn('Standalone viewer template is missing media placeholder script tag.')
         throw new Error('Standalone viewer template missing media placeholder; embedded media export failed.')
       }
       html = htmlWithMedia
