@@ -17,7 +17,7 @@ import {
 } from '@/lib/storage'
 import { cacheMediaForPlayback } from '@/lib/mediaCache'
 import { getMediaFile, storeMediaHandle } from '@/lib/mediaHandles'
-import { openDB } from '@/lib/idb'
+import { idbGet, idbPut } from '@/lib/idb'
 import {
   FFmpegCanceledError,
   cancelActiveFFmpegJob,
@@ -261,14 +261,7 @@ function normalizePersistedJobs(rawJobs: unknown): JobRecord[] {
 
 async function readPersistedJobs(userKey: string, legacyKey: string): Promise<JobRecord[]> {
   try {
-    const db = await openDB()
-    const idbValue = await new Promise<unknown>((resolve, reject) => {
-      const tx = db.transaction(JOBS_STORE, 'readonly')
-      const store = tx.objectStore(JOBS_STORE)
-      const request = store.get(userKey)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
+    const idbValue = await idbGet<unknown>(JOBS_STORE, userKey)
     const normalized = normalizePersistedJobs(idbValue)
     if (normalized.length > 0) return normalized
   } catch {
@@ -285,14 +278,7 @@ async function readPersistedJobs(userKey: string, legacyKey: string): Promise<Jo
 }
 
 async function writePersistedJobs(userKey: string, jobs: JobRecord[]): Promise<void> {
-  const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(JOBS_STORE, 'readwrite')
-    const store = tx.objectStore(JOBS_STORE)
-    const request = store.put(jobs.slice(Math.max(0, jobs.length - MAX_PERSISTED_JOBS)), userKey)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbPut(JOBS_STORE, userKey, jobs.slice(Math.max(0, jobs.length - MAX_PERSISTED_JOBS)))
 }
 
 interface DashboardContextValue {

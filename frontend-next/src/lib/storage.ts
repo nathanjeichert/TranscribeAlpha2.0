@@ -1,4 +1,4 @@
-import { openDB } from './idb'
+import { idbGet, idbPut, idbDelete } from './idb'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -202,14 +202,8 @@ export async function isPersistentStorage(): Promise<boolean> {
 
 export async function isWorkspaceConfigured(): Promise<boolean> {
   try {
-    const db = await openDB()
-    return new Promise((resolve) => {
-      const tx = db.transaction('workspace', 'readonly')
-      const store = tx.objectStore('workspace')
-      const request = store.get(IDB_KEY_WORKSPACE)
-      request.onsuccess = () => resolve(!!request.result)
-      request.onerror = () => resolve(false)
-    })
+    const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
+    return !!handle
   } catch {
     return false
   }
@@ -224,14 +218,7 @@ export interface WorkspaceInitResult {
 
 export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
   try {
-    const db = await openDB()
-    const handle: FileSystemDirectoryHandle | undefined = await new Promise((resolve, reject) => {
-      const tx = db.transaction('workspace', 'readonly')
-      const store = tx.objectStore('workspace')
-      const request = store.get(IDB_KEY_WORKSPACE)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
+    const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
 
     if (!handle) {
       console.warn('[storage] No workspace handle found in IndexedDB')
@@ -302,14 +289,7 @@ export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirect
   }
 
   // Store handle in IndexedDB
-  const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('workspace', 'readwrite')
-    const store = tx.objectStore('workspace')
-    const request = store.put(handle, IDB_KEY_WORKSPACE)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbPut('workspace', IDB_KEY_WORKSPACE, handle)
 
   // Request persistent storage (runs in user-gesture context from folder picker)
   await requestPersistentStorage()
@@ -830,14 +810,7 @@ export async function getStorageEstimate(): Promise<{ fileCount: number; totalSi
 }
 
 export async function clearWorkspace(): Promise<void> {
-  const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('workspace', 'readwrite')
-    const store = tx.objectStore('workspace')
-    const request = store.delete(IDB_KEY_WORKSPACE)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbDelete('workspace', IDB_KEY_WORKSPACE)
   workspaceHandle = null
 }
 

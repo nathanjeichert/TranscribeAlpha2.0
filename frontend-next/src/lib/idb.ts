@@ -35,3 +35,36 @@ export function openDB(): Promise<IDBDatabase> {
 
   return dbPromise
 }
+
+export async function idbGet<T>(storeName: string, key: IDBValidKey): Promise<T | undefined> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly')
+    const store = tx.objectStore(storeName)
+    const request = store.get(key)
+    request.onsuccess = () => resolve(request.result as T | undefined)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+export async function idbPut(storeName: string, key: IDBValidKey, value: unknown): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite')
+    const store = tx.objectStore(storeName)
+    const request = store.put(value, key)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+export async function idbDelete(storeName: string, key: IDBValidKey): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite')
+    const store = tx.objectStore(storeName)
+    const request = store.delete(key)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}

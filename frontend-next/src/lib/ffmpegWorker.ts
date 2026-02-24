@@ -1,6 +1,6 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg'
 import { fetchFile } from '@ffmpeg/util'
-import { openDB } from './idb'
+import { idbGet } from './idb'
 import { readBinaryFile, writeBinaryFile } from './storage'
 import { getFileExtension } from '@/utils/helpers'
 
@@ -1308,18 +1308,7 @@ function bytesToHex(bytes: Uint8Array): string {
 
 async function getWorkspaceHandleFromIndexedDB(): Promise<FileSystemDirectoryHandle | null> {
   try {
-    const db = await openDB()
-    return await new Promise<FileSystemDirectoryHandle | null>((resolve) => {
-      const tx = db.transaction('workspace', 'readonly')
-      const store = tx.objectStore('workspace')
-      const request = store.get(WORKSPACE_IDB_KEY)
-      request.onsuccess = () => {
-        resolve((request.result as FileSystemDirectoryHandle | null) ?? null)
-      }
-      request.onerror = () => {
-        resolve(null)
-      }
-    })
+    return (await idbGet<FileSystemDirectoryHandle>('workspace', WORKSPACE_IDB_KEY)) ?? null
   } catch {
     return null
   }

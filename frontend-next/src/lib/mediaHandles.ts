@@ -1,4 +1,4 @@
-import { openDB } from './idb'
+import { idbGet, idbPut, idbDelete } from './idb'
 
 const HANDLE_STORE = 'media-handles'
 const BLOB_STORE = 'media-blobs'
@@ -20,14 +20,7 @@ export async function storeMediaHandle(
   handleId: string,
   handle: FileSystemFileHandle,
 ): Promise<void> {
-  const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(HANDLE_STORE, 'readwrite')
-    const store = tx.objectStore(HANDLE_STORE)
-    const request = store.put(handle, handleId)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbPut(HANDLE_STORE, handleId, handle)
 }
 
 export async function storeMediaBlob(
@@ -36,21 +29,13 @@ export async function storeMediaBlob(
   filename?: string,
   contentType?: string,
 ): Promise<void> {
-  const db = await openDB()
   const record: StoredMediaBlobRecord = {
     blob: media,
     filename: filename || ((media instanceof File && media.name) ? media.name : `${sourceId}.bin`),
     contentType: contentType || media.type || 'application/octet-stream',
     saved_at: new Date().toISOString(),
   }
-
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(BLOB_STORE, 'readwrite')
-    const store = tx.objectStore(BLOB_STORE)
-    const request = store.put(record, sourceId)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbPut(BLOB_STORE, sourceId, record)
 }
 
 export async function getMediaHandle(
@@ -58,17 +43,7 @@ export async function getMediaHandle(
   options?: MediaAccessOptions,
 ): Promise<FileSystemFileHandle | null> {
   try {
-    const db = await openDB()
-    const handle: FileSystemFileHandle | undefined = await new Promise(
-      (resolve, reject) => {
-        const tx = db.transaction(HANDLE_STORE, 'readonly')
-        const store = tx.objectStore(HANDLE_STORE)
-        const request = store.get(handleId)
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      },
-    )
-
+    const handle = await idbGet<FileSystemFileHandle>(HANDLE_STORE, handleId)
     if (!handle) return null
 
     const shouldRequestPermission = Boolean(options?.requestPermission)
@@ -97,17 +72,7 @@ export async function getMediaHandle(
 
 export async function getMediaHandlePermissionState(handleId: string): Promise<MediaHandlePermissionState> {
   try {
-    const db = await openDB()
-    const handle: FileSystemFileHandle | undefined = await new Promise(
-      (resolve, reject) => {
-        const tx = db.transaction(HANDLE_STORE, 'readonly')
-        const store = tx.objectStore(HANDLE_STORE)
-        const request = store.get(handleId)
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      },
-    )
-
+    const handle = await idbGet<FileSystemFileHandle>(HANDLE_STORE, handleId)
     if (!handle) return 'missing'
 
     try {
@@ -125,17 +90,7 @@ export async function getMediaHandlePermissionState(handleId: string): Promise<M
 
 export async function getMediaBlob(sourceId: string): Promise<File | null> {
   try {
-    const db = await openDB()
-    const record: StoredMediaBlobRecord | undefined = await new Promise(
-      (resolve, reject) => {
-        const tx = db.transaction(BLOB_STORE, 'readonly')
-        const store = tx.objectStore(BLOB_STORE)
-        const request = store.get(sourceId)
-        request.onsuccess = () => resolve(request.result)
-        request.onerror = () => reject(request.error)
-      },
-    )
-
+    const record = await idbGet<StoredMediaBlobRecord>(BLOB_STORE, sourceId)
     if (!record || !(record.blob instanceof Blob)) return null
 
     const name = record.filename || `${sourceId}.bin`
@@ -148,14 +103,7 @@ export async function getMediaBlob(sourceId: string): Promise<File | null> {
 
 export async function removeMediaHandle(handleId: string): Promise<void> {
   try {
-    const db = await openDB()
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(HANDLE_STORE, 'readwrite')
-      const store = tx.objectStore(HANDLE_STORE)
-      const request = store.delete(handleId)
-      request.onsuccess = () => resolve()
-      request.onerror = () => reject(request.error)
-    })
+    await idbDelete(HANDLE_STORE, handleId)
   } catch {
     // Ignore errors
   }
@@ -163,14 +111,7 @@ export async function removeMediaHandle(handleId: string): Promise<void> {
 
 export async function removeMediaBlob(sourceId: string): Promise<void> {
   try {
-    const db = await openDB()
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(BLOB_STORE, 'readwrite')
-      const store = tx.objectStore(BLOB_STORE)
-      const request = store.delete(sourceId)
-      request.onsuccess = () => resolve()
-      request.onerror = () => reject(request.error)
-    })
+    await idbDelete(BLOB_STORE, sourceId)
   } catch {
     // Ignore errors
   }
