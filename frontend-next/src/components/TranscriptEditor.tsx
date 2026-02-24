@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { authenticatedFetch } from '@/utils/auth'
+import { logger } from '@/utils/logger'
 import { saveTranscript as localSaveTranscript } from '@/lib/storage'
 import { getMediaFile } from '@/lib/mediaHandles'
 
@@ -750,7 +751,7 @@ export default function TranscriptEditor({
         setAutoShiftNextLine(false)
       }
     } catch (err) {
-      console.error('Failed to load auto-shift preference:', err)
+      logger.error('Failed to load auto-shift preference:', err)
     }
   }, [])
 
@@ -758,7 +759,7 @@ export default function TranscriptEditor({
     try {
       localStorage.setItem(AUTO_SHIFT_STORAGE_KEY, autoShiftNextLine ? 'true' : 'false')
     } catch (err) {
-      console.error('Failed to save auto-shift preference:', err)
+      logger.error('Failed to save auto-shift preference:', err)
     }
   }, [autoShiftNextLine])
 

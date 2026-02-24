@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useDashboard } from '@/context/DashboardContext'
 import { getCurrentUser, logout } from '@/utils/auth'
+import { formatBytes } from '@/utils/helpers'
 import { evictMediaCacheToCap } from '@/lib/mediaCache'
 import {
   DEFAULT_MEDIA_CACHE_CAP_BYTES,
@@ -15,14 +16,6 @@ import {
   requestPersistentStorage,
   updateWorkspacePreferences,
 } from '@/lib/storage'
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
-}
 
 const BYTES_PER_GB = 1024 * 1024 * 1024
 

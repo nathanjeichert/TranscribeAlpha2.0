@@ -6,20 +6,14 @@ import { useSearchParams, useRouter } from 'next/navigation'
 import { useDashboard } from '@/context/DashboardContext'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
+import { type TranscriptListItem, formatDate } from '@/utils/helpers'
+import { useTranscriptActions } from '@/hooks/useTranscriptActions'
 import {
   createCase as localCreateCase,
   listUncategorizedTranscripts as localListUncategorized,
-  deleteTranscript as localDeleteTranscript,
-  moveTranscriptToCase as localMoveTranscriptToCase,
   type TranscriptSummary,
 } from '@/lib/storage'
-
-interface TranscriptListItem {
-  media_key: string
-  title_label: string
-  updated_at?: string | null
-  line_count?: number
-}
+import { logger } from '@/utils/logger'
 
 export default function CasesPage() {
   const router = useRouter()
@@ -34,17 +28,7 @@ export default function CasesPage() {
   const [newCaseDescription, setNewCaseDescription] = useState('')
   const [creatingCase, setCreatingCase] = useState(false)
   const [error, setError] = useState('')
-  const [uncategorizedDeleteTarget, setUncategorizedDeleteTarget] = useState<TranscriptListItem | null>(null)
-  const [deletingUncategorizedTranscript, setDeletingUncategorizedTranscript] = useState(false)
   const [assignModeEnabled, setAssignModeEnabled] = useState(false)
-  const [assignmentTargets, setAssignmentTargets] = useState<Record<string, string>>({})
-  const [assigningTranscript, setAssigningTranscript] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (searchParams.get('tab') === 'uncategorized') {
-      setActiveTab('uncategorized')
-    }
-  }, [searchParams])
 
   const loadUncategorized = useCallback(async () => {
     setLoadingUncategorized(true)
@@ -59,11 +43,27 @@ export default function CasesPage() {
         })),
       )
     } catch (err) {
-      console.error('Failed to load uncategorized transcripts:', err)
+      logger.error('Failed to load uncategorized transcripts:', err)
     } finally {
       setLoadingUncategorized(false)
     }
   }, [])
+
+  const onMutate = useCallback(async () => {
+    await loadUncategorized()
+    await refreshCases()
+  }, [loadUncategorized, refreshCases])
+
+  const {
+    deleteTarget, isDeleting, setDeleteTarget, confirmDelete,
+    assigningKey, getAssignTarget, updateAssignTarget, resetAssignment, confirmAssign,
+  } = useTranscriptActions(onMutate)
+
+  useEffect(() => {
+    if (searchParams.get('tab') === 'uncategorized') {
+      setActiveTab('uncategorized')
+    }
+  }, [searchParams])
 
   useEffect(() => {
     if (activeTab === 'uncategorized') {
@@ -74,10 +74,9 @@ export default function CasesPage() {
   useEffect(() => {
     if (activeTab !== 'uncategorized') {
       setAssignModeEnabled(false)
-      setAssignmentTargets({})
-      setAssigningTranscript(null)
+      resetAssignment()
     }
-  }, [activeTab])
+  }, [activeTab, resetAssignment])
 
   const handleCreateCase = async () => {
     if (!newCaseName.trim()) return
@@ -104,49 +103,27 @@ export default function CasesPage() {
     }
   }
 
-  const handleDeleteUncategorizedTranscript = async () => {
-    if (!uncategorizedDeleteTarget) return
-    setDeletingUncategorizedTranscript(true)
-    setError('')
-    try {
-      await localDeleteTranscript(uncategorizedDeleteTarget.media_key)
-      setUncategorizedDeleteTarget(null)
-      await loadUncategorized()
-      await refreshCases()
-    } catch (err: any) {
-      setError(err?.message || 'Failed to delete transcript')
-    } finally {
-      setDeletingUncategorizedTranscript(false)
-    }
-  }
-
-  const getAssignmentTarget = (mediaKey: string) => {
-    return assignmentTargets[mediaKey] ?? (cases[0]?.case_id || '')
-  }
-
   const handleAssignToCase = async (mediaKey: string) => {
-    const targetCaseId = getAssignmentTarget(mediaKey)
+    const targetCaseId = getAssignTarget(mediaKey, cases[0]?.case_id || '')
     if (!targetCaseId) {
       setError('Create a case before assigning transcripts.')
       return
     }
-
-    setAssigningTranscript(mediaKey)
     setError('')
     try {
-      await localMoveTranscriptToCase(mediaKey, targetCaseId)
-      await loadUncategorized()
-      await refreshCases()
+      await confirmAssign(mediaKey, targetCaseId)
     } catch (err: any) {
       setError(err?.message || 'Failed to assign transcript to case')
-    } finally {
-      setAssigningTranscript(null)
     }
   }
 
-  const formatDate = (dateStr?: string | null) => {
-    if (!dateStr) return '-'
-    return new Date(dateStr).toLocaleDateString()
+  const handleDeleteTranscript = async () => {
+    setError('')
+    try {
+      await confirmDelete()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to delete transcript')
+    }
   }
 
   return (
@@ -293,13 +270,8 @@ export default function CasesPage() {
                     {assignModeEnabled && (
                       <>
                         <select
-                          value={getAssignmentTarget(transcript.media_key)}
-                          onChange={(e) =>
-                            setAssignmentTargets((prev) => ({
-                              ...prev,
-                              [transcript.media_key]: e.target.value,
-                            }))
-                          }
+                          value={getAssignTarget(transcript.media_key, cases[0]?.case_id || '')}
+                          onChange={(e) => updateAssignTarget(transcript.media_key, e.target.value)}
                           className="input-field h-9 w-[16rem] md:w-[22rem] min-w-[220px] text-sm"
                         >
                           {cases.map((caseItem) => (
@@ -310,10 +282,10 @@ export default function CasesPage() {
                         </select>
                         <button
                           onClick={() => handleAssignToCase(transcript.media_key)}
-                          disabled={assigningTranscript === transcript.media_key || cases.length === 0}
+                          disabled={assigningKey === transcript.media_key || cases.length === 0}
                           className="btn-primary text-sm px-3 py-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {assigningTranscript === transcript.media_key ? 'Assigning...' : 'Assign'}
+                          {assigningKey === transcript.media_key ? 'Assigning...' : 'Assign'}
                         </button>
                       </>
                     )}
@@ -327,8 +299,8 @@ export default function CasesPage() {
                       Open
                     </button>
                     <button
-                      onClick={() => setUncategorizedDeleteTarget(transcript)}
-                      disabled={deletingUncategorizedTranscript}
+                      onClick={() => setDeleteTarget(transcript)}
+                      disabled={isDeleting}
                       className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       title="Delete transcript permanently"
                     >
@@ -344,7 +316,7 @@ export default function CasesPage() {
         </div>
       )}
 
-      {uncategorizedDeleteTarget && (
+      {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg rounded-2xl border border-gray-100 bg-white shadow-2xl">
             <div className="p-6 border-b border-gray-100">
@@ -357,7 +329,7 @@ export default function CasesPage() {
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900">Delete Transcript Permanently?</h3>
                   <p className="mt-2 text-sm text-gray-600">
-                    This will permanently remove <span className="font-medium text-gray-900">&quot;{uncategorizedDeleteTarget.title_label}&quot;</span>.
+                    This will permanently remove <span className="font-medium text-gray-900">&quot;{deleteTarget.title_label}&quot;</span>.
                     This action cannot be undone.
                   </p>
                 </div>
@@ -366,19 +338,19 @@ export default function CasesPage() {
             <div className="p-6 flex justify-end gap-3">
               <button
                 onClick={() => {
-                  if (deletingUncategorizedTranscript) return
-                  setUncategorizedDeleteTarget(null)
+                  if (isDeleting) return
+                  setDeleteTarget(null)
                 }}
                 className="btn-outline px-4 py-2"
               >
                 Cancel
               </button>
               <button
-                onClick={handleDeleteUncategorizedTranscript}
-                disabled={deletingUncategorizedTranscript}
+                onClick={handleDeleteTranscript}
+                disabled={isDeleting}
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors disabled:opacity-70"
               >
-                {deletingUncategorizedTranscript ? 'Deleting...' : 'Delete Transcript'}
+                {isDeleting ? 'Deleting...' : 'Delete Transcript'}
               </button>
             </div>
           </div>

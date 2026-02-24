@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect } from 'react'
+import { logger } from '@/utils/logger'
 
 export default function ServiceWorkerRegistrar() {
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch((err) => {
-        console.warn('SW registration failed:', err)
+        logger.warn('SW registration failed:', err)
       })
     }
   }, [])

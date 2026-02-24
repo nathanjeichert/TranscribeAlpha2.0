@@ -3,6 +3,7 @@
 import JSZip from 'jszip'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useDashboard, type JobRecord, type JobStatus } from '@/context/DashboardContext'
+import { downloadFileBlob, formatBytes } from '@/utils/helpers'
 
 const LARGE_ZIP_WARNING_BYTES = 750 * 1024 * 1024
 
@@ -31,24 +32,6 @@ function statusClass(status: JobStatus, needsConversion?: boolean): string {
   return 'bg-gray-100 text-gray-700'
 }
 
-function downloadFile(file: File) {
-  const url = URL.createObjectURL(file)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.name
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
-}
 
 export default function ConverterPage() {
   const {
@@ -406,7 +389,7 @@ export default function ConverterPage() {
                       setPageError('This converted file is no longer available. Please convert it again.')
                       return
                     }
-                    downloadFile(file)
+                    downloadFileBlob(file)
                   }}
                   disabled={!convertedFile && !hasPersistedOutput}
                   className="btn-outline px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"

@@ -1,4 +1,5 @@
-import { openDB } from './idb'
+import { idbGet, idbPut, idbDelete } from './idb'
+import { logger } from '@/utils/logger'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -182,7 +183,7 @@ export async function requestPersistentStorage(): Promise<boolean> {
       return await navigator.storage.persist()
     }
   } catch {
-    console.warn('[storage] navigator.storage.persist() failed')
+    logger.warn('navigator.storage.persist() failed')
   }
   return false
 }
@@ -193,7 +194,7 @@ export async function isPersistentStorage(): Promise<boolean> {
       return await navigator.storage.persisted()
     }
   } catch {
-    console.warn('[storage] navigator.storage.persisted() check failed')
+    logger.warn('navigator.storage.persisted() check failed')
   }
   return false
 }
@@ -202,14 +203,8 @@ export async function isPersistentStorage(): Promise<boolean> {
 
 export async function isWorkspaceConfigured(): Promise<boolean> {
   try {
-    const db = await openDB()
-    return new Promise((resolve) => {
-      const tx = db.transaction('workspace', 'readonly')
-      const store = tx.objectStore('workspace')
-      const request = store.get(IDB_KEY_WORKSPACE)
-      request.onsuccess = () => resolve(!!request.result)
-      request.onerror = () => resolve(false)
-    })
+    const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
+    return !!handle
   } catch {
     return false
   }
@@ -224,24 +219,17 @@ export interface WorkspaceInitResult {
 
 export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
   try {
-    const db = await openDB()
-    const handle: FileSystemDirectoryHandle | undefined = await new Promise((resolve, reject) => {
-      const tx = db.transaction('workspace', 'readonly')
-      const store = tx.objectStore('workspace')
-      const request = store.get(IDB_KEY_WORKSPACE)
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error)
-    })
+    const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
 
     if (!handle) {
-      console.warn('[storage] No workspace handle found in IndexedDB')
+      logger.warn('No workspace handle found in IndexedDB')
       return { status: 'no-handle', handle: null }
     }
 
     // Try queryPermission first (works without user gesture)
     let permission: PermissionState | string = 'prompt'
     try {
-      permission = await (handle as any).queryPermission({ mode: 'readwrite' })
+      permission = await handle.queryPermission({ mode: 'readwrite' })
     } catch {
       // queryPermission may not be available in all browsers
     }
@@ -254,9 +242,9 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
 
     // Fall back to requestPermission (needs user gesture to succeed)
     try {
-      permission = await (handle as any).requestPermission({ mode: 'readwrite' })
+      permission = await handle.requestPermission({ mode: 'readwrite' })
     } catch {
-      console.warn('[storage] requestPermission() threw — likely no user gesture')
+      logger.warn('requestPermission() threw — likely no user gesture')
       return { status: 'permission-prompt', handle: null }
     }
 
@@ -267,14 +255,14 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
     }
 
     if (permission === 'denied') {
-      console.warn('[storage] Permission denied for workspace handle')
+      logger.warn('Permission denied for workspace handle')
       return { status: 'permission-denied', handle: null }
     }
 
-    console.warn('[storage] Permission not granted (status: %s) — likely needs user gesture', permission)
+    logger.warn('Permission not granted (status: %s) — likely needs user gesture', permission)
     return { status: 'permission-prompt', handle: null }
   } catch (err) {
-    console.warn('[storage] initWorkspaceDetailed error:', err)
+    logger.warn('initWorkspaceDetailed error:', err)
     return { status: 'error', handle: null }
   }
 }
@@ -285,7 +273,7 @@ export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null>
 }
 
 export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirectoryHandle; isExisting: boolean }> {
-  const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
 
   // Check if returning user
   let isExisting = false
@@ -302,14 +290,7 @@ export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirect
   }
 
   // Store handle in IndexedDB
-  const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('workspace', 'readwrite')
-    const store = tx.objectStore('workspace')
-    const request = store.put(handle, IDB_KEY_WORKSPACE)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbPut('workspace', IDB_KEY_WORKSPACE, handle)
 
   // Request persistent storage (runs in user-gesture context from folder picker)
   await requestPersistentStorage()
@@ -412,7 +393,7 @@ export async function listDirectory(path: string): Promise<string[]> {
     const parts = path.split('/').filter(Boolean)
     const dir = await navigateToDir(root, parts)
     const entries: string[] = []
-    for await (const name of (dir as any).keys()) {
+    for await (const name of dir.keys()) {
       entries.push(name)
     }
     return entries
@@ -455,7 +436,7 @@ export async function resolveWorkspaceRelativePathForHandle(
 ): Promise<string | null> {
   try {
     const root = getWorkspaceHandle()
-    const pathParts = await (root as any).resolve(fileHandle) as string[] | null
+    const pathParts = await root.resolve(fileHandle)
     if (!Array.isArray(pathParts) || pathParts.length === 0) return null
     return pathParts.join('/')
   } catch {
@@ -765,16 +746,16 @@ export async function searchCaseTranscripts(
       if (!data || !Array.isArray(data.lines)) continue
 
       const matches: SearchMatch[] = []
-      for (const line of data.lines as any[]) {
-        const text = (line.text || '').toLowerCase()
-        const speaker = (line.speaker || '').toLowerCase()
+      for (const line of data.lines as Array<Record<string, unknown>>) {
+        const text = (String(line.text || '')).toLowerCase()
+        const speaker = (String(line.speaker || '')).toLowerCase()
         if (text.includes(lowerQuery) || speaker.includes(lowerQuery)) {
           matches.push({
-            line_id: line.id || '',
-            page: line.page || 0,
-            line: line.line || 0,
-            text: line.text || '',
-            speaker: line.speaker || '',
+            line_id: String(line.id || ''),
+            page: Number(line.page || 0),
+            line: Number(line.line || 0),
+            text: String(line.text || ''),
+            speaker: String(line.speaker || ''),
             match_type: text.includes(lowerQuery) ? 'text' : 'speaker',
           })
         }
@@ -807,7 +788,7 @@ export async function getStorageEstimate(): Promise<{ fileCount: number; totalSi
   let totalSize = 0
 
   async function walk(dir: FileSystemDirectoryHandle) {
-    for await (const entry of (dir as any).values()) {
+    for await (const entry of dir.values()) {
       if (entry.kind === 'file') {
         fileCount++
         try {
@@ -830,14 +811,7 @@ export async function getStorageEstimate(): Promise<{ fileCount: number; totalSi
 }
 
 export async function clearWorkspace(): Promise<void> {
-  const db = await openDB()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('workspace', 'readwrite')
-    const store = tx.objectStore('workspace')
-    const request = store.delete(IDB_KEY_WORKSPACE)
-    request.onsuccess = () => resolve()
-    request.onerror = () => reject(request.error)
-  })
+  await idbDelete('workspace', IDB_KEY_WORKSPACE)
   workspaceHandle = null
 }
 

@@ -2,18 +2,18 @@ steps:
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
     args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA', '.']
-  
+
   # Push the container image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA']
-  
+
   # Deploy container image to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'transcribealpha-assemblyai'
+      - '${_SERVICE_NAME}'
       - '--image'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/transcribealpha/app:$COMMIT_SHA'
       - '--region'
@@ -27,6 +27,8 @@ steps:
       - '1'
       - '--max-instances'
       - '10'
+      - '--timeout'
+      - '${_REQUEST_TIMEOUT}'
       - '--port'
       - '8080'
       - '--use-http2'
@@ -39,6 +41,8 @@ images:
 
 # Substitution variables (set these in Cloud Build trigger)
 substitutions:
+  _SERVICE_NAME: 'transcribealpha-assemblyai'
+  _REQUEST_TIMEOUT: '300'
   _ASSEMBLYAI_API_KEY: 'your-assemblyai-key-here'
   _GEMINI_API_KEY: 'your-gemini-key-here'
   _GEMINI_MODEL_NAME: 'models/gemini-3-pro-preview'
@@ -52,5 +56,3 @@ options:
 
 # Build timeout
 timeout: '1200s'
-
-# Trigger rebuild (no functional changes)
