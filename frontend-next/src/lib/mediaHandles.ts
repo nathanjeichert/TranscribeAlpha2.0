@@ -74,14 +74,14 @@ export async function getMediaHandle(
     const shouldRequestPermission = Boolean(options?.requestPermission)
     let permission: PermissionState | string = 'prompt'
     try {
-      permission = await (handle as any).queryPermission({ mode: 'read' })
+      permission = await handle.queryPermission({ mode: 'read' })
     } catch {
       // queryPermission may not be supported in all environments.
     }
 
     if (permission !== 'granted' && shouldRequestPermission) {
       try {
-        permission = await (handle as any).requestPermission({ mode: 'read' })
+        permission = await handle.requestPermission({ mode: 'read' })
       } catch {
         return null
       }
@@ -111,7 +111,7 @@ export async function getMediaHandlePermissionState(handleId: string): Promise<M
     if (!handle) return 'missing'
 
     try {
-      const permission = await (handle as any).queryPermission({ mode: 'read' })
+      const permission = await handle.queryPermission({ mode: 'read' })
       if (permission === 'granted') return 'granted'
       if (permission === 'denied') return 'denied'
       return 'prompt'
@@ -244,7 +244,7 @@ export async function promptRelinkMedia(
   handleId: string
 } | null> {
   try {
-    const [handle] = await (window as any).showOpenFilePicker({
+    const [handle] = await window.showOpenFilePicker({
       types: [
         {
           description: `Locate: ${expectedFilename}`,
@@ -275,7 +275,7 @@ export async function storeMediaFromPicker(): Promise<{
   contentType: string
 } | null> {
   try {
-    const [handle] = await (window as any).showOpenFilePicker({
+    const [handle] = await window.showOpenFilePicker({
       types: [
         {
           description: 'Audio or video files',

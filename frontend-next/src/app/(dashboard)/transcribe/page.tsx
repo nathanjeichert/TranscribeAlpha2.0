@@ -225,7 +225,7 @@ export default function TranscribePage() {
     // When showOpenFilePicker is available, the parent onClick already handles file
     // selection via handleOpenFilePicker (which returns FileSystemFileHandles with
     // correct long filenames). Ignore the <input> change to avoid Windows 8.3 names.
-    if (typeof (window as any).showOpenFilePicker === 'function') {
+    if (typeof window.showOpenFilePicker === 'function') {
       event.target.value = ''
       return
     }
@@ -244,12 +244,12 @@ export default function TranscribePage() {
 
       // Try to get FileSystemFileHandles for long filenames on Windows
       const entries: { file: File; handle?: FileSystemFileHandle | null }[] = []
-      if (items?.length && typeof (items[0] as any).getAsFileSystemHandle === 'function') {
+      if (items?.length && typeof items[0].getAsFileSystemHandle === 'function') {
         for (let i = 0; i < items.length; i++) {
           const item = items[i]
           if (item.kind !== 'file') continue
           try {
-            const handle = await (item as any).getAsFileSystemHandle() as FileSystemFileHandle | null
+            const handle = await item.getAsFileSystemHandle() as FileSystemFileHandle | null
             if (handle && handle.kind === 'file') {
               const file = await handle.getFile()
               entries.push({ file, handle })
@@ -277,7 +277,7 @@ export default function TranscribePage() {
 
   const handleOpenFilePicker = useCallback(async () => {
     try {
-      const handles: FileSystemFileHandle[] = await (window as any).showOpenFilePicker({
+      const handles: FileSystemFileHandle[] = await window.showOpenFilePicker({
         multiple: true,
         types: [
           {
@@ -583,7 +583,7 @@ export default function TranscribePage() {
             <div
               onClick={(e) => {
                 // Use showOpenFilePicker when available to get FileSystemFileHandles (avoids Windows 8.3 short filenames)
-                if (typeof (window as any).showOpenFilePicker === 'function') {
+                if (typeof window.showOpenFilePicker === 'function') {
                   e.preventDefault()
                   handleOpenFilePicker()
                 } else {

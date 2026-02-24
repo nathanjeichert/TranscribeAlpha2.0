@@ -29,9 +29,6 @@ export type ClipBatchProgress = {
 }
 
 type ProgressCallback = (ratio: number) => void
-type IterableDirectoryHandle = FileSystemDirectoryHandle & {
-  entries(): AsyncIterable<[string, FileSystemHandle]>
-}
 
 const STANDARD_WAV_FORMATS: Record<number, string> = {
   0x0001: 'PCM',
@@ -1346,7 +1343,7 @@ async function pruneConvertedCache(maxBytes = CONVERTED_CACHE_MAX_BYTES): Promis
 
   const entries: Array<{ name: string; size: number; lastModified: number }> = []
 
-  for await (const [name, handle] of (cacheDir as IterableDirectoryHandle).entries()) {
+  for await (const [name, handle] of cacheDir.entries()) {
     if (handle.kind !== 'file') continue
     try {
       const file = await (handle as FileSystemFileHandle).getFile()

@@ -241,7 +241,7 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
     // Try queryPermission first (works without user gesture)
     let permission: PermissionState | string = 'prompt'
     try {
-      permission = await (handle as any).queryPermission({ mode: 'readwrite' })
+      permission = await handle.queryPermission({ mode: 'readwrite' })
     } catch {
       // queryPermission may not be available in all browsers
     }
@@ -254,7 +254,7 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
 
     // Fall back to requestPermission (needs user gesture to succeed)
     try {
-      permission = await (handle as any).requestPermission({ mode: 'readwrite' })
+      permission = await handle.requestPermission({ mode: 'readwrite' })
     } catch {
       console.warn('[storage] requestPermission() threw — likely no user gesture')
       return { status: 'permission-prompt', handle: null }
@@ -285,7 +285,7 @@ export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null>
 }
 
 export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirectoryHandle; isExisting: boolean }> {
-  const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
 
   // Check if returning user
   let isExisting = false
@@ -412,7 +412,7 @@ export async function listDirectory(path: string): Promise<string[]> {
     const parts = path.split('/').filter(Boolean)
     const dir = await navigateToDir(root, parts)
     const entries: string[] = []
-    for await (const name of (dir as any).keys()) {
+    for await (const name of dir.keys()) {
       entries.push(name)
     }
     return entries
@@ -455,7 +455,7 @@ export async function resolveWorkspaceRelativePathForHandle(
 ): Promise<string | null> {
   try {
     const root = getWorkspaceHandle()
-    const pathParts = await (root as any).resolve(fileHandle) as string[] | null
+    const pathParts = await root.resolve(fileHandle)
     if (!Array.isArray(pathParts) || pathParts.length === 0) return null
     return pathParts.join('/')
   } catch {
@@ -765,16 +765,16 @@ export async function searchCaseTranscripts(
       if (!data || !Array.isArray(data.lines)) continue
 
       const matches: SearchMatch[] = []
-      for (const line of data.lines as any[]) {
-        const text = (line.text || '').toLowerCase()
-        const speaker = (line.speaker || '').toLowerCase()
+      for (const line of data.lines as Array<Record<string, unknown>>) {
+        const text = (String(line.text || '')).toLowerCase()
+        const speaker = (String(line.speaker || '')).toLowerCase()
         if (text.includes(lowerQuery) || speaker.includes(lowerQuery)) {
           matches.push({
-            line_id: line.id || '',
-            page: line.page || 0,
-            line: line.line || 0,
-            text: line.text || '',
-            speaker: line.speaker || '',
+            line_id: String(line.id || ''),
+            page: Number(line.page || 0),
+            line: Number(line.line || 0),
+            text: String(line.text || ''),
+            speaker: String(line.speaker || ''),
             match_type: text.includes(lowerQuery) ? 'text' : 'speaker',
           })
         }
@@ -807,7 +807,7 @@ export async function getStorageEstimate(): Promise<{ fileCount: number; totalSi
   let totalSize = 0
 
   async function walk(dir: FileSystemDirectoryHandle) {
-    for await (const entry of (dir as any).values()) {
+    for await (const entry of dir.values()) {
       if (entry.kind === 'file') {
         fileCount++
         try {
