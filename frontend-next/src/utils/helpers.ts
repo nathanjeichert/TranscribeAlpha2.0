@@ -61,3 +61,15 @@ export interface TranscriptListItem {
   line_count?: number
   expires_at?: string | null
 }
+
+export function formatDate(dateStr?: string | null): string {
+  if (!dateStr) return '-'
+  return new Date(dateStr).toLocaleDateString()
+}
+
+export function formatDuration(seconds?: number): string {
+  if (!seconds) return '-'
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
