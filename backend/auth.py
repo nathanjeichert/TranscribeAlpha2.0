@@ -246,7 +246,13 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     """
     Dependency to get the current authenticated user from JWT token.
     Raises HTTPException if authentication fails.
+    In standalone mode (Tauri desktop), returns a dummy local user.
     """
+    # Standalone mode: skip all auth validation
+    standalone = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
+    if standalone:
+        return {"username": "local", "role": "admin", "user_id": "local"}
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

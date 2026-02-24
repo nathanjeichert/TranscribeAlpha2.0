@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import LoginModal from './LoginModal';
 import { isAuthenticated, logout, getCurrentUser } from '@/utils/auth';
+import { needsAuth } from '@/lib/platform/api';
 
 interface AuthProviderProps {
   children: React.ReactNode;
@@ -14,6 +15,14 @@ export default function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<{ username: string; role: string } | null>(null);
 
   useEffect(() => {
+    // Tauri: skip auth entirely — no login required.
+    if (!needsAuth()) {
+      setIsAuth(true);
+      setUser({ username: 'local', role: 'admin' });
+      setIsLoading(false);
+      return;
+    }
+
     // Check authentication status on mount
     const authenticated = isAuthenticated();
     setIsAuth(authenticated);

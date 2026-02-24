@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { getAuthHeaders } from '@/utils/auth'
+import { apiUrl } from '@/lib/platform/api'
 import { nowIso, sleep, getFileExtension } from '@/utils/helpers'
 import {
   resolveWorkspaceRelativePathForHandle,
@@ -403,7 +404,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
         }
       }
 
-      const endpoint = '/api/transcribe'
+      const endpoint = apiUrl('/api/transcribe')
       const uploadSlotBytes = Math.max(uploadFile.size + 2 * 1024 * 1024, 3 * 1024 * 1024)
       inFlightUploadBytesRef.current.set(jobId, uploadSlotBytes)
 

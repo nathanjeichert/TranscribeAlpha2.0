@@ -5,6 +5,8 @@ import { useDashboard } from '@/context/DashboardContext'
 import { getCurrentUser, logout } from '@/utils/auth'
 import { formatBytes } from '@/utils/helpers'
 import { evictMediaCacheToCap } from '@/lib/mediaCache'
+import { isTauri } from '@/lib/platform'
+import { needsAuth, apiUrl } from '@/lib/platform/api'
 import {
   DEFAULT_MEDIA_CACHE_CAP_BYTES,
   clearWorkspace,
@@ -24,9 +26,114 @@ function formatCacheCapGb(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
+function ApiKeysSection() {
+  const [assemblyaiKey, setAssemblyaiKey] = useState('')
+  const [geminiKey, setGeminiKey] = useState('')
+  const [revaiKey, setRevaiKey] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState('')
+  const [loaded, setLoaded] = useState(false)
+
+  useEffect(() => {
+    fetch(apiUrl('/api/settings/keys'))
+      .then((r) => r.json())
+      .then((data) => {
+        setAssemblyaiKey(data.assemblyai_api_key || '')
+        setGeminiKey(data.gemini_api_key || '')
+        setRevaiKey(data.rev_ai_api_key || '')
+        setLoaded(true)
+      })
+      .catch(() => setLoaded(true))
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setStatus('')
+    try {
+      const resp = await fetch(apiUrl('/api/settings/keys'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assemblyai_api_key: assemblyaiKey,
+          gemini_api_key: geminiKey,
+          rev_ai_api_key: revaiKey,
+        }),
+      })
+      if (resp.ok) {
+        setStatus('API keys saved successfully.')
+      } else {
+        setStatus('Failed to save API keys.')
+      }
+    } catch {
+      setStatus('Failed to save API keys.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!loaded) return null
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+      <h2 className="text-lg font-semibold text-gray-900 mb-4">API Keys</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Enter your API keys for transcription services. Keys are stored locally on your machine.
+      </p>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-900 mb-1">AssemblyAI API Key</label>
+          <input
+            type="password"
+            value={assemblyaiKey}
+            onChange={(e) => { setAssemblyaiKey(e.target.value); setStatus('') }}
+            placeholder="Enter your AssemblyAI API key"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-900 mb-1">Gemini API Key</label>
+          <input
+            type="password"
+            value={geminiKey}
+            onChange={(e) => { setGeminiKey(e.target.value); setStatus('') }}
+            placeholder="Enter your Gemini API key"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-900 mb-1">Rev AI API Key</label>
+          <input
+            type="password"
+            value={revaiKey}
+            onChange={(e) => { setRevaiKey(e.target.value); setStatus('') }}
+            placeholder="Enter your Rev AI API key"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+          />
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+          >
+            {saving ? 'Saving...' : 'Save Keys'}
+          </button>
+          {status && (
+            <p className={`text-sm ${status.startsWith('API keys saved') ? 'text-green-600' : 'text-red-600'}`}>
+              {status}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const { oncueXmlEnabled, setOncueXmlEnabled, memoryLimitMB, setMemoryLimitMB } = useDashboard()
   const [currentUserName] = useState(() => getCurrentUser()?.username || '')
+  const inTauri = isTauri()
+  const showAuth = needsAuth()
 
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
   const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
@@ -123,24 +230,28 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Account</h2>
-          <div className="flex items-center justify-between py-3">
-            <div>
-              <p className="font-medium text-gray-900">Signed in as</p>
-              <p className="text-sm text-gray-500">{currentUserName || 'Unknown'}</p>
+        {showAuth && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Account</h2>
+            <div className="flex items-center justify-between py-3">
+              <div>
+                <p className="font-medium text-gray-900">Signed in as</p>
+                <p className="text-sm text-gray-500">{currentUserName || 'Unknown'}</p>
+              </div>
+              <button
+                onClick={() => {
+                  logout()
+                  window.location.reload()
+                }}
+                className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 font-medium text-sm rounded-lg transition-colors"
+              >
+                Sign Out
+              </button>
             </div>
-            <button
-              onClick={() => {
-                logout()
-                window.location.reload()
-              }}
-              className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 font-medium text-sm rounded-lg transition-colors"
-            >
-              Sign Out
-            </button>
           </div>
-        </div>
+        )}
+
+        {inTauri && <ApiKeysSection />}
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Workspace Storage</h2>
@@ -205,35 +316,37 @@ export default function SettingsPage() {
                 </p>
               )}
             </div>
-            <div className="flex items-center justify-between py-3 border-b border-gray-100">
-              <div>
-                <p className="font-medium text-gray-900 mb-1">Persistent Storage</p>
-                {persistentActive === null ? (
-                  <p className="text-sm text-gray-500">Checking...</p>
-                ) : persistentActive ? (
-                  <p className="text-sm text-green-600">Active &mdash; browser will not evict your workspace data</p>
-                ) : (
-                  <p className="text-sm text-amber-600">Not active &mdash; browser may clear stored data under storage pressure</p>
+            {!inTauri && (
+              <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                <div>
+                  <p className="font-medium text-gray-900 mb-1">Persistent Storage</p>
+                  {persistentActive === null ? (
+                    <p className="text-sm text-gray-500">Checking...</p>
+                  ) : persistentActive ? (
+                    <p className="text-sm text-green-600">Active &mdash; browser will not evict your workspace data</p>
+                  ) : (
+                    <p className="text-sm text-amber-600">Not active &mdash; browser may clear stored data under storage pressure</p>
+                  )}
+                </div>
+                {persistentActive === false && (
+                  <button
+                    onClick={async () => {
+                      setRequestingPersistence(true)
+                      try {
+                        const granted = await requestPersistentStorage()
+                        setPersistentActive(granted)
+                      } finally {
+                        setRequestingPersistence(false)
+                      }
+                    }}
+                    disabled={requestingPersistence}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {requestingPersistence ? 'Requesting...' : 'Request Persistence'}
+                  </button>
                 )}
               </div>
-              {persistentActive === false && (
-                <button
-                  onClick={async () => {
-                    setRequestingPersistence(true)
-                    try {
-                      const granted = await requestPersistentStorage()
-                      setPersistentActive(granted)
-                    } finally {
-                      setRequestingPersistence(false)
-                    }
-                  }}
-                  disabled={requestingPersistence}
-                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
-                >
-                  {requestingPersistence ? 'Requesting...' : 'Request Persistence'}
-                </button>
-              )}
-            </div>
+            )}
             <div className="py-3">
               <p className="font-medium text-gray-900 mb-1">Data Architecture</p>
               <p className="text-sm text-gray-500">

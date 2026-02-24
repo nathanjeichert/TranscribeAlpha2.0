@@ -4,6 +4,7 @@ import {
   getFirstAvailableMediaObjectURL,
   getMediaHandlePermissionState,
 } from './mediaHandles'
+import { isTauri, getPlatformFS } from './platform'
 import { readWorkspaceRelativeFile } from './storage'
 
 export type MediaSourceKind = 'workspace-relative' | 'workspace-cache' | 'external-handle'
@@ -131,6 +132,27 @@ export async function resolveMediaObjectURLForRecord(
   record: MediaRecordShape,
   options?: { requestPermission?: boolean },
 ): Promise<MediaResolution> {
+  // Tauri: try convertFileSrc for direct streaming (no JS memory copy).
+  if (isTauri()) {
+    const mediaKey = asText(record.media_key)
+    const workspacePath = asText(record.media_workspace_relpath)
+    if (workspacePath) {
+      const url = await tauriConvertFileSrc(workspacePath)
+      if (url) {
+        if (mediaKey) await touchMediaCacheEntry(mediaKey)
+        return { objectUrl: url, sourceKind: 'workspace-relative', reconnectRecommended: false }
+      }
+    }
+    const cachePath = asText(record.playback_cache_path)
+    if (cachePath) {
+      const url = await tauriConvertFileSrc(cachePath)
+      if (url) {
+        if (mediaKey) await touchMediaCacheEntry(mediaKey)
+        return { objectUrl: url, sourceKind: 'workspace-cache', reconnectRecommended: false }
+      }
+    }
+  }
+
   const source = await resolveMediaSource(record, options)
 
   if (source) {
@@ -188,5 +210,25 @@ export async function resolveMediaFileForRecord(
     sourceKind: null,
     reconnectRecommended,
     message: buildMissingMessage(record, reconnectRecommended),
+  }
+}
+
+// ─── Tauri helper ─────────────────────────────────────────────────────────
+
+/** Convert a workspace-relative path to an asset:// URL for direct streaming. */
+async function tauriConvertFileSrc(workspaceRelPath: string): Promise<string | null> {
+  try {
+    const fs = await getPlatformFS()
+    const basePath = fs.getWorkspaceBasePath()
+    if (!basePath) return null
+
+    const { sep } = await import('@tauri-apps/api/path')
+    const s = typeof sep === 'function' ? (sep as () => string)() : sep
+    const absolutePath = basePath + s + workspaceRelPath.split('/').filter(Boolean).join(s)
+
+    const { convertFileSrc } = await import('@tauri-apps/api/core')
+    return convertFileSrc(absolutePath)
+  } catch {
+    return null
   }
 }

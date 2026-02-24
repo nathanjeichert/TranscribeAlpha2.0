@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from 'react';
+import { apiUrl } from '@/lib/platform/api';
 
 interface LoginModalProps {
   onLoginSuccess: () => void;
@@ -34,7 +35,7 @@ export default function LoginModal({ onLoginSuccess }: LoginModalProps) {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -74,7 +75,7 @@ export default function LoginModal({ onLoginSuccess }: LoginModalProps) {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth/register', {
+      const response = await fetch(apiUrl('/api/auth/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, password_confirm: passwordConfirm }),

@@ -1,5 +1,6 @@
-import { idbGet, idbPut, idbDelete } from './idb'
 import { logger } from '@/utils/logger'
+import { getPlatformFS } from './platform'
+import type { WorkspaceInitResult } from './platform/types'
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -86,14 +87,12 @@ export const DEFAULT_MEDIA_CACHE_CAP_BYTES = 10 * 1024 * 1024 * 1024
 
 // ─── Constants ──────────────────────────────────────────────────────
 
-const IDB_KEY_WORKSPACE = 'workspace-dir-handle'
 const MULTI_TAB_CHANNEL = 'ta-multi-tab'
 const CONFIG_FILENAME = 'config.json'
 const CONFIG_VERSION = 2
 
 // ─── Module State ───────────────────────────────────────────────────
 
-let workspaceHandle: FileSystemDirectoryHandle | null = null
 let multiTabChannel: BroadcastChannel | null = null
 
 function buildDefaultPreferences(overrides?: Partial<WorkspacePreferences>): WorkspacePreferences {
@@ -102,17 +101,6 @@ function buildDefaultPreferences(overrides?: Partial<WorkspacePreferences>): Wor
     auto_save_interval_seconds: 60,
     default_transcription_model: 'assemblyai',
     media_cache_cap_bytes: DEFAULT_MEDIA_CACHE_CAP_BYTES,
-    ...overrides,
-  }
-}
-
-function buildDefaultConfig(overrides?: Partial<WorkspaceConfig>): WorkspaceConfig {
-  const now = new Date().toISOString()
-  return {
-    version: CONFIG_VERSION,
-    created_at: now,
-    updated_at: now,
-    preferences: buildDefaultPreferences(),
     ...overrides,
   }
 }
@@ -199,250 +187,94 @@ export async function isPersistentStorage(): Promise<boolean> {
   return false
 }
 
-// ─── Workspace Initialization ───────────────────────────────────────
-
-export async function isWorkspaceConfigured(): Promise<boolean> {
-  try {
-    const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
-    return !!handle
-  } catch {
-    return false
-  }
-}
+// ─── Workspace Initialization (delegates to platform adapter) ──────
 
 export type WorkspaceInitStatus = 'ok' | 'no-handle' | 'permission-denied' | 'permission-prompt' | 'error'
 
-export interface WorkspaceInitResult {
-  status: WorkspaceInitStatus
-  handle: FileSystemDirectoryHandle | null
+export type { WorkspaceInitResult }
+
+export async function isWorkspaceConfigured(): Promise<boolean> {
+  const fs = await getPlatformFS()
+  return fs.isWorkspaceConfigured()
 }
 
 export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
-  try {
-    const handle = await idbGet<FileSystemDirectoryHandle>('workspace', IDB_KEY_WORKSPACE)
-
-    if (!handle) {
-      logger.warn('No workspace handle found in IndexedDB')
-      return { status: 'no-handle', handle: null }
-    }
-
-    // Try queryPermission first (works without user gesture)
-    let permission: PermissionState | string = 'prompt'
-    try {
-      permission = await handle.queryPermission({ mode: 'readwrite' })
-    } catch {
-      // queryPermission may not be available in all browsers
-    }
-
-    if (permission === 'granted') {
-      await ensureWorkspaceStructure(handle)
-      workspaceHandle = handle
-      return { status: 'ok', handle }
-    }
-
-    // Fall back to requestPermission (needs user gesture to succeed)
-    try {
-      permission = await handle.requestPermission({ mode: 'readwrite' })
-    } catch {
-      logger.warn('requestPermission() threw — likely no user gesture')
-      return { status: 'permission-prompt', handle: null }
-    }
-
-    if (permission === 'granted') {
-      await ensureWorkspaceStructure(handle)
-      workspaceHandle = handle
-      return { status: 'ok', handle }
-    }
-
-    if (permission === 'denied') {
-      logger.warn('Permission denied for workspace handle')
-      return { status: 'permission-denied', handle: null }
-    }
-
-    logger.warn('Permission not granted (status: %s) — likely needs user gesture', permission)
-    return { status: 'permission-prompt', handle: null }
-  } catch (err) {
-    logger.warn('initWorkspaceDetailed error:', err)
-    return { status: 'error', handle: null }
-  }
+  const fs = await getPlatformFS()
+  const result = await fs.initWorkspace()
+  _cachedWorkspaceName = fs.getWorkspaceName()
+  return result
 }
 
-export async function initWorkspace(): Promise<FileSystemDirectoryHandle | null> {
+export async function initWorkspace(): Promise<unknown> {
   const result = await initWorkspaceDetailed()
   return result.handle
 }
 
-export async function pickAndInitWorkspace(): Promise<{ handle: FileSystemDirectoryHandle; isExisting: boolean }> {
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
-
-  // Check if returning user
-  let isExisting = false
-  try {
-    await handle.getFileHandle(CONFIG_FILENAME)
-    isExisting = true
-  } catch {
-    // New workspace
-  }
-
-  if (!isExisting) {
-    await ensureWorkspaceStructure(handle)
-    await writeJSONToHandle(handle, CONFIG_FILENAME, buildDefaultConfig())
-  }
-
-  // Store handle in IndexedDB
-  await idbPut('workspace', IDB_KEY_WORKSPACE, handle)
-
-  // Request persistent storage (runs in user-gesture context from folder picker)
-  await requestPersistentStorage()
-
-  workspaceHandle = handle
-  return { handle, isExisting }
+export async function pickAndInitWorkspace(): Promise<{ handle: unknown; isExisting: boolean }> {
+  const fs = await getPlatformFS()
+  const result = await fs.pickWorkspaceDirectory()
+  _cachedWorkspaceName = fs.getWorkspaceName()
+  return { handle: fs.getWorkspaceHandle(), isExisting: result.isExisting }
 }
 
-async function ensureWorkspaceStructure(root: FileSystemDirectoryHandle): Promise<void> {
-  await root.getDirectoryHandle('cases', { create: true })
-  await root.getDirectoryHandle('uncategorized', { create: true })
-  const cache = await root.getDirectoryHandle('cache', { create: true })
-  await cache.getDirectoryHandle('converted', { create: true })
-  await cache.getDirectoryHandle('playback', { create: true })
-}
-
-// ─── Low-Level File Operations ──────────────────────────────────────
-
-function getWorkspaceHandle(): FileSystemDirectoryHandle {
-  if (!workspaceHandle) {
-    throw new Error('Workspace not initialized. Call initWorkspace() first.')
-  }
-  return workspaceHandle
-}
-
-async function navigateToDir(
-  root: FileSystemDirectoryHandle,
-  pathParts: string[],
-  create = false,
-): Promise<FileSystemDirectoryHandle> {
-  let current = root
-  for (const part of pathParts) {
-    if (!part) continue
-    current = await current.getDirectoryHandle(part, { create })
-  }
-  return current
-}
-
-async function writeJSONToHandle(
-  dir: FileSystemDirectoryHandle,
-  filename: string,
-  data: unknown,
-): Promise<void> {
-  const fileHandle = await dir.getFileHandle(filename, { create: true })
-  const writable = await fileHandle.createWritable()
-  await writable.write(JSON.stringify(data, null, 2))
-  await writable.close()
-}
+// ─── Low-Level File Operations (delegates to platform adapter) ─────
 
 export async function readJSON<T>(path: string): Promise<T | null> {
-  try {
-    const root = getWorkspaceHandle()
-    const parts = path.split('/')
-    const filename = parts.pop()!
-    const dir = await navigateToDir(root, parts)
-    const fileHandle = await dir.getFileHandle(filename)
-    const file = await fileHandle.getFile()
-    const text = await file.text()
-    return JSON.parse(text) as T
-  } catch {
-    return null
-  }
+  const fs = await getPlatformFS()
+  return fs.readJSON<T>(path)
 }
 
 export async function writeJSON(path: string, data: unknown): Promise<void> {
-  const root = getWorkspaceHandle()
-  const parts = path.split('/')
-  const filename = parts.pop()!
-  const dir = await navigateToDir(root, parts, true)
-  await writeJSONToHandle(dir, filename, data)
+  const fs = await getPlatformFS()
+  return fs.writeJSON(path, data)
 }
 
 export async function deleteFile(path: string): Promise<void> {
-  try {
-    const root = getWorkspaceHandle()
-    const parts = path.split('/')
-    const filename = parts.pop()!
-    const dir = await navigateToDir(root, parts)
-    await dir.removeEntry(filename)
-  } catch (err: any) {
-    if (err?.name !== 'NotFoundError') throw err
-  }
+  const fs = await getPlatformFS()
+  return fs.deleteFile(path)
 }
 
 export async function deleteDirectory(path: string): Promise<void> {
-  try {
-    const root = getWorkspaceHandle()
-    const parts = path.split('/')
-    const dirname = parts.pop()!
-    const parent = await navigateToDir(root, parts)
-    await parent.removeEntry(dirname, { recursive: true })
-  } catch (err: any) {
-    if (err?.name !== 'NotFoundError') throw err
-  }
+  const fs = await getPlatformFS()
+  return fs.deleteDirectory(path)
 }
 
 export async function listDirectory(path: string): Promise<string[]> {
-  try {
-    const root = getWorkspaceHandle()
-    const parts = path.split('/').filter(Boolean)
-    const dir = await navigateToDir(root, parts)
-    const entries: string[] = []
-    for await (const name of dir.keys()) {
-      entries.push(name)
-    }
-    return entries
-  } catch {
-    return []
-  }
+  const fs = await getPlatformFS()
+  return fs.listDirectory(path)
 }
 
 export async function fileExists(path: string): Promise<boolean> {
-  try {
-    const root = getWorkspaceHandle()
-    const parts = path.split('/')
-    const filename = parts.pop()!
-    const dir = await navigateToDir(root, parts)
-    await dir.getFileHandle(filename)
-    return true
-  } catch {
-    return false
-  }
+  const fs = await getPlatformFS()
+  return fs.fileExists(path)
 }
 
 export async function readWorkspaceRelativeFile(path: string): Promise<File | null> {
-  try {
-    const root = getWorkspaceHandle()
-    const normalizedPath = String(path || '').replace(/^\/+|\/+$/g, '')
-    if (!normalizedPath) return null
-    const parts = normalizedPath.split('/')
-    const filename = parts.pop()
-    if (!filename) return null
-    const dir = await navigateToDir(root, parts)
-    const handle = await dir.getFileHandle(filename)
-    return await handle.getFile()
-  } catch {
-    return null
-  }
+  const fs = await getPlatformFS()
+  return fs.readFileAsFile(path)
 }
 
 export async function resolveWorkspaceRelativePathForHandle(
   fileHandle: FileSystemFileHandle,
 ): Promise<string | null> {
-  try {
-    const root = getWorkspaceHandle()
-    const pathParts = await root.resolve(fileHandle)
-    if (!Array.isArray(pathParts) || pathParts.length === 0) return null
-    return pathParts.join('/')
-  } catch {
-    return null
-  }
+  const fs = await getPlatformFS()
+  return fs.resolveWorkspaceRelativePathForHandle(fileHandle)
 }
+
+export async function readBinaryFile(path: string): Promise<ArrayBuffer | null> {
+  const fs = await getPlatformFS()
+  return fs.readBinaryFile(path)
+}
+
+export async function writeBinaryFile(
+  path: string,
+  data: ArrayBuffer | Uint8Array | Blob,
+): Promise<void> {
+  const fs = await getPlatformFS()
+  return fs.writeBinaryFile(path, data)
+}
+
+// ─── Workspace Config ───────────────────────────────────────────────
 
 export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
   const current = await readJSON<WorkspaceConfig>(CONFIG_FILENAME)
@@ -530,13 +362,15 @@ export async function getCase(caseId: string): Promise<CaseDetail | null> {
 }
 
 export async function createCase(meta: CaseMeta): Promise<void> {
-  const root = getWorkspaceHandle()
-  const casesDir = await root.getDirectoryHandle('cases', { create: true })
-  const caseDir = await casesDir.getDirectoryHandle(meta.case_id, { create: true })
-  await caseDir.getDirectoryHandle('transcripts', { create: true })
-  await caseDir.getDirectoryHandle('clips', { create: true })
-  await caseDir.getDirectoryHandle('sequences', { create: true })
-  await writeJSONToHandle(caseDir, 'meta.json', meta)
+  // Write meta.json (this creates the case directory via mkdir in both adapters)
+  await writeJSON(`cases/${meta.case_id}/meta.json`, meta)
+  // Create empty subdirectories. writeJSON only creates parents of the file path,
+  // so we need to ensure these leaf dirs exist. We write to a known path inside
+  // each, which triggers directory creation, then rely on listDirectory returning []
+  // for empty dirs. Alternatively, we can use fileExists to trigger dir creation
+  // attempts in the adapter — but the simplest is to just let them be created
+  // lazily when the first transcript/clip/sequence is saved. listDirectory on a
+  // non-existent dir returns [] in both adapters.
 }
 
 export async function updateCase(caseId: string, updates: Partial<CaseMeta>): Promise<CaseMeta> {
@@ -658,11 +492,6 @@ export async function saveTranscript(
 
   if (caseId) {
     record.case_id = caseId
-    // Ensure case transcripts directory exists
-    const root = getWorkspaceHandle()
-    const casesDir = await root.getDirectoryHandle('cases', { create: true })
-    const caseDir = await casesDir.getDirectoryHandle(caseId, { create: true })
-    await caseDir.getDirectoryHandle('transcripts', { create: true })
     await writeJSON(`cases/${caseId}/transcripts/${mediaKey}.json`, record)
   } else {
     record.case_id = null
@@ -702,7 +531,6 @@ export async function moveTranscriptToCase(mediaKey: string, targetCaseId: strin
   }
 
   // Only delete from old location after write succeeded
-  // Find old location (it's wherever getTranscript found it, excluding the new location)
   if (targetCaseId === 'uncategorized' || !targetCaseId) {
     // We wrote to uncategorized, so delete from any case
     const caseEntries = await listDirectory('cases')
@@ -779,40 +607,27 @@ export async function searchCaseTranscripts(
 
 // ─── Workspace Info ─────────────────────────────────────────────────
 
+// Cache for synchronous access — set after adapter loads
+let _cachedWorkspaceName: string | null = null
+
 export function getWorkspaceName(): string | null {
-  return workspaceHandle?.name ?? null
+  return _cachedWorkspaceName
+}
+
+/** Call after workspace init to sync the cached name. */
+export async function refreshWorkspaceName(): Promise<void> {
+  const fs = await getPlatformFS()
+  _cachedWorkspaceName = fs.getWorkspaceName()
 }
 
 export async function getStorageEstimate(): Promise<{ fileCount: number; totalSize: number }> {
-  let fileCount = 0
-  let totalSize = 0
-
-  async function walk(dir: FileSystemDirectoryHandle) {
-    for await (const entry of dir.values()) {
-      if (entry.kind === 'file') {
-        fileCount++
-        try {
-          const file = await (entry as FileSystemFileHandle).getFile()
-          totalSize += file.size
-        } catch {
-          // Skip inaccessible files
-        }
-      } else if (entry.kind === 'directory') {
-        await walk(entry as FileSystemDirectoryHandle)
-      }
-    }
-  }
-
-  if (workspaceHandle) {
-    await walk(workspaceHandle)
-  }
-
-  return { fileCount, totalSize }
+  const fs = await getPlatformFS()
+  return fs.getStorageEstimate()
 }
 
 export async function clearWorkspace(): Promise<void> {
-  await idbDelete('workspace', IDB_KEY_WORKSPACE)
-  workspaceHandle = null
+  const fs = await getPlatformFS()
+  return fs.clearWorkspace()
 }
 
 // ─── Clip and Sequence Operations ──────────────────────────────────
@@ -946,43 +761,4 @@ export async function saveSequence(caseId: string, sequence: ClipSequenceRecord)
 
 export async function deleteSequence(caseId: string, sequenceId: string): Promise<void> {
   await deleteFile(`cases/${caseId}/sequences/${sequenceId}.json`)
-}
-
-// ─── Binary File Operations ────────────────────────────────────────
-
-export async function writeBinaryFile(
-  path: string,
-  data: ArrayBuffer | Uint8Array | Blob,
-): Promise<void> {
-  const root = getWorkspaceHandle()
-  const parts = path.split('/')
-  const filename = parts.pop()!
-  const dir = await navigateToDir(root, parts, true)
-  const fileHandle = await dir.getFileHandle(filename, { create: true })
-  const writable = await fileHandle.createWritable()
-  let payload: ArrayBuffer | Blob
-  if (data instanceof Uint8Array) {
-    // Ensure the payload is ArrayBuffer-backed for File System Access typings.
-    const copy = new Uint8Array(data.byteLength)
-    copy.set(data)
-    payload = copy.buffer
-  } else {
-    payload = data
-  }
-  await writable.write(payload)
-  await writable.close()
-}
-
-export async function readBinaryFile(path: string): Promise<ArrayBuffer | null> {
-  try {
-    const root = getWorkspaceHandle()
-    const parts = path.split('/')
-    const filename = parts.pop()!
-    const dir = await navigateToDir(root, parts)
-    const fileHandle = await dir.getFileHandle(filename)
-    const file = await fileHandle.getFile()
-    return await file.arrayBuffer()
-  } catch {
-    return null
-  }
 }

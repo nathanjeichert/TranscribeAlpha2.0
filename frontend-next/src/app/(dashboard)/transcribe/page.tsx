@@ -8,6 +8,8 @@ import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import { createCase as localCreateCase } from '@/lib/storage'
 import { detectCodec, type CodecInfo } from '@/lib/ffmpegWorker'
+import { isTauri } from '@/lib/platform'
+import { pickMediaFilesTauri } from '@/lib/mediaHandles'
 
 interface FormData {
   case_name: string
@@ -222,10 +224,9 @@ export default function TranscribePage() {
   )
 
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    // When showOpenFilePicker is available, the parent onClick already handles file
-    // selection via handleOpenFilePicker (which returns FileSystemFileHandles with
-    // correct long filenames). Ignore the <input> change to avoid Windows 8.3 names.
-    if (typeof window.showOpenFilePicker === 'function') {
+    // When showOpenFilePicker is available (or in Tauri mode), the parent onClick
+    // already handles file selection via handleOpenFilePicker. Ignore the <input> change.
+    if (isTauri() || typeof window.showOpenFilePicker === 'function') {
       event.target.value = ''
       return
     }
@@ -277,6 +278,40 @@ export default function TranscribePage() {
 
   const handleOpenFilePicker = useCallback(async () => {
     try {
+      // Tauri: use the native dialog plugin for file picking.
+      if (isTauri()) {
+        const picked = await pickMediaFilesTauri()
+        if (!picked.length) return
+
+        setPageError('')
+        setPageNotice('')
+
+        const baseQueue = queueRef.current
+        const remainingSlots = Math.max(MAX_BATCH_FILES - baseQueue.length, 0)
+        if (remainingSlots <= 0) {
+          setPageError(`Batch limit reached. Maximum ${MAX_BATCH_FILES} files per run.`)
+          return
+        }
+
+        const accepted = picked.slice(0, remainingSlots)
+        const dropped = picked.length - accepted.length
+
+        const nextItems: QueueItem[] = []
+        const acceptedFiles: File[] = []
+        for (const item of accepted) {
+          acceptedFiles.push(item.file)
+          nextItems.push(createQueueItem(item.file, null))
+        }
+        setQueue([...baseQueue, ...nextItems])
+        void inspectForJailCalls(acceptedFiles)
+
+        if (dropped > 0) {
+          setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
+        }
+        return
+      }
+
+      // Web: use the File System Access API for FileSystemFileHandles.
       const handles: FileSystemFileHandle[] = await window.showOpenFilePicker({
         multiple: true,
         types: [
@@ -582,8 +617,9 @@ export default function TranscribePage() {
             {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
             <div
               onClick={(e) => {
-                // Use showOpenFilePicker when available to get FileSystemFileHandles (avoids Windows 8.3 short filenames)
-                if (typeof window.showOpenFilePicker === 'function') {
+                // Tauri: always use handleOpenFilePicker (routes to native dialog).
+                // Web: use showOpenFilePicker when available for FileSystemFileHandles.
+                if (isTauri() || typeof window.showOpenFilePicker === 'function') {
                   e.preventDefault()
                   handleOpenFilePicker()
                 } else {

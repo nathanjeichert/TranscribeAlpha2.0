@@ -3,6 +3,7 @@ import { fetchFile } from '@ffmpeg/util'
 import { idbGet } from './idb'
 import { readBinaryFile, writeBinaryFile } from './storage'
 import { getFileExtension } from '@/utils/helpers'
+import { isTauri } from './platform'
 
 export type CodecInfo = {
   isStandard: boolean
@@ -857,6 +858,9 @@ async function getEncoderSupport(ffmpeg: FFmpeg): Promise<EncoderSupport> {
 }
 
 export function cancelActiveFFmpegJob(): void {
+  if (isTauri()) {
+    import('./platform/nativeFFmpeg').then((m) => m.cancelNativeFFmpeg()).catch(() => {})
+  }
   terminatedByUser = true
   resetFFmpegRuntime()
 }
@@ -898,6 +902,10 @@ export async function convertToPlayable(
   file: File,
   onProgress?: ProgressCallback,
 ): Promise<File> {
+  if (isTauri()) {
+    const { nativeConvertToPlayable } = await import('./platform/nativeFFmpeg')
+    return nativeConvertToPlayable(file, onProgress)
+  }
   return runSerial(async () => {
     terminatedByUser = false
     const sourceFile = await maybeRepairWav(file)
@@ -953,6 +961,10 @@ export async function clipMedia(
   endTime: number,
   onProgress?: ProgressCallback,
 ): Promise<File> {
+  if (isTauri()) {
+    const { nativeClipMedia } = await import('./platform/nativeFFmpeg')
+    return nativeClipMedia(file, startTime, endTime, replaceExtension(file.name, '_clip'), onProgress)
+  }
   const requestId = 'clip-single'
   const defaultStem = replaceExtension(file.name, '_clip')
   const outputById = await clipMediaBatch(
@@ -1128,6 +1140,10 @@ export async function extractAudio(
   file: File,
   onProgress?: ProgressCallback,
 ): Promise<File> {
+  if (isTauri()) {
+    const { nativeExtractAudio } = await import('./platform/nativeFFmpeg')
+    return nativeExtractAudio(file, onProgress)
+  }
   return runSerial(async () => {
     terminatedByUser = false
     const sourceFile = await maybeRepairWav(file)
@@ -1201,6 +1217,10 @@ export async function extractAudioStereo(
   file: File,
   onProgress?: ProgressCallback,
 ): Promise<File> {
+  if (isTauri()) {
+    const { nativeExtractAudioStereo } = await import('./platform/nativeFFmpeg')
+    return nativeExtractAudioStereo(file, onProgress)
+  }
   return runSerial(async () => {
     terminatedByUser = false
     const sourceFile = await maybeRepairWav(file)

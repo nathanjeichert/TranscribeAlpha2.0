@@ -1,9 +1,14 @@
 /**
  * Authentication utility for TranscribeAlpha
- * Handles token storage, refresh, and API authentication
+ * Handles token storage, refresh, and API authentication.
+ *
+ * In Tauri desktop mode, auth is skipped entirely — all API calls go to
+ * a local sidecar with no JWT required.
  */
 
 import { logger } from '@/utils/logger'
+import { isTauri } from '@/lib/platform'
+import { apiUrl, needsAuth } from '@/lib/platform/api'
 
 export interface User {
   username: string;
@@ -20,6 +25,7 @@ export interface AuthTokens {
  */
 export function getAccessToken(): string | null {
   if (typeof window === 'undefined') return null;
+  if (!needsAuth()) return 'tauri-standalone';
   return localStorage.getItem('access_token');
 }
 
@@ -36,6 +42,7 @@ export function getRefreshToken(): string | null {
  */
 export function getCurrentUser(): User | null {
   if (typeof window === 'undefined') return null;
+  if (!needsAuth()) return { username: 'local', role: 'admin' };
   const userStr = localStorage.getItem('user');
   if (!userStr) return null;
   try {
@@ -49,6 +56,7 @@ export function getCurrentUser(): User | null {
  * Check if user is authenticated
  */
 export function isAuthenticated(): boolean {
+  if (!needsAuth()) return true;
   return !!getAccessToken();
 }
 
@@ -66,10 +74,11 @@ export function clearAuth(): void {
  * Logout the current user
  */
 export async function logout(): Promise<void> {
+  if (!needsAuth()) return;
   try {
     const token = getAccessToken();
     if (token) {
-      await fetch('/api/auth/logout', {
+      await fetch(apiUrl('/api/auth/logout'), {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -90,13 +99,14 @@ export async function logout(): Promise<void> {
  * Refresh the access token using the refresh token
  */
 export async function refreshAccessToken(): Promise<string | null> {
+  if (!needsAuth()) return 'tauri-standalone';
   const refreshToken = getRefreshToken();
   if (!refreshToken) {
     return null;
   }
 
   try {
-    const response = await fetch('/api/auth/refresh', {
+    const response = await fetch(apiUrl('/api/auth/refresh'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -120,12 +130,20 @@ export async function refreshAccessToken(): Promise<string | null> {
 }
 
 /**
- * Make an authenticated API request with automatic token refresh
+ * Make an authenticated API request with automatic token refresh.
+ * In Tauri mode, no Authorization header is sent.
  */
 export async function authenticatedFetch(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
+  const fullUrl = apiUrl(url)
+
+  // Tauri: no auth needed, just fetch with the correct base URL.
+  if (!needsAuth()) {
+    return fetch(fullUrl, options)
+  }
+
   let token = getAccessToken();
 
   if (!token) {
@@ -142,7 +160,7 @@ export async function authenticatedFetch(
   };
 
   // Make the request
-  let response = await fetch(url, requestOptions);
+  let response = await fetch(fullUrl, requestOptions);
 
   // If unauthorized, try to refresh the token and retry once
   if (response.status === 401) {
@@ -151,7 +169,7 @@ export async function authenticatedFetch(
     if (token) {
       // Retry with new token
       headers.set('Authorization', `Bearer ${token}`);
-      response = await fetch(url, requestOptions);
+      response = await fetch(fullUrl, requestOptions);
     } else {
       // Refresh failed, redirect to login
       clearAuth();
@@ -168,6 +186,7 @@ export async function authenticatedFetch(
  * This is a simpler helper for when you want to handle the response yourself
  */
 export function getAuthHeaders(): HeadersInit {
+  if (!needsAuth()) return {};
   const token = getAccessToken();
   if (!token) {
     return {};
@@ -181,6 +200,7 @@ export function getAuthHeaders(): HeadersInit {
  * Check if the access token is expired
  */
 export function isTokenExpired(): boolean {
+  if (!needsAuth()) return false;
   const token = getAccessToken();
   if (!token) return true;
 
