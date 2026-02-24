@@ -114,9 +114,9 @@ const LEGACY_JOB_STORAGE_PREFIX = 'ta_jobs_v1:'
 const JOBS_STORE = 'jobs'
 
 const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024
-const CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS = 7 * 60 * 1000
-const CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 512 * 1024 * 1024
-const CRIMINAL_TRANSCRIBE_REQUEST_TIMEOUT_MS = 16 * 60 * 1000
+const AUDIO_EXTRACTION_TIMEOUT_MS = 7 * 60 * 1000
+const DIRECT_UPLOAD_FALLBACK_MAX_BYTES = 512 * 1024 * 1024
+const TRANSCRIBE_REQUEST_TIMEOUT_MS = 16 * 60 * 1000
 const MAX_IN_MEMORY_CONVERTED_FILES = 8
 const ONCUE_XML_ENABLED_KEY = 'ta_oncue_xml_enabled'
 const MEMORY_LIMIT_KEY = 'ta_memory_limit_mb'
@@ -851,7 +851,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           updateJob(jobId, { detail: 'Waiting for memory budget...' })
           announced = true
         }
-        if (Date.now() - startedAt > CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS) {
+        if (Date.now() - startedAt > AUDIO_EXTRACTION_TIMEOUT_MS) {
           throw new Error('Memory budget limit reached. Increase Memory Limit in Settings or reduce batch size.')
         }
         await sleep(250)
@@ -890,7 +890,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
               extractionTimedOut = true
               cancelActiveFFmpegJob()
               reject(new Error('Preparing multichannel audio took too long in this tab.'))
-            }, CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS)
+            }, AUDIO_EXTRACTION_TIMEOUT_MS)
           })
 
           const extracted = await Promise.race([extractionPromise, timeoutPromise])
@@ -902,7 +902,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             throw new Error('Preparing multichannel audio was canceled.')
           }
 
-          if (sourceFile.size > CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
+          if (sourceFile.size > DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
             const sizeMb = (sourceFile.size / (1024 * 1024)).toFixed(1)
             const reason = extractionTimedOut
               ? 'Preparing this file in the browser took too long.'
@@ -953,7 +953,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
             extractionTimedOut = true
             cancelActiveFFmpegJob()
             reject(new Error('Preparing the upload took too long in this tab.'))
-          }, CRIMINAL_AUDIO_EXTRACTION_TIMEOUT_MS)
+          }, AUDIO_EXTRACTION_TIMEOUT_MS)
         })
 
         const extracted = await Promise.race([extractionPromise, timeoutPromise])
@@ -965,7 +965,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
           throw new Error('Preparing audio was canceled.')
         }
 
-        if (sourceFile.size > CRIMINAL_DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
+        if (sourceFile.size > DIRECT_UPLOAD_FALLBACK_MAX_BYTES) {
           const sizeMb = (sourceFile.size / (1024 * 1024)).toFixed(1)
           const reason = extractionTimedOut
             ? 'Preparing this file in the browser took too long.'
@@ -1027,7 +1027,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
 
         request.open('POST', endpoint, true)
         request.responseType = 'json'
-        request.timeout = CRIMINAL_TRANSCRIBE_REQUEST_TIMEOUT_MS
+        request.timeout = TRANSCRIBE_REQUEST_TIMEOUT_MS
 
         const authHeaders = getAuthHeaders()
         Object.entries(authHeaders).forEach(([key, value]) => {

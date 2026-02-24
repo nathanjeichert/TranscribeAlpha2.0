@@ -197,12 +197,3 @@ export function isTokenExpired(): boolean {
   }
 }
 
-/**
- * Initialize authentication (no automatic refresh needed - tokens last 1 year)
- * Users stay logged in until they explicitly log out
- */
-export function initializeTokenRefresh(): void {
-  // Tokens now last 1 year, so no automatic refresh is needed
-  // Users will stay logged in until they explicitly log out
-  // This function is kept for API compatibility
-}

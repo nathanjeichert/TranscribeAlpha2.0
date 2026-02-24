@@ -797,31 +797,6 @@ export default function TranscribePage() {
             </div>
           </div>
 
-          {/* TODO: Re-enable Gemini model option later
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Transcription Model</h2>
-            <select
-              value={formData.transcription_model}
-              onChange={(event) =>
-                setFormData((prev) => ({
-                  ...prev,
-                  transcription_model: event.target.value as 'assemblyai' | 'gemini',
-                }))
-              }
-              disabled={jailCallMode}
-              className="input-field"
-            >
-              <option value="assemblyai">AssemblyAI (Recommended)</option>
-              <option value="gemini">Gemini 3.0 Pro</option>
-            </select>
-            {jailCallMode ? (
-              <p className="mt-2 text-xs text-amber-700">
-                Jail Call mode requires AssemblyAI multichannel and cannot use Gemini.
-              </p>
-            ) : null}
-          </div>
-          */}
-
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="p-4 border-b border-gray-100">
               <h2 className="text-lg font-semibold text-gray-900">{isBatchSelection ? 'Per-File Overrides' : 'Transcript Options'}</h2>

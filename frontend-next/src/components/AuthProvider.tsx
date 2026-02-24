@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import LoginModal from './LoginModal';
-import { isAuthenticated, initializeTokenRefresh, logout, getCurrentUser } from '@/utils/auth';
+import { isAuthenticated, logout, getCurrentUser } from '@/utils/auth';
 
 interface AuthProviderProps {
   children: React.ReactNode;
@@ -20,8 +20,6 @@ export default function AuthProvider({ children }: AuthProviderProps) {
 
     if (authenticated) {
       setUser(getCurrentUser());
-      // Initialize automatic token refresh
-      initializeTokenRefresh();
     }
 
     setIsLoading(false);
@@ -30,7 +28,6 @@ export default function AuthProvider({ children }: AuthProviderProps) {
   const handleLoginSuccess = () => {
     setIsAuth(true);
     setUser(getCurrentUser());
-    initializeTokenRefresh();
   };
 
   const handleLogout = () => {
