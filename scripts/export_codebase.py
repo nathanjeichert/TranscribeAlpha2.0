@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,47 @@ EXCLUDE_RELATIVE_PATHS = {
     "frontend-next/public/icon-192.png",
     "frontend-next/public/icon-512.png",
 }
+
+COMPACT_EXCLUDE_FILE_NAMES = {
+    "package-lock.json",
+}
+COMPACT_EXCLUDE_EXTENSIONS = {
+    ".tsbuildinfo",
+}
+COMPACT_EXCLUDE_RELATIVE_PATHS = {
+    "codebase_export.txt",
+}
+COMPACT_JSON_ALLOWLIST = {
+    "frontend-next/.eslintrc.json",
+    "frontend-next/package.json",
+    "frontend-next/public/manifest.json",
+    "frontend-next/src-tauri/capabilities/default.json",
+    "frontend-next/src-tauri/tauri.conf.json",
+    "frontend-next/tsconfig.json",
+}
+
+OUTLINE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".mjs", ".html"}
+OUTLINE_PATTERNS = (
+    re.compile(r"^\s*import\s+"),
+    re.compile(r"^\s*export\s+"),
+    re.compile(r"^\s*(async\s+)?def\s+\w+\("),
+    re.compile(r"^\s*class\s+\w+"),
+    re.compile(r"^\s*(async\s+)?function\s+\w+\("),
+    re.compile(r"^\s*const\s+\w+\s*=\s*(async\s*)?\("),
+    re.compile(r"^\s*interface\s+\w+"),
+    re.compile(r"^\s*type\s+\w+\s*="),
+    re.compile(r"^\s*@router\.(get|post|put|patch|delete|options|head)\("),
+    re.compile(r"^\s*router\.(get|post|put|patch|delete|options|head)\("),
+)
+OUTLINE_CONTAINS = (
+    "/api/",
+    "authenticatedFetch(",
+    "fetch(",
+    "axios.",
+    "include_router(",
+    "APIRouter(",
+    "Depends(",
+)
 
 
 PART_SPECS = {
@@ -199,14 +241,118 @@ def collect_files(args: argparse.Namespace, output_path: Path) -> List[Path]:
     return filter_files_by_git_rules(files)
 
 
-def write_export(output_path: Path, files: List[Path]) -> int:
+def apply_compact_filters(files: Iterable[Path]) -> Tuple[List[Path], List[str]]:
+    kept: List[Path] = []
+    omitted: List[str] = []
+    for path in files:
+        rel_path = path.relative_to(REPO_ROOT).as_posix()
+        suffix = path.suffix.lower()
+        if rel_path in COMPACT_EXCLUDE_RELATIVE_PATHS:
+            omitted.append(rel_path)
+            continue
+        if path.name in COMPACT_EXCLUDE_FILE_NAMES:
+            omitted.append(rel_path)
+            continue
+        if suffix in COMPACT_EXCLUDE_EXTENSIONS:
+            omitted.append(rel_path)
+            continue
+        if suffix == ".json" and rel_path not in COMPACT_JSON_ALLOWLIST:
+            omitted.append(rel_path)
+            continue
+        kept.append(path)
+    return sorted(kept, key=lambda path: path.relative_to(REPO_ROOT).as_posix()), sorted(omitted)
+
+
+def should_outline_file(path: Path, text: str, args: argparse.Namespace) -> bool:
+    if not args.compact or args.no_outline:
+        return False
+    if path.suffix.lower() not in OUTLINE_EXTENSIONS:
+        return False
+    return len(text) >= args.outline_threshold
+
+
+def build_outline(rel_path: str, text: str, args: argparse.Namespace) -> str:
+    lines = text.splitlines()
+    head_count = max(10, args.outline_head_lines)
+    tail_count = max(10, args.outline_tail_lines)
+    key_line_limit = max(20, args.outline_key_line_limit)
+
+    output: List[str] = []
+    output.append(
+        f"[large file summarized for compact export: {len(text):,} chars, {len(lines):,} lines]"
+    )
+    output.append(
+        f"[full file available in repo at {rel_path}; rerun with --no-compact or with --no-outline for full text]"
+    )
+
+    output.append("")
+    output.append(f"--- FILE HEAD (first {min(head_count, len(lines))} lines) ---")
+    for line in lines[:head_count]:
+        output.append(line)
+
+    all_key_lines: List[Tuple[int, str]] = []
+    for index, line in enumerate(lines, start=1):
+        if any(pattern.search(line) for pattern in OUTLINE_PATTERNS) or any(token in line for token in OUTLINE_CONTAINS):
+            all_key_lines.append((index, line))
+
+    key_lines = all_key_lines
+    sampled = False
+    if len(all_key_lines) > key_line_limit:
+        sampled = True
+        if key_line_limit == 1:
+            key_lines = [all_key_lines[0]]
+        else:
+            max_index = len(all_key_lines) - 1
+            selected_indices = {
+                round((position * max_index) / (key_line_limit - 1))
+                for position in range(key_line_limit)
+            }
+            key_lines = [all_key_lines[idx] for idx in sorted(selected_indices)]
+
+    output.append("")
+    output.append(f"--- KEY STRUCTURE LINES ({len(key_lines)} shown, limit {key_line_limit}) ---")
+    if key_lines:
+        for line_number, line in key_lines:
+            output.append(f"{line_number:>6}: {line}")
+        if sampled:
+            output.append("[key lines sampled across file to preserve whole-file coverage]")
+    else:
+        output.append("[no structure lines matched]")
+
+    output.append("")
+    output.append(f"--- FILE TAIL (last {min(tail_count, len(lines))} lines) ---")
+    tail = lines[-tail_count:] if len(lines) > tail_count else lines
+    for line in tail:
+        output.append(line)
+
+    return "\n".join(output) + "\n"
+
+
+def write_export(
+    output_path: Path,
+    files: List[Path],
+    *,
+    args: argparse.Namespace,
+    omitted_by_compact: List[str],
+) -> Tuple[int, List[str]]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     total_chars = 0
+    outlined_files: List[str] = []
     with output_path.open("w", encoding="utf-8", newline="\n") as handle:
         def write_chunk(text: str) -> None:
             nonlocal total_chars
             handle.write(text)
             total_chars += len(text)
+
+        if args.compact:
+            write_chunk("===== COMPACT EXPORT METADATA =====\n")
+            write_chunk(f"included_files: {len(files)}\n")
+            write_chunk(f"omitted_files: {len(omitted_by_compact)}\n")
+            if omitted_by_compact:
+                write_chunk("omitted_file_paths:\n")
+                for rel_path in omitted_by_compact:
+                    write_chunk(f"- {rel_path}\n")
+            write_chunk("===== END COMPACT EXPORT METADATA =====\n\n")
 
         for path in files:
             rel_path = path.relative_to(REPO_ROOT).as_posix()
@@ -222,11 +368,15 @@ def write_export(output_path: Path, files: List[Path]) -> int:
                 write_chunk("===== END FILE =====\n\n")
                 continue
             text = data.decode("utf-8", errors="replace")
-            write_chunk(text)
-            if not text.endswith("\n"):
-                write_chunk("\n")
+            if should_outline_file(path, text, args):
+                outlined_files.append(rel_path)
+                write_chunk(build_outline(rel_path, text, args))
+            else:
+                write_chunk(text)
+                if not text.endswith("\n"):
+                    write_chunk("\n")
             write_chunk("===== END FILE =====\n\n")
-    return total_chars
+    return total_chars, outlined_files
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -249,6 +399,51 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include clip creator-related files (backend + frontend).",
     )
+    parser.set_defaults(compact=True)
+    parser.add_argument(
+        "--compact",
+        dest="compact",
+        action="store_true",
+        help=(
+            "Enable compact LLM-focused export (default): exclude lock/build artifacts "
+            "and summarize very large source files."
+        ),
+    )
+    parser.add_argument(
+        "--no-compact",
+        dest="compact",
+        action="store_false",
+        help="Disable compact export and include full file contents.",
+    )
+    parser.add_argument(
+        "--no-outline",
+        action="store_true",
+        help="With --compact, keep full text for large files instead of structural outlines.",
+    )
+    parser.add_argument(
+        "--outline-threshold",
+        type=int,
+        default=35000,
+        help="With --compact, summarize files at or above this character count (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--outline-key-line-limit",
+        type=int,
+        default=260,
+        help="With --compact, maximum extracted structure lines per outlined file (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--outline-head-lines",
+        type=int,
+        default=50,
+        help="With --compact, number of leading lines retained for outlined files (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--outline-tail-lines",
+        type=int,
+        default=30,
+        help="With --compact, number of trailing lines retained for outlined files (default: %(default)s).",
+    )
     return parser
 
 
@@ -257,16 +452,34 @@ def main() -> int:
     args = parser.parse_args()
     output_path = Path(args.output).expanduser()
 
+    if args.compact:
+        if args.outline_threshold < 1000:
+            parser.error("--outline-threshold must be at least 1000")
+        if args.outline_key_line_limit < 20:
+            parser.error("--outline-key-line-limit must be at least 20")
+        if args.outline_head_lines < 10:
+            parser.error("--outline-head-lines must be at least 10")
+        if args.outline_tail_lines < 10:
+            parser.error("--outline-tail-lines must be at least 10")
+
     try:
         files = collect_files(args, output_path)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    omitted_by_compact: List[str] = []
+    if args.compact:
+        files, omitted_by_compact = apply_compact_filters(files)
     if not files:
         print("No files matched the selected filters.", file=sys.stderr)
         return 1
 
-    total_chars = write_export(output_path, files)
+    total_chars, outlined_files = write_export(
+        output_path,
+        files,
+        args=args,
+        omitted_by_compact=omitted_by_compact,
+    )
     token_estimate = (total_chars + 3) // 4
     rel_output = output_path
     try:
@@ -274,6 +487,9 @@ def main() -> int:
     except ValueError:
         pass
     print(f"Wrote {len(files)} files to {rel_output}")
+    if args.compact:
+        print(f"Compact filter omitted {len(omitted_by_compact)} files")
+        print(f"Large-file outlines applied to {len(outlined_files)} files")
     print(f"Characters: {total_chars:,}")
     print(f"Estimated tokens (4 chars/token): {token_estimate:,}")
     return 0
