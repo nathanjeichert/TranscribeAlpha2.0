@@ -71,61 +71,82 @@ async function shouldRecommendReconnect(handleIds: string[]): Promise<boolean> {
   return false
 }
 
-export async function resolveMediaObjectURLForRecord(
+interface ResolvedSource {
+  file: File
+  sourceKind: MediaSourceKind
+  resolvedHandleId?: string
+  cacheContentType?: string
+}
+
+async function resolveMediaSource(
   record: MediaRecordShape,
-  options?: { requestPermission?: boolean },
-): Promise<MediaResolution> {
+  options?: { requestPermission?: boolean; skipCache?: boolean },
+): Promise<ResolvedSource | null> {
   const mediaKey = asText(record.media_key)
+
+  // 1. Try workspace-relative path
   const workspacePath = asText(record.media_workspace_relpath)
   if (workspacePath) {
     const workspaceFile = await readWorkspaceRelativeFile(workspacePath)
     if (workspaceFile) {
-      if (mediaKey) {
-        await touchMediaCacheEntry(mediaKey)
-      }
-      return {
-        objectUrl: URL.createObjectURL(workspaceFile),
-        sourceKind: 'workspace-relative',
-        reconnectRecommended: false,
+      if (mediaKey) await touchMediaCacheEntry(mediaKey)
+      return { file: workspaceFile, sourceKind: 'workspace-relative' }
+    }
+  }
+
+  // 2. Try playback cache
+  if (!options?.skipCache) {
+    const cachePath = asText(record.playback_cache_path)
+    if (cachePath) {
+      const cachedFile = await readWorkspaceRelativeFile(cachePath)
+      if (cachedFile) {
+        if (mediaKey) await touchMediaCacheEntry(mediaKey)
+        return {
+          file: cachedFile,
+          sourceKind: 'workspace-cache',
+          cacheContentType: asText(record.playback_cache_content_type),
+        }
       }
     }
   }
 
-  const cachePath = asText(record.playback_cache_path)
-  const cacheContentType = asText(record.playback_cache_content_type)
-  if (cachePath) {
-    const cachedFile = await readWorkspaceRelativeFile(cachePath)
-    if (cachedFile) {
-      if (mediaKey) {
-        await touchMediaCacheEntry(mediaKey)
-      }
-      const playbackBlob = cacheContentType
-        ? new Blob([cachedFile], { type: cacheContentType })
-        : cachedFile
-      return {
-        objectUrl: URL.createObjectURL(playbackBlob),
-        sourceKind: 'workspace-cache',
-        reconnectRecommended: false,
-      }
-    }
-  }
-
+  // 3. Try external handles
   const handleCandidates = buildHandleCandidates(record)
-  const external = await getFirstAvailableMediaObjectURL(handleCandidates, {
+  const external = await getFirstAvailableMediaFile(handleCandidates, {
     requestPermission: Boolean(options?.requestPermission),
   })
   if (external) {
-    if (mediaKey) {
-      await touchMediaCacheEntry(mediaKey)
-    }
+    if (mediaKey) await touchMediaCacheEntry(mediaKey)
     return {
-      objectUrl: external.objectUrl,
+      file: external.file,
       sourceKind: 'external-handle',
       resolvedHandleId: external.sourceId,
+    }
+  }
+
+  return null
+}
+
+export async function resolveMediaObjectURLForRecord(
+  record: MediaRecordShape,
+  options?: { requestPermission?: boolean },
+): Promise<MediaResolution> {
+  const source = await resolveMediaSource(record, options)
+
+  if (source) {
+    // For cache hits with explicit content type, wrap in typed Blob
+    const blobSource = source.cacheContentType
+      ? new Blob([source.file], { type: source.cacheContentType })
+      : source.file
+    return {
+      objectUrl: URL.createObjectURL(blobSource),
+      sourceKind: source.sourceKind,
+      resolvedHandleId: source.resolvedHandleId ?? null,
       reconnectRecommended: false,
     }
   }
 
+  const handleCandidates = buildHandleCandidates(record)
   const reconnectRecommended = await shouldRecommendReconnect(handleCandidates)
   return {
     objectUrl: null,
@@ -139,62 +160,28 @@ export async function resolveMediaFileForRecord(
   record: MediaRecordShape,
   options?: { requestPermission?: boolean; skipCache?: boolean },
 ): Promise<MediaFileResolution> {
-  const mediaKey = asText(record.media_key)
-  const workspacePath = asText(record.media_workspace_relpath)
-  if (workspacePath) {
-    const workspaceFile = await readWorkspaceRelativeFile(workspacePath)
-    if (workspaceFile) {
-      if (mediaKey) {
-        await touchMediaCacheEntry(mediaKey)
-      }
-      return {
-        file: workspaceFile,
-        sourceKind: 'workspace-relative',
-        reconnectRecommended: false,
-      }
-    }
-  }
+  const source = await resolveMediaSource(record, options)
 
-  if (!options?.skipCache) {
-    const cachePath = asText(record.playback_cache_path)
-    const cacheContentType = asText(record.playback_cache_content_type)
-    if (cachePath) {
-      const cachedFile = await readWorkspaceRelativeFile(cachePath)
-      if (cachedFile) {
-        if (mediaKey) {
-          await touchMediaCacheEntry(mediaKey)
-        }
-        const playbackFile = !cachedFile.type && cacheContentType
-          ? new File([cachedFile], cachedFile.name || (asText(record.media_filename) || `${mediaKey || 'media'}.bin`), {
-              type: cacheContentType,
-              lastModified: cachedFile.lastModified,
-            })
-          : cachedFile
-        return {
-          file: playbackFile,
-          sourceKind: 'workspace-cache',
-          reconnectRecommended: false,
-        }
-      }
-    }
-  }
-
-  const handleCandidates = buildHandleCandidates(record)
-  const external = await getFirstAvailableMediaFile(handleCandidates, {
-    requestPermission: Boolean(options?.requestPermission),
-  })
-  if (external) {
-    if (mediaKey) {
-      await touchMediaCacheEntry(mediaKey)
+  if (source) {
+    // For cache hits, apply content type to file if missing
+    let file = source.file
+    if (source.sourceKind === 'workspace-cache' && !file.type && source.cacheContentType) {
+      const mediaKey = asText(record.media_key)
+      file = new File(
+        [file],
+        file.name || (asText(record.media_filename) || `${mediaKey || 'media'}.bin`),
+        { type: source.cacheContentType, lastModified: file.lastModified },
+      )
     }
     return {
-      file: external.file,
-      sourceKind: 'external-handle',
-      resolvedHandleId: external.sourceId,
+      file,
+      sourceKind: source.sourceKind,
+      resolvedHandleId: source.resolvedHandleId ?? null,
       reconnectRecommended: false,
     }
   }
 
+  const handleCandidates = buildHandleCandidates(record)
   const reconnectRecommended = await shouldRecommendReconnect(handleCandidates)
   return {
     file: null,
