@@ -5,6 +5,7 @@ import { DashboardProvider } from '@/context/DashboardContext'
 import Sidebar from '@/components/layout/Sidebar'
 import WorkspaceGate from '@/components/WorkspaceGate'
 import PWAInstallPrompt from '@/components/PWAInstallPrompt'
+import TauriUpdater from '@/components/TauriUpdater'
 
 const SIDEBAR_COLLAPSED_KEY = 'dashboard_sidebar_collapsed'
 
@@ -47,6 +48,7 @@ export default function DashboardLayout({
           </main>
         </div>
         <PWAInstallPrompt />
+        <TauriUpdater />
       </WorkspaceGate>
     </DashboardProvider>
   )
