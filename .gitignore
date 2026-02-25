@@ -32,3 +32,9 @@ node_modules/
 
 # ffmpeg.wasm core (generated from node_modules)
 frontend-next/public/ffmpeg-core.*
+
+# Tauri desktop build artifacts
+frontend-next/src-tauri/binaries/
+frontend-next/src-tauri/target/
+frontend-next/src-tauri/gen/
+.pyinstaller-build/
