@@ -309,7 +309,7 @@ export function useConversionQueue(deps: ConversionQueueDeps) {
     [jobFilesRef, persistConvertedOutput, storeConvertedInMemory, updateJob],
   )
 
-  const MAX_PARALLEL_CONVERSIONS = 8
+  const MAX_PARALLEL_CONVERSIONS = 12
 
   const runConversionQueue = useCallback(
     async (options?: { promptLargeFiles?: boolean }) => {
