@@ -5,14 +5,6 @@ import re
 import logging
 import shutil
 from typing import Dict, List, Optional
-import sys
-
-# Python 3.9+ type hint compatibility
-if sys.version_info >= (3, 9):
-    from typing import Tuple
-else:
-    from typing import Tuple as typing_Tuple
-    Tuple = typing_Tuple
 
 import ffmpeg
 from pydub import AudioSegment

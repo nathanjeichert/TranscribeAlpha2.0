@@ -1,22 +1,12 @@
 import base64
-import json
 import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
-
-try:
-    from .config import DEFAULT_LINES_PER_PAGE
-except ImportError:
-    try:
-        from config import DEFAULT_LINES_PER_PAGE
-    except ImportError:
-        import config as config_module
-        DEFAULT_LINES_PER_PAGE = config_module.DEFAULT_LINES_PER_PAGE
 
 # Viewer module for criminal variant
 try:
@@ -88,40 +78,6 @@ def normalize_speaker_label(raw_value: Any, fallback: str = "SPEAKER") -> str:
         return f"SPEAKER {candidate}"
 
     return candidate
-
-
-def _extract_media_key(data: dict) -> str:
-    """Extract media key from session/payload data using priority chain.
-
-    Priority: media_key field > title_data.MEDIA_ID > XML mediaId > filename > blob name > "unknown"
-    """
-    title_data = data.get("title_data") or {}
-
-    # Direct media_key field
-    if data.get("media_key"):
-        return str(data["media_key"])
-
-    # MEDIA_ID from title data
-    if title_data.get("MEDIA_ID"):
-        return str(title_data["MEDIA_ID"])
-
-    # Try to extract from OnCue XML
-    xml_filename = title_data.get("FILE_NAME") or title_data.get("CASE_NAME")
-    media_id_from_xml = None
-    xml_b64 = data.get("oncue_xml_base64")
-    if xml_b64:
-        try:
-            xml_text = base64.b64decode(xml_b64).decode("utf-8", errors="replace")
-            root = ET.fromstring(xml_text)
-            deposition = root.find(".//deposition")
-            if deposition is not None:
-                media_id_from_xml = deposition.get("mediaId") or deposition.get("mediaID")
-        except Exception:
-            media_id_from_xml = None
-
-    # Fallback chain
-    key = media_id_from_xml or xml_filename or data.get("media_blob_name") or "unknown"
-    return str(key)
 
 
 def serialize_transcript_turns(turns: List[TranscriptTurn]) -> List[dict]:

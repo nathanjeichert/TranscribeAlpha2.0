@@ -232,9 +232,9 @@ export function useConversionQueue(deps: ConversionQueueDeps) {
         )
         if (!shouldContinue) {
           updateJob(jobId, {
-            status: 'queued',
-            detail: 'Ready',
-            error: 'Skipped in this batch due to large file size.',
+            status: 'canceled',
+            detail: 'Skipped',
+            error: 'Skipped due to large file size. Re-queue to try again.',
           })
           return 'skipped' as const
         }

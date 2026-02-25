@@ -962,11 +962,11 @@ export function cancelActiveFFmpegJob(): void {
   }
   for (const slot of pool) {
     slot.terminatedByUser = true
-    slot.reset()
     if (slot.cancelReject) {
       slot.cancelReject()
       slot.cancelReject = null
     }
+    slot.reset()
   }
 }
 
@@ -1170,14 +1170,17 @@ export async function clipMediaBatch(
 
           let outputName = copyOutputName
           try {
-            const copyExit = await ffmpeg.exec([
-              '-ss', request.startTime.toString(),
-              '-t', duration.toString(),
-              '-i', effectiveInput,
-              '-c', 'copy',
-              '-avoid_negative_ts', 'make_zero',
-              outputName,
-            ])
+            const copyExit = await new Promise<number>((resolve, reject) => {
+              slot.cancelReject = () => reject(new FFmpegCanceledError())
+              ffmpeg.exec([
+                '-ss', request.startTime.toString(),
+                '-t', duration.toString(),
+                '-i', effectiveInput,
+                '-c', 'copy',
+                '-avoid_negative_ts', 'make_zero',
+                outputName,
+              ]).then(resolve, reject)
+            }).finally(() => { slot.cancelReject = null })
             if (copyExit !== 0) throw new Error('Stream copy failed')
           } catch {
             await removeVirtualFile(ffmpeg, copyOutputName)
@@ -1204,7 +1207,10 @@ export async function clipMediaBatch(
                 outputName,
               ]
 
-            const fallbackExit = await ffmpeg.exec(fallbackArgs)
+            const fallbackExit = await new Promise<number>((resolve, reject) => {
+              slot.cancelReject = () => reject(new FFmpegCanceledError())
+              ffmpeg.exec(fallbackArgs).then(resolve, reject)
+            }).finally(() => { slot.cancelReject = null })
             if (fallbackExit !== 0) {
               throw new Error('Clip export failed')
             }
