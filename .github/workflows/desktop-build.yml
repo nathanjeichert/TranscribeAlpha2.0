@@ -22,11 +22,6 @@ jobs:
             tauri-args: '--target aarch64-apple-darwin'
             ffmpeg-url: https://evermeet.cx/ffmpeg/getrelease/ffmpeg/7z
             ffmpeg-extract: 7z
-          - platform: macos-13
-            rust-target: x86_64-apple-darwin
-            tauri-args: '--target x86_64-apple-darwin'
-            ffmpeg-url: https://evermeet.cx/ffmpeg/getrelease/ffmpeg/7z
-            ffmpeg-extract: 7z
 
     runs-on: ${{ matrix.platform }}
 
