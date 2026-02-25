@@ -119,7 +119,7 @@ export default function WorkspaceGate({ children }: { children: React.ReactNode 
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Workspace Disconnected</h2>
           <p className="text-gray-500 mb-6">
-            Your workspace folder needs to be reconnected. This is a one-click browser permission &mdash; your data is still there.
+            Your workspace folder needs to be reconnected. This is a one-click permission &mdash; your data is still there.
           </p>
           <button
             onClick={handleReconnect}

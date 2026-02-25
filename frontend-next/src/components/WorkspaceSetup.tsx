@@ -92,7 +92,7 @@ export default function WorkspaceSetup({ onComplete }: WorkspaceSetupProps) {
         </button>
 
         <p className="text-slate-500 text-sm mt-6">
-          Works best in Chrome or Edge. Your data stays on your computer.
+          Your data stays on your computer.
         </p>
       </div>
     </div>
