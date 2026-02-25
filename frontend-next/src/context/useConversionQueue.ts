@@ -173,24 +173,39 @@ export function useConversionQueue(deps: ConversionQueueDeps) {
         return combined.slice(Math.max(0, combined.length - MAX_PERSISTED_JOBS))
       })
 
-      for (const job of newJobs) {
-        const active = jobFilesRef.current.get(job.id)
-        if (!active?.file) continue
-        try {
-          const codec = await detectCodec(active.file)
-          if (codec.needsConversion) {
-            updateJob(job.id, { codec, needsConversion: true, detail: 'Ready', status: 'queued' })
+      const DETECT_BATCH_SIZE = 15
+      for (let i = 0; i < newJobs.length; i += DETECT_BATCH_SIZE) {
+        const batch = newJobs.slice(i, i + DETECT_BATCH_SIZE)
+        const results = await Promise.allSettled(
+          batch.map(async (job) => {
+            const active = jobFilesRef.current.get(job.id)
+            if (!active?.file) return { jobId: job.id, codec: null as null, skip: true }
+            const codec = await detectCodec(active.file)
+            return { jobId: job.id, codec, skip: false }
+          }),
+        )
+        for (const result of results) {
+          if (result.status === 'fulfilled') {
+            const { jobId, codec, skip } = result.value
+            if (skip) continue
+            if (codec && codec.needsConversion) {
+              updateJob(jobId, { codec, needsConversion: true, detail: 'Ready', status: 'queued' })
+            } else if (codec) {
+              updateJob(jobId, { codec, needsConversion: false, detail: 'Already OK', status: 'succeeded' })
+            }
           } else {
-            updateJob(job.id, { codec, needsConversion: false, detail: 'Already OK', status: 'succeeded' })
+            const job = batch[results.indexOf(result)]
+            updateJob(job.id, {
+              codec: null,
+              needsConversion: true,
+              detail: 'Skipped',
+              status: 'failed',
+              error: 'We could not read this file format. Please try converting it again.',
+            })
           }
-        } catch {
-          updateJob(job.id, {
-            codec: null,
-            needsConversion: true,
-            detail: 'Skipped',
-            status: 'failed',
-            error: 'We could not read this file format. Please try converting it again.',
-          })
+        }
+        if (i + DETECT_BATCH_SIZE < newJobs.length) {
+          await new Promise((r) => setTimeout(r, 0))
         }
       }
     },
@@ -207,6 +222,7 @@ export function useConversionQueue(deps: ConversionQueueDeps) {
 
       try {
         while (true) {
+          await new Promise((r) => setTimeout(r, 0))
           const next = jobsRef.current.find(
             (job) => job.kind === 'conversion' && job.status === 'queued' && job.needsConversion,
           )

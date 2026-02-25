@@ -81,6 +81,7 @@ let loadPromise: Promise<void> | null = null
 let operationQueue: Promise<void> = Promise.resolve()
 let activeProgressCallback: ProgressCallback | null = null
 let terminatedByUser = false
+let cancelReject: (() => void) | null = null
 let listenersAttached = false
 let conversionsSinceReset = 0
 let convertedBytesSinceReset = 0
@@ -212,9 +213,16 @@ async function runFFmpegOperation(config: OperationConfig): Promise<File> {
     let lastError: Error | null = null
 
     for (const attempt of attempts) {
+      if (terminatedByUser) {
+        terminatedByUser = false
+        throw new FFmpegCanceledError()
+      }
       await removeVirtualFile(ffmpeg, attempt.outputName)
       try {
-        const exitCode = await ffmpeg.exec(attempt.args)
+        const exitCode = await new Promise<number>((resolve, reject) => {
+          cancelReject = () => reject(new FFmpegCanceledError())
+          ffmpeg.exec(attempt.args).then(resolve, reject)
+        }).finally(() => { cancelReject = null })
         if (exitCode !== 0) {
           throw new Error(`Operation failed (${attempt.label})`)
         }
@@ -863,6 +871,10 @@ export function cancelActiveFFmpegJob(): void {
   }
   terminatedByUser = true
   resetFFmpegRuntime()
+  if (cancelReject) {
+    cancelReject()
+    cancelReject = null
+  }
 }
 
 export async function detectCodec(file: File): Promise<CodecInfo> {

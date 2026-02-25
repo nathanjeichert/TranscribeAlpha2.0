@@ -13,9 +13,7 @@ import {
   getMediaCacheCapBytes,
   getStorageEstimate,
   getWorkspaceName,
-  isPersistentStorage,
   pickAndInitWorkspace,
-  requestPersistentStorage,
   updateWorkspacePreferences,
 } from '@/lib/storage'
 
@@ -138,8 +136,6 @@ export default function SettingsPage() {
   const [workspaceName, setWorkspaceName] = useState<string | null>(null)
   const [storageEstimate, setStorageEstimate] = useState<{ fileCount: number; totalSize: number } | null>(null)
   const [changingWorkspace, setChangingWorkspace] = useState(false)
-  const [persistentActive, setPersistentActive] = useState<boolean | null>(null)
-  const [requestingPersistence, setRequestingPersistence] = useState(false)
   const [mediaCacheCapInput, setMediaCacheCapInput] = useState<string>(
     formatCacheCapGb(DEFAULT_MEDIA_CACHE_CAP_BYTES / BYTES_PER_GB),
   )
@@ -154,12 +150,6 @@ export default function SettingsPage() {
       setStorageEstimate(estimate)
     } catch {
       // Workspace may not be accessible
-    }
-    try {
-      const persisted = await isPersistentStorage()
-      setPersistentActive(persisted)
-    } catch {
-      // Storage API may not be available
     }
     try {
       const cacheCapBytes = await getMediaCacheCapBytes()
@@ -315,43 +305,6 @@ export default function SettingsPage() {
                   {mediaCacheCapStatus}
                 </p>
               )}
-            </div>
-            {!inTauri && (
-              <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                <div>
-                  <p className="font-medium text-gray-900 mb-1">Persistent Storage</p>
-                  {persistentActive === null ? (
-                    <p className="text-sm text-gray-500">Checking...</p>
-                  ) : persistentActive ? (
-                    <p className="text-sm text-green-600">Active &mdash; browser will not evict your workspace data</p>
-                  ) : (
-                    <p className="text-sm text-amber-600">Not active &mdash; browser may clear stored data under storage pressure</p>
-                  )}
-                </div>
-                {persistentActive === false && (
-                  <button
-                    onClick={async () => {
-                      setRequestingPersistence(true)
-                      try {
-                        const granted = await requestPersistentStorage()
-                        setPersistentActive(granted)
-                      } finally {
-                        setRequestingPersistence(false)
-                      }
-                    }}
-                    disabled={requestingPersistence}
-                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    {requestingPersistence ? 'Requesting...' : 'Request Persistence'}
-                  </button>
-                )}
-              </div>
-            )}
-            <div className="py-3">
-              <p className="font-medium text-gray-900 mb-1">Data Architecture</p>
-              <p className="text-sm text-gray-500">
-                Cases and transcripts stay in your workspace. Media inside the workspace is linked directly; media outside is relinkable and can be cached automatically.
-              </p>
             </div>
           </div>
         </div>

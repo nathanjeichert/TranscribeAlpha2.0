@@ -205,11 +205,6 @@ export async function initWorkspaceDetailed(): Promise<WorkspaceInitResult> {
   return result
 }
 
-export async function initWorkspace(): Promise<unknown> {
-  const result = await initWorkspaceDetailed()
-  return result.handle
-}
-
 export async function pickAndInitWorkspace(): Promise<{ handle: unknown; isExisting: boolean }> {
   const fs = await getPlatformFS()
   const result = await fs.pickWorkspaceDirectory()
@@ -612,12 +607,6 @@ let _cachedWorkspaceName: string | null = null
 
 export function getWorkspaceName(): string | null {
   return _cachedWorkspaceName
-}
-
-/** Call after workspace init to sync the cached name. */
-export async function refreshWorkspaceName(): Promise<void> {
-  const fs = await getPlatformFS()
-  _cachedWorkspaceName = fs.getWorkspaceName()
 }
 
 export async function getStorageEstimate(): Promise<{ fileCount: number; totalSize: number }> {

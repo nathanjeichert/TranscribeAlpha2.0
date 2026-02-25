@@ -57,21 +57,6 @@ export async function storeMediaPath(
   await idbPut(HANDLE_STORE, handleId, record)
 }
 
-export async function storeMediaBlob(
-  sourceId: string,
-  media: File | Blob,
-  filename?: string,
-  contentType?: string,
-): Promise<void> {
-  const record: StoredMediaBlobRecord = {
-    blob: media,
-    filename: filename || ((media instanceof File && media.name) ? media.name : `${sourceId}.bin`),
-    contentType: contentType || media.type || 'application/octet-stream',
-    saved_at: new Date().toISOString(),
-  }
-  await idbPut(BLOB_STORE, sourceId, record)
-}
-
 export async function getMediaHandle(
   handleId: string,
   options?: MediaAccessOptions,
@@ -146,14 +131,6 @@ export async function getMediaBlob(sourceId: string): Promise<File | null> {
 export async function removeMediaHandle(handleId: string): Promise<void> {
   try {
     await idbDelete(HANDLE_STORE, handleId)
-  } catch {
-    // Ignore errors
-  }
-}
-
-export async function removeMediaBlob(sourceId: string): Promise<void> {
-  try {
-    await idbDelete(BLOB_STORE, sourceId)
   } catch {
     // Ignore errors
   }
@@ -237,36 +214,6 @@ export async function getFirstAvailableMediaFile(
   return null
 }
 
-export async function getMediaObjectURL(
-  sourceId: string,
-  options?: MediaAccessOptions,
-): Promise<string | null> {
-  // In Tauri, prefer convertFileSrc for direct streaming without memory copy.
-  const tauriUrl = await getMediaPlaybackURL(sourceId)
-  if (tauriUrl) return tauriUrl
-
-  const file = await getMediaFile(sourceId, options)
-  if (!file) return null
-  return URL.createObjectURL(file)
-}
-
-export async function getFirstAvailableMediaObjectURL(
-  sourceIds: Array<string | null | undefined>,
-  options?: MediaAccessOptions,
-): Promise<{ sourceId: string; objectUrl: string } | null> {
-  const seen = new Set<string>()
-  for (const rawSourceId of sourceIds) {
-    const sourceId = String(rawSourceId || '').trim()
-    if (!sourceId || seen.has(sourceId)) continue
-    seen.add(sourceId)
-    const objectUrl = await getMediaObjectURL(sourceId, options)
-    if (objectUrl) {
-      return { sourceId, objectUrl }
-    }
-  }
-  return null
-}
-
 export async function promptRelinkMedia(
   expectedFilename: string,
   preferredHandleId?: string,
@@ -322,76 +269,6 @@ async function promptRelinkMediaTauri(
     const handleId = String(preferredHandleId || '').trim() || crypto.randomUUID()
     await storeMediaPath(handleId, filePath, filename)
     return { handle: null, handleId }
-  } catch {
-    return null
-  }
-}
-
-export async function storeMediaFromPicker(): Promise<{
-  handle: FileSystemFileHandle
-  handleId: string
-  filename: string
-  contentType: string
-} | null> {
-  if (isTauri()) {
-    return storeMediaFromPickerTauri()
-  }
-
-  try {
-    const [handle] = await window.showOpenFilePicker({
-      types: [
-        {
-          description: 'Audio or video files',
-          accept: {
-            'audio/*': [],
-            'video/*': [],
-          },
-        },
-      ],
-      multiple: false,
-    })
-
-    if (!handle) return null
-
-    const file = await handle.getFile()
-    const handleId = crypto.randomUUID()
-    await storeMediaHandle(handleId, handle)
-
-    return {
-      handle,
-      handleId,
-      filename: file.name,
-      contentType: file.type || 'application/octet-stream',
-    }
-  } catch {
-    // User cancelled or API not available
-    return null
-  }
-}
-
-async function storeMediaFromPickerTauri(): Promise<any> {
-  try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const selected = await open({
-      title: 'Choose audio or video file',
-      filters: [
-        { name: 'Audio/Video', extensions: ['mp4', 'mov', 'avi', 'mkv', 'wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'wma', 'webm'] },
-      ],
-      multiple: false,
-    })
-    if (!selected) return null
-    const filePath = typeof selected === 'string' ? selected : (selected as any).path ?? String(selected)
-    const filename = filePath.split(/[\\/]/).pop() || 'media.bin'
-    const ext = filename.split('.').pop()?.toLowerCase() || ''
-    const mimeMap: Record<string, string> = {
-      mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
-      wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
-      ogg: 'audio/ogg', aac: 'audio/aac', wma: 'audio/x-ms-wma', webm: 'video/webm',
-    }
-    const contentType = mimeMap[ext] || 'application/octet-stream'
-    const handleId = crypto.randomUUID()
-    await storeMediaPath(handleId, filePath, filename)
-    return { handle: null, handleId, filename, contentType }
   } catch {
     return null
   }

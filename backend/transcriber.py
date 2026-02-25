@@ -1,10 +1,7 @@
 import os
-import io
-import json
 import inspect
 import time
 import re
-import tempfile
 import logging
 import shutil
 from typing import Dict, List, Optional
@@ -122,8 +119,11 @@ _SPEAKER_LETTER_RE = re.compile(r"^[A-Z]$")
 _SPEAKER_NUMERIC_RE = re.compile(r"^[0-9]+$")
 
 
-def normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEAKER A") -> str:
-    """Normalize diarization labels so downstream exports use SPEAKER X."""
+def __normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEAKER A") -> str:
+    """Normalize diarization labels so downstream exports use SPEAKER X.
+
+    Internal to this module — the canonical version lives in transcript_utils.
+    """
     fallback_value = str(fallback or "").strip().upper() or "SPEAKER A"
     candidate = str(raw_value or "").strip()
     candidate = re.sub(r":+$", "", candidate).strip().upper()
@@ -143,13 +143,9 @@ def normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEAKE
 
     return candidate
 
-def mark_continuation_turns(turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
-    """
-    Mark turns as continuations when the same speaker has consecutive turns.
 
-    The first turn of each speaker block gets is_continuation=False (shows speaker label).
-    Subsequent turns with the same speaker get is_continuation=True (no speaker label).
-    """
+def __mark_continuation_turns(turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
+    """Mark turns as continuations when the same speaker has consecutive turns."""
     if not turns:
         return turns
 
@@ -193,123 +189,6 @@ def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3
     except Exception as e:
         logger.error("Unexpected error in convert_video_to_audio: %s", e)
         return None
-
-
-def get_audio_mime_type(ext: str) -> Optional[str]:
-    mime_map = {
-        "mp3": "audio/mpeg",
-        "wav": "audio/wav",
-        "aiff": "audio/aiff",
-        "aac": "audio/aac",
-        "ogg": "audio/ogg",
-        "flac": "audio/flac",
-    }
-    return mime_map.get(ext.lower())
-
-
-def transcribe_with_assemblyai(
-    audio_path: str,
-    speakers_expected: Optional[int] = None,
-    include_timestamps: bool = True
-) -> Optional[List[TranscriptTurn]]:
-    """
-    Transcribe audio using AssemblyAI with speaker diarization and word-level timestamps.
-
-    Args:
-        audio_path: Path to audio file (local file path)
-        speakers_expected: Optional exact speaker count for diarization
-        include_timestamps: Whether to include timestamps in output
-
-    Returns:
-        List of TranscriptTurn objects with word-level timing data, or None on failure
-
-    Note:
-        Bare diarization tokens (A/B/C, 1/2/3, etc.) are normalized to SPEAKER X.
-    """
-    if not ASSEMBLYAI_AVAILABLE:
-        logger.error("AssemblyAI SDK not available")
-        return None
-
-    if not ASSEMBLYAI_API_KEY:
-        logger.error("ASSEMBLYAI_API_KEY not configured")
-        return None
-
-    try:
-        logger.info(f"Starting AssemblyAI transcription for: {audio_path}")
-        logger.info(
-            "Speaker diarization enabled, expected speakers: %s",
-            speakers_expected if speakers_expected is not None else "auto-detect",
-        )
-
-        transcriber = aai.Transcriber()
-        config = build_assemblyai_config(speakers_expected)
-        transcript = transcriber.transcribe(audio_path, config=config)
-
-        # Check for errors
-        if transcript.status == aai.TranscriptStatus.error:
-            primary_error = str(transcript.error or "unknown error")
-            raise RuntimeError(f"AssemblyAI transcription failed (universal-3-pro): {primary_error}")
-
-        logger.info("AssemblyAI transcription completed successfully")
-        logger.info(
-            "Found %s speaker turns",
-            len(transcript.utterances) if transcript.utterances else 0,
-        )
-
-        # Convert AssemblyAI utterances to TranscriptTurn format
-        turns: List[TranscriptTurn] = []
-
-        for utterance in transcript.utterances or []:
-            speaker_label = getattr(utterance, "speaker", None)
-            speaker_name = normalize_speaker_label(speaker_label, fallback="SPEAKER A")
-
-            # Convert timestamp from milliseconds to [MM:SS] format for consistency
-            timestamp_str = None
-            if include_timestamps and getattr(utterance, "start", None) is not None:
-                start_ms = utterance.start
-                start_seconds = start_ms / 1000.0
-                minutes = int(start_seconds // 60)
-                seconds = int(start_seconds % 60)
-                timestamp_str = f"[{minutes:02d}:{seconds:02d}]"
-
-            # Extract word-level timestamps from utterance
-            word_timestamps: List[WordTimestamp] = []
-            if hasattr(utterance, "words") and utterance.words:
-                for word in utterance.words:
-                    word_speaker_raw = getattr(word, "speaker", None)
-                    word_speaker = normalize_speaker_label(word_speaker_raw, fallback=speaker_name)
-                    word_timestamps.append(
-                        WordTimestamp(
-                            text=word.text,
-                            start=float(word.start),
-                            end=float(word.end),
-                            confidence=float(word.confidence)
-                            if hasattr(word, "confidence") and word.confidence is not None
-                            else None,
-                            speaker=word_speaker,
-                        )
-                    )
-
-            turns.append(
-                TranscriptTurn(
-                    speaker=speaker_name,
-                    text=utterance.text,
-                    timestamp=timestamp_str,
-                    words=word_timestamps if word_timestamps else None,
-                )
-            )
-
-        logger.info("Converted %s utterances to TranscriptTurn format", len(turns))
-        # Mark continuation turns (same speaker as previous)
-        turns = mark_continuation_turns(turns)
-        return turns
-
-    except Exception as e:
-        logger.error("AssemblyAI transcription error: %s", str(e))
-        import traceback
-
-        logger.error(traceback.format_exc())
-        raise RuntimeError(f"AssemblyAI transcription error: {e}") from e
 
 
 def build_assemblyai_config(speakers_expected: Optional[int] = None) -> "aai.TranscriptionConfig":
@@ -384,7 +263,7 @@ def turns_from_assemblyai_response(response: object, include_timestamps: bool = 
     if utterances:
         for utterance in utterances:
             speaker_label = getattr(utterance, "speaker", None)
-            speaker_name = normalize_speaker_label(speaker_label, fallback="SPEAKER A")
+            speaker_name = _normalize_speaker_label(speaker_label, fallback="SPEAKER A")
 
             timestamp_str = None
             if include_timestamps and getattr(utterance, "start", None) is not None:
@@ -401,7 +280,7 @@ def turns_from_assemblyai_response(response: object, include_timestamps: bool = 
                 if not word_text:
                     continue
                 word_speaker_raw = getattr(word, "speaker", None)
-                word_speaker = normalize_speaker_label(word_speaker_raw, fallback=speaker_name)
+                word_speaker = _normalize_speaker_label(word_speaker_raw, fallback=speaker_name)
                 start_val = getattr(word, "start", None)
                 end_val = getattr(word, "end", None)
                 if start_val is None or end_val is None:
@@ -426,7 +305,7 @@ def turns_from_assemblyai_response(response: object, include_timestamps: bool = 
                 )
             )
 
-        return mark_continuation_turns(turns)
+        return _mark_continuation_turns(turns)
 
     # Fallback: no utterances (unexpected if speaker_labels is enabled).
     text_value = str(getattr(transcript, "text", "") or "").strip()
@@ -522,7 +401,7 @@ def turns_from_assemblyai_multichannel_response(
         )
 
     if turns:
-        return mark_continuation_turns(turns)
+        return _mark_continuation_turns(turns)
 
     text_value = str(getattr(transcript, "text", "") or "").strip()
     if not text_value:
@@ -567,91 +446,3 @@ def get_media_duration(file_path: str) -> Optional[float]:
         logger.debug("ffprobe duration extraction failed: %s", e)
     return None
 
-def process_transcription(
-    file_bytes: Optional[bytes],
-    filename: str,
-    speakers_expected: Optional[int],
-    title_data: dict,
-    input_path: Optional[str] = None,
-):
-    with tempfile.TemporaryDirectory() as temp_dir:
-        if input_path:
-            source_path = input_path
-        else:
-            if file_bytes is None:
-                raise ValueError("file_bytes required when input_path is not provided")
-            source_path = os.path.join(temp_dir, filename)
-            with open(source_path, "wb") as f:
-                f.write(file_bytes)
-
-        ext = filename.split('.')[-1].lower()
-        audio_path = None
-        if ext in SUPPORTED_VIDEO_TYPES:
-            output_audio_filename = f"{os.path.splitext(os.path.basename(filename))[0]}.mp3"
-            output_path = os.path.join(temp_dir, output_audio_filename)
-            converted_audio_path = convert_video_to_audio(source_path, output_path)
-            if converted_audio_path:
-                audio_path = converted_audio_path
-                ext = "mp3"
-            else:
-                # Fallback to source media if conversion fails; AssemblyAI accepts many video containers directly.
-                logger.warning("Video conversion failed for %s; using source media for transcription", filename)
-                audio_path = source_path
-        elif ext in SUPPORTED_AUDIO_TYPES:
-            audio_path = source_path
-        else:
-            raise ValueError("Unsupported file type")
-
-        # ------------------------------------------------------------------
-        # Retrieve media duration – prefer direct ffprobe for robustness
-        # ------------------------------------------------------------------
-        duration_seconds = get_media_duration(audio_path)
-
-        if duration_seconds is None:
-            # Fallback to pydub if ffprobe failed for some reason
-            audio_segment = None
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    audio_segment = AudioSegment.from_file(audio_path)
-                    break
-                except (PermissionError, FileNotFoundError) as e:
-                    if attempt < max_retries - 1:
-                        logger.warning("Attempt %d failed to load audio file: %s. Retrying...", attempt + 1, e)
-                        time.sleep(1)
-                    else:
-                        raise e
-            if audio_segment is not None:
-                duration_seconds = len(audio_segment) / 1000.0
-            else:
-                duration_seconds = None
-
-        if duration_seconds is None:
-            logger.warning("Unable to determine media duration for %s; defaulting to 0s", filename)
-            duration_seconds = 0.0
-
-        # ------------------------------------------------------------------
-        # Format and store duration for title data
-        # ------------------------------------------------------------------
-        hours, rem = divmod(duration_seconds, 3600)
-        minutes, seconds = divmod(rem, 60)
-        file_duration_str = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
-        title_data["FILE_DURATION"] = file_duration_str
-
-        # ------------------------------------------------------------------
-        # Proceed with upload & transcription (AssemblyAI only)
-        # ------------------------------------------------------------------
-        logger.info("Using AssemblyAI transcription engine")
-
-        if not ASSEMBLYAI_AVAILABLE:
-            raise RuntimeError("AssemblyAI SDK not installed. Run: pip install assemblyai")
-
-        if not ASSEMBLYAI_API_KEY:
-            raise RuntimeError("ASSEMBLYAI_API_KEY environment variable not set")
-
-        turns = transcribe_with_assemblyai(audio_path, speakers_expected=speakers_expected)
-
-        if not turns:
-            raise RuntimeError("AssemblyAI transcription failed: no utterances returned")
-
-        return turns, duration_seconds

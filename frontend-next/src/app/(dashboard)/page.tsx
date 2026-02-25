@@ -148,7 +148,7 @@ export default function DashboardHome() {
           </div>
           <div>
             <p className="font-semibold text-gray-900">Transcribe</p>
-            <p className="text-sm text-gray-500">Upload audio/video</p>
+            <p className="text-sm text-gray-500">Select audio/video</p>
           </div>
         </Link>
 

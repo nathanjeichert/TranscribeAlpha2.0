@@ -196,26 +196,4 @@ export function getAuthHeaders(): HeadersInit {
   };
 }
 
-/**
- * Check if the access token is expired
- */
-export function isTokenExpired(): boolean {
-  if (!needsAuth()) return false;
-  const token = getAccessToken();
-  if (!token) return true;
-
-  try {
-    // Decode JWT payload (simple base64 decode, not cryptographic verification)
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    const exp = payload.exp;
-
-    if (!exp) return true;
-
-    // Check if token is expired
-    const now = Math.floor(Date.now() / 1000);
-    return now >= exp;
-  } catch {
-    return true;
-  }
-}
 

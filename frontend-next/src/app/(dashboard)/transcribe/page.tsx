@@ -21,7 +21,7 @@ interface FormData {
   case_id: string
 }
 
-type WizardStep = 'upload' | 'configure'
+type WizardStep = 'select' | 'configure'
 
 interface QueueItem {
   id: string
@@ -36,7 +36,7 @@ interface QueueItem {
 }
 
 const wizardSteps: Array<{ key: WizardStep; label: string }> = [
-  { key: 'upload', label: 'Upload' },
+  { key: 'select', label: 'Select' },
   { key: 'configure', label: 'Configure' },
 ]
 
@@ -64,7 +64,7 @@ export default function TranscribePage() {
   const searchParams = useSearchParams()
   const { cases, refreshCases, enqueueTranscriptionJobs } = useDashboard()
 
-  const [step, setStep] = useState<WizardStep>('upload')
+  const [step, setStep] = useState<WizardStep>('select')
   const [formData, setFormData] = useState<FormData>({
     case_name: '',
     case_number: '',
@@ -435,7 +435,7 @@ export default function TranscribePage() {
   const currentStepIndex = wizardSteps.findIndex((wizardStep) => wizardStep.key === step)
 
   const canNavigateToStep = (targetStep: WizardStep) => {
-    if (targetStep === 'upload') return true
+    if (targetStep === 'select') return true
     if (targetStep === 'configure') return canProceedToConfig
     return false
   }
@@ -483,7 +483,7 @@ export default function TranscribePage() {
 
     enqueueTranscriptionJobs(inputs)
     setQueue([])
-    setStep('upload')
+    setStep('select')
     setPageNotice(`Queued ${inputs.length} transcription job(s). Track progress in Jobs.`)
     guardedPush(router, routes.jobs())
   }, [enqueueTranscriptionJobs, formData, getEffectiveCaseId, jailCallMode, queue, router])
@@ -495,8 +495,8 @@ export default function TranscribePage() {
           <h1 className="text-2xl font-semibold text-gray-900">New Transcript</h1>
           <p className="text-gray-600 mt-1">
             {isBatchSelection
-              ? `Upload up to ${MAX_BATCH_FILES} files and submit them as jobs.`
-              : 'Upload one file to transcribe, or add more files to submit a batch.'}
+              ? `Select up to ${MAX_BATCH_FILES} files and submit them as jobs.`
+              : 'Select one file to transcribe, or add more files to submit a batch.'}
           </p>
         </div>
         <div className="flex gap-2">
@@ -573,7 +573,7 @@ export default function TranscribePage() {
         </div>
       )}
 
-      {step === 'upload' && (
+      {step === 'select' && (
         <div className="space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Transcription Mode</h2>
@@ -606,7 +606,7 @@ export default function TranscribePage() {
 
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-1">
-              Upload Media {isBatchSelection ? 'Files' : 'File'}
+              Select Media {isBatchSelection ? 'Files' : 'File'}
             </h2>
             <p className="text-sm text-gray-600 mb-4">
               {isBatchSelection
@@ -631,7 +631,7 @@ export default function TranscribePage() {
               className="block border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors border-gray-300 hover:border-primary-400 hover:bg-primary-50"
             >
               <input
-                id="media-upload"
+                id="media-select"
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileInputChange}
@@ -641,8 +641,8 @@ export default function TranscribePage() {
               />
               <div className="space-y-3">
                 <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto">
-                  <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
                   </svg>
                 </div>
                 <div className="font-medium text-gray-900">
@@ -953,7 +953,7 @@ export default function TranscribePage() {
           </div>
 
           <div className="flex justify-between">
-            <button type="button" onClick={() => setStep('upload')} className="btn-outline px-6 py-3">
+            <button type="button" onClick={() => setStep('select')} className="btn-outline px-6 py-3">
               Back
             </button>
             <button

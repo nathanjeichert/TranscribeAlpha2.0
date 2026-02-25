@@ -640,33 +640,6 @@ def compute_transcript_line_entries(
     return line_entries, last_pgln
 
 
-def generate_oncue_xml(
-    transcript_turns: List[TranscriptTurn],
-    metadata: dict,
-    audio_duration: float,
-    lines_per_page: int = 25,
-    enforce_min_duration: bool = True,
-    precomputed_line_entries: Optional[List[dict]] = None,
-) -> str:
-    """Generate OnCue-compatible XML from transcript turns or precomputed line entries."""
-    if precomputed_line_entries is None:
-        line_entries, _ = compute_transcript_line_entries(
-            transcript_turns,
-            audio_duration,
-            lines_per_page,
-            enforce_min_duration=enforce_min_duration,
-        )
-    else:
-        line_entries = precomputed_line_entries
-
-    return generate_oncue_xml_from_line_entries(
-        line_entries,
-        metadata,
-        audio_duration,
-        lines_per_page,
-    )
-
-
 def generate_oncue_xml_from_line_entries(
     line_entries: List[dict],
     metadata: dict,

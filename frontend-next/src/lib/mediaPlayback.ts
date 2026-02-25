@@ -1,7 +1,6 @@
 import { touchMediaCacheEntry } from './mediaCache'
 import {
   getFirstAvailableMediaFile,
-  getFirstAvailableMediaObjectURL,
   getMediaHandlePermissionState,
 } from './mediaHandles'
 import { isTauri, getPlatformFS } from './platform'
