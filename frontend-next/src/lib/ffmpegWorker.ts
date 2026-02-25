@@ -174,7 +174,7 @@ class FFmpegWorkerSlot {
 // Pool manager
 // ---------------------------------------------------------------------------
 
-const MAX_POOL_SLOTS = 4
+const MAX_POOL_SLOTS = 8
 const SLOT_OVERHEAD_BYTES = 35 * 1024 * 1024
 const pool: FFmpegWorkerSlot[] = []
 
