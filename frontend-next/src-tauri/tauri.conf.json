@@ -26,6 +26,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": "v2Compatible",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,5 +38,12 @@
       "binaries/ffmpeg",
       "binaries/transcribealpha-server"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/nathanjeichert/TranscribeAlpha2.0/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
