@@ -1,65 +1,193 @@
 # TranscribeAlpha
 
-A simple transcript generator powered by AssemblyAI. The original Streamlit prototype has been replaced with a small FastAPI backend and a static HTML front-end.
+Professional legal transcript generation from audio and video files. Runs as a **web app** (Google Cloud Run) or a **native desktop app** (Windows / macOS via Tauri).
 
-## Cloud Run-Parity Local Testing (Recommended)
+## Features
 
-Run locally in Docker (same build/runtime model as Cloud Run) so you can test without Cloud Build costs.
+- **Multi-engine transcription** — AssemblyAI (slam-1) or Google Gemini 3.0 Pro
+- **Batch processing** — queue up to 3,000 files per session
+- **Jail-call mode** — automatic G.729 detection and multichannel splitting
+- **Transcript editor** — line-by-line editing with synchronized audio/video playback and waveform visualization
+- **Clip creator** — select time ranges, build clip sequences (black screen, title card, or continuous), export as ZIP
+- **Forced alignment** — Rev AI re-sync to correct timestamps after editing
+- **Three export formats** — PDF, OnCue XML, and standalone HTML Viewer
+- **Cases system** — organize transcripts into case folders with cross-transcript search
+- **Local-first storage** — File System Access API + IndexedDB; no server-side persistence required
+- **In-browser media converter** — FFmpeg WASM converts proprietary formats to browser-playable audio/video
+- **Desktop app** — Tauri 2.0 with bundled Python sidecar and FFmpeg binary; auto-updates via GitHub Releases
 
-1. Install Docker Desktop (or Docker Engine).
-2. Copy env template and fill required values:
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | Next.js 14, React 18, TypeScript, Tailwind CSS |
+| Backend | FastAPI, Python 3.11, Hypercorn (HTTP/2) |
+| Transcription | AssemblyAI SDK, Google GenAI SDK |
+| Alignment | Rev AI Forced Alignment API |
+| PDF | ReportLab (Courier font, legal formatting) |
+| Waveform | wavesurfer.js |
+| Media | FFmpeg (server-side), @ffmpeg/ffmpeg WASM (client-side) |
+| Desktop | Tauri 2.0 (Rust), PyInstaller sidecar |
+| Deployment | Google Cloud Run, Cloud Build, Artifact Registry |
+| Auth | JWT + bcrypt, GCP Secret Manager user store |
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- FFmpeg installed and on PATH
+- At least one transcription API key (AssemblyAI or Gemini)
+
+### Environment Variables
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ASSEMBLYAI_API_KEY` | Yes* | AssemblyAI transcription |
+| `GEMINI_API_KEY` | Yes* | Gemini transcription (alt: `GOOGLE_API_KEY`) |
+| `REV_AI_API_KEY` | Recommended | Forced alignment for accurate timestamps |
+| `JWT_SECRET_KEY` | For auth | Token signing |
+| `GOOGLE_CLOUD_PROJECT` | For auth | Secret Manager access |
+| `PORT` | No | Server port (default: 8080) |
+| `ENVIRONMENT` | No | Set to `production` for strict CORS |
+
+\*At least one transcription API key is required.
+
+### Option 1 — Docker (Cloud Run parity)
+
+Run locally in Docker with the same build and runtime model as production:
 
 ```bash
-cp .env.cloudrun.example .env.cloudrun.local
+cp .env.cloudrun.example .env.cloudrun.local   # fill in API keys
+./scripts/run_cloudrun_local.sh                 # builds & runs on port 8080
 ```
 
-3. If you want auth and Secret Manager parity, configure local ADC:
+Open [http://localhost:8080](http://localhost:8080).
 
-```bash
-gcloud auth application-default login
-```
-
-4. Start the app using the helper script:
-
-```bash
-./scripts/run_cloudrun_local.sh oncue
-```
-
-For criminal variant:
-
-```bash
-./scripts/run_cloudrun_local.sh criminal
-```
-
-Then open [http://localhost:8080](http://localhost:8080).
-
-## Fast Dev Loop (Non-Parity)
-
-If you want faster iteration (less Cloud Run-like), run directly with Python:
-
-1. Install system dependencies (`ffmpeg`, `libsndfile1`).
-2. Install Python dependencies:
+### Option 2 — Direct Python (fast dev loop)
 
 ```bash
 pip install -r requirements.txt
-```
-
-3. Export API key(s), then start:
-
-```bash
 uvicorn backend.server:app --reload
 ```
 
-4. Open [http://localhost:8000](http://localhost:8000).
+Open [http://localhost:8000](http://localhost:8000). Frontend must be built separately:
 
-## Notes
+```bash
+cd frontend-next && npm install && npm run build
+```
 
-The backend relies on the [AssemblyAI Python SDK](https://github.com/AssemblyAI/assemblyai-python-sdk) for transcription and formatting.
-- Transcriptions run on AssemblyAI's `slam-1` model to take advantage of its speaker-and-language-aware accuracy.
+### Option 3 — Desktop App (Tauri)
 
-## File Size & Duration Limits
+Requires Rust toolchain and platform build tools (MSVC on Windows, Xcode CLT on macOS).
 
-- Maximum upload size enforced by the backend: **2 GB** (requests larger than this return HTTP 413).
-- Files larger than **100 MB** are automatically stored in **Google Cloud Storage** (`transcribealpha-uploads-1750110926`) before processing; Cloud Storage itself supports multi‑terabyte objects, so it is not the limiting factor.
-- Cloud Run's default 32 MB HTTP/1 request limit is bypassed via HTTP/2 and Cloud Storage, so the app-level 2 GB cap is the effective size limit.
-- Maximum audio duration is effectively bounded by what AssemblyAI accepts for a single transcription job and by container resources; AssemblyAI supports multi‑hour recordings, but for current hard limits you should refer to their docs: https://www.assemblyai.com/docs.
+```bash
+cd frontend-next
+npm install
+npm run tauri:build
+```
+
+Installers are output to `frontend-next/src-tauri/target/release/bundle/`. Update scripts are provided for ongoing builds:
+
+- **Windows:** `scripts/update-desktop.ps1`
+- **macOS:** `scripts/update-desktop.sh`
+
+## Project Structure
+
+```
+TranscribeAlpha/
+├── backend/                     # FastAPI backend
+│   ├── server.py               # App wiring (routers, middleware, static mount)
+│   ├── api/                    # Route handlers (auth, transcripts, health)
+│   ├── transcriber.py          # AssemblyAI integration + media probing
+│   ├── gemini.py               # Gemini transcription + refinement
+│   ├── rev_ai_sync.py          # Rev AI forced alignment
+│   ├── transcript_formatting.py # PDF + OnCue XML generation
+│   ├── transcript_utils.py     # Session serialization + viewer HTML
+│   ├── viewer/                 # Standalone HTML viewer template
+│   ├── auth.py                 # JWT authentication
+│   ├── sidecar_main.py         # Desktop sidecar entry point (port 18080)
+│   └── sidecar.spec            # PyInstaller build spec
+│
+├── frontend-next/               # Next.js 14 frontend
+│   ├── src/
+│   │   ├── app/(dashboard)/    # All routes (editor, viewer, transcribe, etc.)
+│   │   ├── components/         # React components
+│   │   ├── context/            # React contexts (dashboard state, hooks)
+│   │   └── utils/              # Utility functions
+│   ├── src-tauri/              # Tauri desktop shell (Rust)
+│   │   ├── binaries/           # FFmpeg + Python sidecar (platform-specific)
+│   │   └── tauri.conf.json     # App identity, window config, updater
+│   └── out/                    # Static export (generated by build)
+│
+├── scripts/                     # Admin and build scripts
+│   ├── update-desktop.ps1      # Windows desktop build + install
+│   ├── update-desktop.sh       # macOS desktop build + install
+│   ├── run_cloudrun_local.sh   # Docker local dev with Cloud Run settings
+│   ├── add_user.sh             # Add user to Secret Manager
+│   ├── invite_user.sh          # Invite user (pending registration)
+│   ├── list_users.sh           # List all users
+│   ├── remove_user.sh          # Remove user
+│   └── export_codebase.py      # Export repo to single file for LLM context
+│
+├── .github/workflows/
+│   └── desktop-build.yml       # CI/CD: builds Windows + macOS desktop installers
+│
+├── main.py                      # Hypercorn server entry point
+├── Dockerfile                   # Multi-stage build (Node + Python)
+├── cloudbuild.yaml              # Google Cloud Build config
+└── requirements.txt             # Python dependencies
+```
+
+## Deployment
+
+### Cloud Run (production)
+
+A Cloud Build trigger on the `main` branch builds the Docker image and deploys to Cloud Run:
+
+```bash
+# Manual deploy
+gcloud builds submit --config cloudbuild.yaml
+```
+
+Cloud Run config: us-central1, HTTP/2 enabled, 2 GiB RAM, 1 vCPU, up to 10 instances.
+
+### Desktop Releases
+
+Push a `v*` tag to trigger the GitHub Actions workflow, which builds Windows (.msi/.exe) and macOS (.dmg) installers and creates a draft GitHub Release. The desktop app auto-updates from the latest release.
+
+## File Size Limits
+
+- **2 GB** maximum upload size (backend-enforced, HTTP 413 beyond this)
+- Files over **100 MB** are routed through Google Cloud Storage before processing
+- Cloud Run's 32 MB HTTP/1 limit is bypassed via HTTP/2 and Cloud Storage
+
+## API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/transcribe` | POST | Main transcription (file to PDF + XML + HTML) |
+| `/api/resync` | POST | Re-align transcript with audio via Rev AI |
+| `/api/gemini-refine` | POST | Gemini refinement pass |
+| `/api/format-pdf` | POST | Regenerate PDF from line entries |
+| `/api/convert` | POST | FFmpeg media conversion |
+| `/api/viewer-template` | GET | HTML viewer template |
+| `/api/config` | GET | Feature flags |
+| `/api/auth/login` | POST | User authentication |
+| `/api/auth/refresh` | POST | Refresh access token |
+| `/api/auth/me` | GET | Current user info |
+| `/health` | GET | Health check |
+
+## Scripts Reference
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/run_cloudrun_local.sh` | Docker dev server with Cloud Run parity |
+| `scripts/update-desktop.ps1` | Windows: pull, rebuild sidecar + Tauri, install |
+| `scripts/update-desktop.sh` | macOS: pull, rebuild sidecar + Tauri, install |
+| `scripts/add_user.sh <user> <pass>` | Add user to Secret Manager |
+| `scripts/invite_user.sh <user>` | Create pending user invitation |
+| `scripts/list_users.sh` | List all users |
+| `scripts/remove_user.sh <user>` | Remove user |
+| `scripts/export_codebase.py` | Export repo to single text file |
