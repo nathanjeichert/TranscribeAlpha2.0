@@ -212,6 +212,105 @@ export function useConversionQueue(deps: ConversionQueueDeps) {
     [applyJobsMutation, jobFilesRef, updateJob],
   )
 
+  const processOneConversion = useCallback(
+    async (jobId: string, promptLargeFiles: boolean) => {
+      if (stopConversionRequestedRef.current) return 'stopped' as const
+
+      const active = jobFilesRef.current.get(jobId)
+      if (!active?.file) {
+        updateJob(jobId, {
+          status: 'failed',
+          detail: 'Failed',
+          error: 'The source file is no longer available in this tab. Please add it again.',
+        })
+        return 'failed' as const
+      }
+
+      if (promptLargeFiles && active.file.size > LARGE_FILE_WARNING_BYTES) {
+        const shouldContinue = window.confirm(
+          `This file is very large (${(active.file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). In-browser conversion may fail. Continue?\n\n${active.file.name}`,
+        )
+        if (!shouldContinue) {
+          updateJob(jobId, {
+            status: 'queued',
+            detail: 'Ready',
+            error: 'Skipped in this batch due to large file size.',
+          })
+          return 'skipped' as const
+        }
+        updateJob(jobId, { error: '' })
+      }
+
+      updateJob(jobId, { status: 'running', unloadSensitive: true, detail: 'Converting...', progress: 0, error: '' })
+
+      try {
+        let cached: File | null = null
+        let outputPath: string | null = null
+        try {
+          cached = await readConvertedFromCache(active.file)
+        } catch (cacheReadError) {
+          logger.warn('Converter cache read failed, continuing with conversion.', cacheReadError)
+        }
+
+        if (cached) {
+          storeConvertedInMemory(jobId, cached)
+          outputPath = await persistConvertedOutput(jobId, cached)
+          updateJob(jobId, {
+            status: 'succeeded',
+            unloadSensitive: false,
+            detail: 'Converted',
+            progress: 1,
+            convertedCachePath: outputPath,
+            convertedFilename: cached.name,
+            convertedContentType: cached.type || 'application/octet-stream',
+          })
+          return 'done' as const
+        }
+
+        const converted = await convertToPlayable(active.file, (ratio) => {
+          updateJob(jobId, { progress: ratio, detail: 'Converting...' })
+        })
+
+        storeConvertedInMemory(jobId, converted)
+
+        try {
+          await writeConvertedToCache(active.file, converted)
+        } catch (cacheWriteError) {
+          logger.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
+        }
+
+        outputPath = await persistConvertedOutput(jobId, converted)
+
+        updateJob(jobId, {
+          status: 'succeeded',
+          unloadSensitive: false,
+          detail: 'Converted',
+          progress: 1,
+          convertedCachePath: outputPath,
+          convertedFilename: converted.name,
+          convertedContentType: converted.type || 'application/octet-stream',
+        })
+        return 'done' as const
+      } catch (err) {
+        if (err instanceof FFmpegCanceledError || stopConversionRequestedRef.current) {
+          updateJob(jobId, {
+            status: 'canceled',
+            unloadSensitive: false,
+            detail: 'Canceled',
+            error: 'Conversion was canceled.',
+          })
+          return 'canceled' as const
+        }
+        const msg = err instanceof Error ? err.message : 'Conversion failed.'
+        updateJob(jobId, { status: 'failed', unloadSensitive: false, detail: 'Failed', error: msg })
+        return 'failed' as const
+      }
+    },
+    [jobFilesRef, persistConvertedOutput, storeConvertedInMemory, updateJob],
+  )
+
+  const MAX_PARALLEL_CONVERSIONS = 4
+
   const runConversionQueue = useCallback(
     async (options?: { promptLargeFiles?: boolean }) => {
       if (conversionRunnerActiveRef.current) return
@@ -223,106 +322,34 @@ export function useConversionQueue(deps: ConversionQueueDeps) {
       try {
         while (true) {
           await new Promise((r) => setTimeout(r, 0))
-          const next = jobsRef.current.find(
-            (job) => job.kind === 'conversion' && job.status === 'queued' && job.needsConversion,
-          )
-          if (!next) break
           if (stopConversionRequestedRef.current) break
 
-          const active = jobFilesRef.current.get(next.id)
-          if (!active?.file) {
-            updateJob(next.id, {
-              status: 'failed',
-              detail: 'Failed',
-              error: 'The source file is no longer available in this tab. Please add it again.',
-            })
-            continue
-          }
+          const pending = jobsRef.current.filter(
+            (job) => job.kind === 'conversion' && job.status === 'queued' && job.needsConversion,
+          )
+          if (!pending.length) break
 
-          if (promptLargeFiles && active.file.size > LARGE_FILE_WARNING_BYTES) {
-            const shouldContinue = window.confirm(
-              `This file is very large (${(active.file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). In-browser conversion may fail. Continue?\n\n${active.file.name}`,
-            )
-            if (!shouldContinue) {
-              updateJob(next.id, {
-                status: 'queued',
-                detail: 'Ready',
-                error: 'Skipped in this batch due to large file size.',
-              })
-              continue
-            }
-            updateJob(next.id, { error: '' })
-          }
+          const runningCount = jobsRef.current.filter(
+            (job) => job.kind === 'conversion' && job.status === 'running',
+          ).length
+          const slotsAvailable = Math.max(0, MAX_PARALLEL_CONVERSIONS - runningCount)
+          const toStart = pending.slice(0, Math.max(1, slotsAvailable))
 
-          updateJob(next.id, { status: 'running', unloadSensitive: true, detail: 'Converting...', progress: 0, error: '' })
+          const results = await Promise.allSettled(
+            toStart.map((job) => processOneConversion(job.id, promptLargeFiles)),
+          )
 
-          try {
-            let cached: File | null = null
-            let outputPath: string | null = null
-            try {
-              cached = await readConvertedFromCache(active.file)
-            } catch (cacheReadError) {
-              logger.warn('Converter cache read failed, continuing with conversion.', cacheReadError)
-            }
-
-            if (cached) {
-              storeConvertedInMemory(next.id, cached)
-              outputPath = await persistConvertedOutput(next.id, cached)
-              updateJob(next.id, {
-                status: 'succeeded',
-                unloadSensitive: false,
-                detail: 'Converted',
-                progress: 1,
-                convertedCachePath: outputPath,
-                convertedFilename: cached.name,
-                convertedContentType: cached.type || 'application/octet-stream',
-              })
-              continue
-            }
-
-            const converted = await convertToPlayable(active.file, (ratio) => {
-              updateJob(next.id, { progress: ratio, detail: 'Converting...' })
-            })
-
-            storeConvertedInMemory(next.id, converted)
-
-            try {
-              await writeConvertedToCache(active.file, converted)
-            } catch (cacheWriteError) {
-              logger.warn('Converter cache write failed, continuing without cache.', cacheWriteError)
-            }
-
-            outputPath = await persistConvertedOutput(next.id, converted)
-
-            updateJob(next.id, {
-              status: 'succeeded',
-              unloadSensitive: false,
-              detail: 'Converted',
-              progress: 1,
-              convertedCachePath: outputPath,
-              convertedFilename: converted.name,
-              convertedContentType: converted.type || 'application/octet-stream',
-            })
-          } catch (err) {
-            if (err instanceof FFmpegCanceledError || stopConversionRequestedRef.current) {
-              updateJob(next.id, {
-                status: 'canceled',
-                unloadSensitive: false,
-                detail: 'Canceled',
-                error: 'Conversion was canceled.',
-              })
-              break
-            }
-            const msg = err instanceof Error ? err.message : 'Conversion failed.'
-            updateJob(next.id, { status: 'failed', unloadSensitive: false, detail: 'Failed', error: msg })
-          }
+          const wasCanceled = results.some(
+            (r) => r.status === 'fulfilled' && (r.value === 'canceled' || r.value === 'stopped'),
+          )
+          if (wasCanceled || stopConversionRequestedRef.current) break
         }
       } finally {
         conversionRunnerActiveRef.current = false
         stopConversionRequestedRef.current = false
       }
     },
-    [jobsRef, jobFilesRef, persistConvertedOutput, storeConvertedInMemory, updateJob],
+    [jobsRef, processOneConversion],
   )
 
   const startConversionQueue = useCallback(

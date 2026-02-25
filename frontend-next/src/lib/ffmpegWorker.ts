@@ -76,28 +76,11 @@ const WORKSPACE_IDB_KEY = 'workspace-dir-handle'
 const DEFAULT_MEMORY_LIMIT_MB = 1024
 const TELEPHONY_FORMAT_CODES = new Set([0x2222, 0x0131, 0x0006, 0x0007])
 
-let ffmpegInstance: FFmpeg | null = null
-let loadPromise: Promise<void> | null = null
-let operationQueue: Promise<void> = Promise.resolve()
-let activeProgressCallback: ProgressCallback | null = null
-let terminatedByUser = false
-let cancelReject: (() => void) | null = null
-let listenersAttached = false
-let conversionsSinceReset = 0
-let convertedBytesSinceReset = 0
 let runtimeMemoryLimitMB = DEFAULT_MEMORY_LIMIT_MB
 
 type EncoderSupport = {
   libopus: boolean
   libmp3lame: boolean
-}
-
-let encoderSupportPromise: Promise<EncoderSupport> | null = null
-
-const progressListener = ({ progress }: { progress: number }) => {
-  if (!activeProgressCallback) return
-  const ratio = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0
-  activeProgressCallback(ratio)
 }
 
 export class FFmpegCanceledError extends Error {
@@ -107,27 +90,156 @@ export class FFmpegCanceledError extends Error {
   }
 }
 
-function runSerial<T>(operation: () => Promise<T>): Promise<T> {
-  const next = operationQueue.then(operation, operation)
-  operationQueue = next.then(() => undefined, () => undefined)
-  return next
-}
+// ---------------------------------------------------------------------------
+// FFmpegWorkerSlot — encapsulates one FFmpeg WASM instance + its state
+// ---------------------------------------------------------------------------
 
-function resetFFmpegRuntime(): void {
-  if (ffmpegInstance) {
-    try {
-      ffmpegInstance.terminate()
-    } catch {
-      // Ignore termination failures
-    }
-  }
-  ffmpegInstance = null
-  loadPromise = null
+class FFmpegWorkerSlot {
+  instance: FFmpeg | null = null
+  loadPromise: Promise<void> | null = null
+  operationQueue: Promise<void> = Promise.resolve()
+  activeProgressCallback: ProgressCallback | null = null
+  terminatedByUser = false
+  cancelReject: (() => void) | null = null
   listenersAttached = false
-  activeProgressCallback = null
+  encoderSupportPromise: Promise<EncoderSupport> | null = null
   conversionsSinceReset = 0
   convertedBytesSinceReset = 0
-  encoderSupportPromise = null
+  busy = false
+  estimatedMemoryBytes = 0
+
+  private progressListener = ({ progress }: { progress: number }) => {
+    if (!this.activeProgressCallback) return
+    const ratio = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0
+    this.activeProgressCallback(ratio)
+  }
+
+  async getFFmpeg(): Promise<FFmpeg> {
+    if (this.instance?.loaded) return this.instance
+    if (!this.instance) {
+      this.instance = new FFmpeg()
+      this.listenersAttached = false
+    }
+
+    if (!this.listenersAttached) {
+      this.instance.on('progress', this.progressListener)
+      this.listenersAttached = true
+    }
+
+    if (!this.loadPromise) {
+      this.loadPromise = this.instance.load({
+        coreURL: '/ffmpeg-core.js',
+        wasmURL: '/ffmpeg-core.wasm',
+      })
+        .then(() => undefined)
+        .catch((error) => {
+          this.instance = null
+          this.listenersAttached = false
+          throw error
+        })
+        .finally(() => {
+          this.loadPromise = null
+        })
+    }
+
+    await this.loadPromise
+    return this.instance
+  }
+
+  reset(): void {
+    if (this.instance) {
+      try {
+        this.instance.terminate()
+      } catch {
+        // Ignore termination failures
+      }
+    }
+    this.instance = null
+    this.loadPromise = null
+    this.listenersAttached = false
+    this.activeProgressCallback = null
+    this.conversionsSinceReset = 0
+    this.convertedBytesSinceReset = 0
+    this.encoderSupportPromise = null
+  }
+
+  runSerial<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.operationQueue.then(operation, operation)
+    this.operationQueue = next.then(() => undefined, () => undefined)
+    return next
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pool manager
+// ---------------------------------------------------------------------------
+
+const MAX_POOL_SLOTS = 4
+const SLOT_OVERHEAD_BYTES = 35 * 1024 * 1024
+const pool: FFmpegWorkerSlot[] = []
+
+function getPoolBudgetBytes(): number {
+  return Math.floor(clampMemoryLimitMB(runtimeMemoryLimitMB) * 0.8 * 1024 * 1024)
+}
+
+function getPoolUsedBytes(): number {
+  return pool.reduce((sum, s) => sum + (s.busy ? s.estimatedMemoryBytes : 0), 0)
+}
+
+function estimateJobMemory(file: File): number {
+  return SLOT_OVERHEAD_BYTES + Math.ceil(file.size * 2.5)
+}
+
+function acquireSlot(file: File): FFmpegWorkerSlot | null {
+  const estimate = estimateJobMemory(file)
+  const used = getPoolUsedBytes()
+  const budget = getPoolBudgetBytes()
+
+  // If adding this job would exceed budget and something is already running, wait
+  if (used + estimate > budget && pool.some((s) => s.busy)) return null
+
+  // Find an idle slot
+  const idle = pool.find((s) => !s.busy)
+  if (idle) {
+    idle.busy = true
+    idle.estimatedMemoryBytes = estimate
+    return idle
+  }
+
+  // Create a new slot if pool isn't full
+  if (pool.length < MAX_POOL_SLOTS) {
+    const slot = new FFmpegWorkerSlot()
+    slot.busy = true
+    slot.estimatedMemoryBytes = estimate
+    pool.push(slot)
+    return slot
+  }
+
+  return null
+}
+
+function releaseSlot(slot: FFmpegWorkerSlot): void {
+  slot.busy = false
+  slot.estimatedMemoryBytes = 0
+}
+
+async function waitForSlot(file: File): Promise<FFmpegWorkerSlot> {
+  while (true) {
+    const slot = acquireSlot(file)
+    if (slot) return slot
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy singleton access (used by getFFmpeg export for non-pool callers)
+// ---------------------------------------------------------------------------
+
+function getOrCreateDefaultSlot(): FFmpegWorkerSlot {
+  if (pool.length === 0) {
+    pool.push(new FFmpegWorkerSlot())
+  }
+  return pool[0]
 }
 
 function clampMemoryLimitMB(limitMb: number): number {
@@ -185,6 +297,8 @@ type OperationConfig = {
   prepareAttempts?: (ffmpeg: FFmpeg) => Promise<void>
   /** Optional: transforms the final aggregated error before throwing. */
   normalizeLastError?: (error: Error) => Error
+  /** Pool slot to use for this operation. */
+  slot: FFmpegWorkerSlot
 }
 
 /**
@@ -192,13 +306,14 @@ type OperationConfig = {
  * progress-wiring, cancellation-checking, and cleanup logic.
  */
 async function runFFmpegOperation(config: OperationConfig): Promise<File> {
-  const ffmpeg = await getFFmpeg()
+  const slot = config.slot
+  const ffmpeg = await slot.getFFmpeg()
 
   if (config.prepareAttempts) {
     await config.prepareAttempts(ffmpeg)
   }
 
-  activeProgressCallback = config.onProgress ?? null
+  slot.activeProgressCallback = config.onProgress ?? null
   let mounted = false
 
   try {
@@ -213,16 +328,16 @@ async function runFFmpegOperation(config: OperationConfig): Promise<File> {
     let lastError: Error | null = null
 
     for (const attempt of attempts) {
-      if (terminatedByUser) {
-        terminatedByUser = false
+      if (slot.terminatedByUser) {
+        slot.terminatedByUser = false
         throw new FFmpegCanceledError()
       }
       await removeVirtualFile(ffmpeg, attempt.outputName)
       try {
         const exitCode = await new Promise<number>((resolve, reject) => {
-          cancelReject = () => reject(new FFmpegCanceledError())
+          slot.cancelReject = () => reject(new FFmpegCanceledError())
           ffmpeg.exec(attempt.args).then(resolve, reject)
-        }).finally(() => { cancelReject = null })
+        }).finally(() => { slot.cancelReject = null })
         if (exitCode !== 0) {
           throw new Error(`Operation failed (${attempt.label})`)
         }
@@ -233,8 +348,8 @@ async function runFFmpegOperation(config: OperationConfig): Promise<File> {
         }
         return config.buildResultFile(bytes, attempt)
       } catch (attemptError) {
-        if (terminatedByUser) {
-          terminatedByUser = false
+        if (slot.terminatedByUser) {
+          slot.terminatedByUser = false
           throw new FFmpegCanceledError()
         }
         lastError = normalizeError(attemptError)
@@ -246,7 +361,7 @@ async function runFFmpegOperation(config: OperationConfig): Promise<File> {
     }
     throw new Error('Operation failed.')
   } finally {
-    activeProgressCallback = null
+    slot.activeProgressCallback = null
     if (mounted) {
       try {
         await ffmpeg.unmount(config.workerFSMount)
@@ -274,6 +389,8 @@ type RetryConfig<T> = {
   /** Transforms the final error before re-throwing on the last attempt.
    *  Only called when the retry also fails and classifyError did not throw. */
   normalizeLastError?: (error: Error) => Error
+  /** Pool slot used for this operation. */
+  slot: FFmpegWorkerSlot
 }
 
 /**
@@ -282,14 +399,15 @@ type RetryConfig<T> = {
  * and retries once. On second failure, throws the (optionally normalized) error.
  */
 async function withRetryAndReset<T>(config: RetryConfig<T>): Promise<T> {
+  const slot = config.slot
   try {
     const result = await config.operation()
     config.onSuccess?.(result)
     return result
   } catch (firstError) {
     if (firstError instanceof FFmpegCanceledError) throw firstError
-    if (terminatedByUser) {
-      terminatedByUser = false
+    if (slot.terminatedByUser) {
+      slot.terminatedByUser = false
       throw new FFmpegCanceledError()
     }
 
@@ -297,7 +415,7 @@ async function withRetryAndReset<T>(config: RetryConfig<T>): Promise<T> {
     // classifyError may throw to abort (e.g. for OOM), or return to proceed with retry
     config.classifyError?.(normalized)
 
-    resetFFmpegRuntime()
+    slot.reset()
 
     try {
       const result = await config.operation()
@@ -305,8 +423,8 @@ async function withRetryAndReset<T>(config: RetryConfig<T>): Promise<T> {
       return result
     } catch (secondError) {
       if (secondError instanceof FFmpegCanceledError) throw secondError
-      if (terminatedByUser) {
-        terminatedByUser = false
+      if (slot.terminatedByUser) {
+        slot.terminatedByUser = false
         throw new FFmpegCanceledError()
       }
 
@@ -780,14 +898,14 @@ function buildConversionAttempts(
   return attempts
 }
 
-function maybeRecycleAfterConversion(sourceBytes: number): void {
-  conversionsSinceReset += 1
-  convertedBytesSinceReset += sourceBytes
+function maybeRecycleAfterConversion(slot: FFmpegWorkerSlot, sourceBytes: number): void {
+  slot.conversionsSinceReset += 1
+  slot.convertedBytesSinceReset += sourceBytes
   if (
-    conversionsSinceReset >= RESET_RUNTIME_AFTER_CONVERT_COUNT ||
-    convertedBytesSinceReset >= getResetAfterConvertBytes()
+    slot.conversionsSinceReset >= RESET_RUNTIME_AFTER_CONVERT_COUNT ||
+    slot.convertedBytesSinceReset >= getResetAfterConvertBytes()
   ) {
-    resetFFmpegRuntime()
+    slot.reset()
   }
 }
 
@@ -812,35 +930,8 @@ function normalizeConversionError(error: Error, sourceCodec: CodecInfo | null): 
 }
 
 export async function getFFmpeg(): Promise<FFmpeg> {
-  if (ffmpegInstance?.loaded) return ffmpegInstance
-  if (!ffmpegInstance) {
-    ffmpegInstance = new FFmpeg()
-    listenersAttached = false
-  }
-
-  if (!listenersAttached) {
-    ffmpegInstance.on('progress', progressListener)
-    listenersAttached = true
-  }
-
-  if (!loadPromise) {
-    loadPromise = ffmpegInstance.load({
-      coreURL: '/ffmpeg-core.js',
-      wasmURL: '/ffmpeg-core.wasm',
-    })
-      .then(() => undefined)
-      .catch((error) => {
-        ffmpegInstance = null
-        listenersAttached = false
-        throw error
-      })
-      .finally(() => {
-        loadPromise = null
-      })
-  }
-
-  await loadPromise
-  return ffmpegInstance
+  const slot = getOrCreateDefaultSlot()
+  return slot.getFFmpeg()
 }
 
 async function isEncoderSupported(ffmpeg: FFmpeg, encoder: string): Promise<boolean> {
@@ -852,9 +943,9 @@ async function isEncoderSupported(ffmpeg: FFmpeg, encoder: string): Promise<bool
   }
 }
 
-async function getEncoderSupport(ffmpeg: FFmpeg): Promise<EncoderSupport> {
-  if (!encoderSupportPromise) {
-    encoderSupportPromise = (async () => {
+function getEncoderSupport(slot: FFmpegWorkerSlot, ffmpeg: FFmpeg): Promise<EncoderSupport> {
+  if (!slot.encoderSupportPromise) {
+    slot.encoderSupportPromise = (async () => {
       const [libopus, libmp3lame] = await Promise.all([
         isEncoderSupported(ffmpeg, 'libopus'),
         isEncoderSupported(ffmpeg, 'libmp3lame'),
@@ -862,18 +953,20 @@ async function getEncoderSupport(ffmpeg: FFmpeg): Promise<EncoderSupport> {
       return { libopus, libmp3lame }
     })()
   }
-  return encoderSupportPromise
+  return slot.encoderSupportPromise
 }
 
 export function cancelActiveFFmpegJob(): void {
   if (isTauri()) {
     import('./platform/nativeFFmpeg').then((m) => m.cancelNativeFFmpeg()).catch(() => {})
   }
-  terminatedByUser = true
-  resetFFmpegRuntime()
-  if (cancelReject) {
-    cancelReject()
-    cancelReject = null
+  for (const slot of pool) {
+    slot.terminatedByUser = true
+    slot.reset()
+    if (slot.cancelReject) {
+      slot.cancelReject()
+      slot.cancelReject = null
+    }
   }
 }
 
@@ -918,53 +1011,60 @@ export async function convertToPlayable(
     const { nativeConvertToPlayable } = await import('./platform/nativeFFmpeg')
     return nativeConvertToPlayable(file, onProgress)
   }
-  return runSerial(async () => {
-    terminatedByUser = false
-    const sourceFile = await maybeRepairWav(file)
-    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
-    const sourceCodec = isLikelyWavFile(sourceFile) ? await parseWavHeader(sourceFile) : null
-    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
-    const workerFSMount = '/convert-input'
-    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
-    const inputName = `input.${inputExt}`
-    const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
+  const slot = await waitForSlot(file)
+  try {
+    return await slot.runSerial(async () => {
+      slot.terminatedByUser = false
+      const sourceFile = await maybeRepairWav(file)
+      const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
+      const sourceCodec = isLikelyWavFile(sourceFile) ? await parseWavHeader(sourceFile) : null
+      const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+      const workerFSMount = '/convert-input'
+      const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+      const inputName = `input.${inputExt}`
+      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-    let encoderSupport: EncoderSupport = { libopus: false, libmp3lame: false }
+      let encoderSupport: EncoderSupport = { libopus: false, libmp3lame: false }
 
-    return withRetryAndReset<File>({
-      operation: () =>
-        runFFmpegOperation({
-          sourceFile,
-          onProgress,
-          inputName,
-          useWorkerFS,
-          workerFSMount,
-          workerFSInputPath,
-          prepareAttempts: async (ffmpeg) => {
-            encoderSupport = await getEncoderSupport(ffmpeg)
-          },
-          getAttempts: () =>
-            buildConversionAttempts(sourceFile, effectiveInput, sourceCodec, encoderSupport),
-          outputFilesToClean: [
-            'output.wav', 'output.mp4', 'output.ogg', 'output.mp3',
-            'output-g729.ogg', 'output-g729.mp3', 'output-g729.wav',
-          ],
-          buildResultFile: (bytes, attempt) =>
-            new File(
-              [toBlobBuffer(bytes)],
-              getConvertedFilename(file, (attempt as ConversionAttempt).outputExtension),
-              {
-                type:
-                  (attempt as ConversionAttempt).outputMimeType ||
-                  getMimeTypeFromFilename(attempt.outputName, file),
-              },
-            ),
-          normalizeLastError: (error) => normalizeConversionError(error, sourceCodec),
-        }),
-      onSuccess: () => maybeRecycleAfterConversion(sourceFile.size),
-      normalizeLastError: (error) => normalizeConversionError(error, sourceCodec),
+      return withRetryAndReset<File>({
+        slot,
+        operation: () =>
+          runFFmpegOperation({
+            slot,
+            sourceFile,
+            onProgress,
+            inputName,
+            useWorkerFS,
+            workerFSMount,
+            workerFSInputPath,
+            prepareAttempts: async (ffmpeg) => {
+              encoderSupport = await getEncoderSupport(slot, ffmpeg)
+            },
+            getAttempts: () =>
+              buildConversionAttempts(sourceFile, effectiveInput, sourceCodec, encoderSupport),
+            outputFilesToClean: [
+              'output.wav', 'output.mp4', 'output.ogg', 'output.mp3',
+              'output-g729.ogg', 'output-g729.mp3', 'output-g729.wav',
+            ],
+            buildResultFile: (bytes, attempt) =>
+              new File(
+                [toBlobBuffer(bytes)],
+                getConvertedFilename(file, (attempt as ConversionAttempt).outputExtension),
+                {
+                  type:
+                    (attempt as ConversionAttempt).outputMimeType ||
+                    getMimeTypeFromFilename(attempt.outputName, file),
+                },
+              ),
+            normalizeLastError: (error) => normalizeConversionError(error, sourceCodec),
+          }),
+        onSuccess: () => maybeRecycleAfterConversion(slot, sourceFile.size),
+        normalizeLastError: (error) => normalizeConversionError(error, sourceCodec),
+      })
     })
-  })
+  } finally {
+    releaseSlot(slot)
+  }
 }
 
 export async function clipMedia(
@@ -1014,9 +1114,11 @@ export async function clipMediaBatch(
     return new Map<string, File>()
   }
 
-  return runSerial(async () => {
-    terminatedByUser = false
-    const ffmpeg = await getFFmpeg()
+  const slot = await waitForSlot(file)
+  try {
+  return await slot.runSerial(async () => {
+    slot.terminatedByUser = false
+    const ffmpeg = await slot.getFFmpeg()
     const sourceFile = await maybeRepairWav(file)
     const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
     const inputName = `clip-input.${inputExt}`
@@ -1038,7 +1140,7 @@ export async function clipMediaBatch(
       })
     }
 
-    activeProgressCallback = (ratio: number) => {
+    slot.activeProgressCallback = (ratio: number) => {
       const currentRequest = validatedRequests[Math.min(completed, total - 1)]
       emitProgress(currentRequest?.id || null, ratio)
     }
@@ -1132,13 +1234,13 @@ export async function clipMediaBatch(
       emitProgress(null, 1)
       return outputById
     } catch (error) {
-      if (terminatedByUser) {
-        terminatedByUser = false
+      if (slot.terminatedByUser) {
+        slot.terminatedByUser = false
         throw new FFmpegCanceledError()
       }
       throw normalizeClipExportError(error)
     } finally {
-      activeProgressCallback = null
+      slot.activeProgressCallback = null
       if (mounted) {
         try { await ffmpeg.unmount(workerFSMount) } catch { /* ignore unmount errors */ }
       } else {
@@ -1146,6 +1248,9 @@ export async function clipMediaBatch(
       }
     }
   })
+  } finally {
+    releaseSlot(slot)
+  }
 }
 
 export async function extractAudio(
@@ -1156,73 +1261,80 @@ export async function extractAudio(
     const { nativeExtractAudio } = await import('./platform/nativeFFmpeg')
     return nativeExtractAudio(file, onProgress)
   }
-  return runSerial(async () => {
-    terminatedByUser = false
-    const sourceFile = await maybeRepairWav(file)
-    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
-    const inputName = `audio-input.${inputExt}`
-    const outputName = 'audio-output.mp3'
-    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
-    const workerFSMount = '/input'
-    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
-    const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
+  const slot = await waitForSlot(file)
+  try {
+    return await slot.runSerial(async () => {
+      slot.terminatedByUser = false
+      const sourceFile = await maybeRepairWav(file)
+      const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
+      const inputName = `audio-input.${inputExt}`
+      const outputName = 'audio-output.mp3'
+      const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+      const workerFSMount = '/input'
+      const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-    return withRetryAndReset<File>({
-      operation: () =>
-        runFFmpegOperation({
-          sourceFile,
-          onProgress,
-          inputName,
-          useWorkerFS,
-          workerFSMount,
-          workerFSInputPath,
-          getAttempts: () => [
-            {
-              label: 'libmp3lame',
-              outputName,
-              args: [
-                '-i', effectiveInput,
-                '-map', '0:a:0?',
-                '-vn', '-sn', '-dn',
-                '-ac', '1',
-                '-ar', '16000',
-                '-c:a', 'libmp3lame',
-                '-b:a', '96k',
+      return withRetryAndReset<File>({
+        slot,
+        operation: () =>
+          runFFmpegOperation({
+            slot,
+            sourceFile,
+            onProgress,
+            inputName,
+            useWorkerFS,
+            workerFSMount,
+            workerFSInputPath,
+            getAttempts: () => [
+              {
+                label: 'libmp3lame',
                 outputName,
-              ],
-            },
-            {
-              label: 'default-mp3',
-              outputName,
-              args: [
-                '-i', effectiveInput,
-                '-map', '0:a:0?',
-                '-vn', '-sn', '-dn',
-                '-ac', '1',
-                '-ar', '16000',
-                '-b:a', '96k',
+                args: [
+                  '-i', effectiveInput,
+                  '-map', '0:a:0?',
+                  '-vn', '-sn', '-dn',
+                  '-ac', '1',
+                  '-ar', '16000',
+                  '-c:a', 'libmp3lame',
+                  '-b:a', '96k',
+                  outputName,
+                ],
+              },
+              {
+                label: 'default-mp3',
                 outputName,
-              ],
-            },
-          ],
-          outputFilesToClean: [outputName],
-          buildResultFile: (bytes) =>
-            new File([toBlobBuffer(bytes)], replaceExtension(file.name, '_audio.mp3'), {
-              type: 'audio/mpeg',
-            }),
-        }),
-      onSuccess: () => {
-        if (sourceFile.size >= getResetAfterExtractBytes()) {
-          resetFFmpegRuntime()
-        }
-      },
-      classifyError: (error) => {
-        if (isOutOfMemoryError(error)) {
-          throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
-        }
-      },
+                args: [
+                  '-i', effectiveInput,
+                  '-map', '0:a:0?',
+                  '-vn', '-sn', '-dn',
+                  '-ac', '1',
+                  '-ar', '16000',
+                  '-b:a', '96k',
+                  outputName,
+                ],
+              },
+            ],
+            outputFilesToClean: [outputName],
+            buildResultFile: (bytes) =>
+              new File([toBlobBuffer(bytes)], replaceExtension(file.name, '_audio.mp3'), {
+                type: 'audio/mpeg',
+              }),
+          }),
+        onSuccess: () => {
+          if (sourceFile.size >= getResetAfterExtractBytes()) {
+            slot.reset()
+          }
+        },
+        classifyError: (error) => {
+          if (isOutOfMemoryError(error)) {
+            throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
+          }
+        },
+      })
     })
-  })
+  } finally {
+    releaseSlot(slot)
+  }
 }
 
 export async function extractAudioStereo(
@@ -1233,103 +1345,110 @@ export async function extractAudioStereo(
     const { nativeExtractAudioStereo } = await import('./platform/nativeFFmpeg')
     return nativeExtractAudioStereo(file, onProgress)
   }
-  return runSerial(async () => {
-    terminatedByUser = false
-    const sourceFile = await maybeRepairWav(file)
-    const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
-    const inputName = `audio-stereo-input.${inputExt}`
-    const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
-    const workerFSMount = '/input-stereo'
-    const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
-    const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
+  const slot = await waitForSlot(file)
+  try {
+    return await slot.runSerial(async () => {
+      slot.terminatedByUser = false
+      const sourceFile = await maybeRepairWav(file)
+      const inputExt = getFileExtension(sourceFile.name) || (isLikelyVideoFile(sourceFile) ? 'mp4' : 'wav')
+      const inputName = `audio-stereo-input.${inputExt}`
+      const useWorkerFS = sourceFile.size >= WORKERFS_SIZE_THRESHOLD
+      const workerFSMount = '/input-stereo'
+      const workerFSInputPath = `${workerFSMount}/${sourceFile.name}`
+      const effectiveInput = useWorkerFS ? workerFSInputPath : inputName
 
-    let encoderSupport: EncoderSupport = { libopus: false, libmp3lame: false }
+      let encoderSupport: EncoderSupport = { libopus: false, libmp3lame: false }
 
-    return withRetryAndReset<File>({
-      operation: () =>
-        runFFmpegOperation({
-          sourceFile,
-          onProgress,
-          inputName,
-          useWorkerFS,
-          workerFSMount,
-          workerFSInputPath,
-          prepareAttempts: async (ffmpeg) => {
-            encoderSupport = await getEncoderSupport(ffmpeg)
-          },
-          getAttempts: () => {
-            const attempts: OperationAttempt[] = []
-            if (encoderSupport.libopus) {
+      return withRetryAndReset<File>({
+        slot,
+        operation: () =>
+          runFFmpegOperation({
+            slot,
+            sourceFile,
+            onProgress,
+            inputName,
+            useWorkerFS,
+            workerFSMount,
+            workerFSInputPath,
+            prepareAttempts: async (ffmpeg) => {
+              encoderSupport = await getEncoderSupport(slot, ffmpeg)
+            },
+            getAttempts: () => {
+              const attempts: OperationAttempt[] = []
+              if (encoderSupport.libopus) {
+                attempts.push({
+                  label: 'stereo-opus',
+                  outputName: 'audio-stereo-output.ogg',
+                  outputType: 'audio/ogg',
+                  args: [
+                    '-i', effectiveInput,
+                    '-map', '0:a:0?',
+                    '-vn', '-sn', '-dn',
+                    '-c:a', 'libopus',
+                    '-b:a', '32k',
+                    '-ar', '8000',
+                    'audio-stereo-output.ogg',
+                  ],
+                })
+              }
+              if (encoderSupport.libmp3lame) {
+                attempts.push({
+                  label: 'stereo-mp3',
+                  outputName: 'audio-stereo-output.mp3',
+                  outputType: 'audio/mpeg',
+                  args: [
+                    '-i', effectiveInput,
+                    '-map', '0:a:0?',
+                    '-vn', '-sn', '-dn',
+                    '-c:a', 'libmp3lame',
+                    '-b:a', '64k',
+                    '-ar', '8000',
+                    'audio-stereo-output.mp3',
+                  ],
+                })
+              }
               attempts.push({
-                label: 'stereo-opus',
-                outputName: 'audio-stereo-output.ogg',
-                outputType: 'audio/ogg',
+                label: 'stereo-pcm-fallback',
+                outputName: 'audio-stereo-output.wav',
+                outputType: 'audio/wav',
                 args: [
                   '-i', effectiveInput,
                   '-map', '0:a:0?',
                   '-vn', '-sn', '-dn',
-                  '-c:a', 'libopus',
-                  '-b:a', '32k',
+                  '-acodec', 'pcm_s16le',
                   '-ar', '8000',
-                  'audio-stereo-output.ogg',
+                  'audio-stereo-output.wav',
                 ],
               })
-            }
-            if (encoderSupport.libmp3lame) {
-              attempts.push({
-                label: 'stereo-mp3',
-                outputName: 'audio-stereo-output.mp3',
-                outputType: 'audio/mpeg',
-                args: [
-                  '-i', effectiveInput,
-                  '-map', '0:a:0?',
-                  '-vn', '-sn', '-dn',
-                  '-c:a', 'libmp3lame',
-                  '-b:a', '64k',
-                  '-ar', '8000',
-                  'audio-stereo-output.mp3',
-                ],
-              })
-            }
-            attempts.push({
-              label: 'stereo-pcm-fallback',
-              outputName: 'audio-stereo-output.wav',
-              outputType: 'audio/wav',
-              args: [
-                '-i', effectiveInput,
-                '-map', '0:a:0?',
-                '-vn', '-sn', '-dn',
-                '-acodec', 'pcm_s16le',
-                '-ar', '8000',
-                'audio-stereo-output.wav',
-              ],
-            })
-            return attempts
-          },
-          outputFilesToClean: [
-            'audio-stereo-output.ogg', 'audio-stereo-output.mp3', 'audio-stereo-output.wav',
-          ],
-          buildResultFile: (bytes, attempt) => {
-            const ext = attempt.outputName.split('.').pop() || 'ogg'
-            return new File(
-              [toBlobBuffer(bytes)],
-              replaceExtension(file.name, `_audio_stereo.${ext}`),
-              { type: (attempt.outputType as string) || 'audio/ogg' },
-            )
-          },
-        }),
-      onSuccess: () => {
-        if (sourceFile.size >= getResetAfterExtractBytes()) {
-          resetFFmpegRuntime()
-        }
-      },
-      classifyError: (error) => {
-        if (isOutOfMemoryError(error)) {
-          throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
-        }
-      },
+              return attempts
+            },
+            outputFilesToClean: [
+              'audio-stereo-output.ogg', 'audio-stereo-output.mp3', 'audio-stereo-output.wav',
+            ],
+            buildResultFile: (bytes, attempt) => {
+              const ext = attempt.outputName.split('.').pop() || 'ogg'
+              return new File(
+                [toBlobBuffer(bytes)],
+                replaceExtension(file.name, `_audio_stereo.${ext}`),
+                { type: (attempt.outputType as string) || 'audio/ogg' },
+              )
+            },
+          }),
+        onSuccess: () => {
+          if (sourceFile.size >= getResetAfterExtractBytes()) {
+            slot.reset()
+          }
+        },
+        classifyError: (error) => {
+          if (isOutOfMemoryError(error)) {
+            throw new Error('This file is too large to prepare in this browser tab. Try a shorter file or convert it first.')
+          }
+        },
+      })
     })
-  })
+  } finally {
+    releaseSlot(slot)
+  }
 }
 
 function bytesToHex(bytes: Uint8Array): string {
