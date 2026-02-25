@@ -119,7 +119,7 @@ _SPEAKER_LETTER_RE = re.compile(r"^[A-Z]$")
 _SPEAKER_NUMERIC_RE = re.compile(r"^[0-9]+$")
 
 
-def __normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEAKER A") -> str:
+def _normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEAKER A") -> str:
     """Normalize diarization labels so downstream exports use SPEAKER X.
 
     Internal to this module — the canonical version lives in transcript_utils.
@@ -144,7 +144,7 @@ def __normalize_speaker_label(raw_value: Optional[object], fallback: str = "SPEA
     return candidate
 
 
-def __mark_continuation_turns(turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
+def _mark_continuation_turns(turns: List[TranscriptTurn]) -> List[TranscriptTurn]:
     """Mark turns as continuations when the same speaker has consecutive turns."""
     if not turns:
         return turns
