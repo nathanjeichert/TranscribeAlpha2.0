@@ -12,7 +12,7 @@ npx @tauri-apps/cli signer generate -w ~/.tauri/TranscribeAlpha.key
 
 Add to GitHub Secrets:
 - `TAURI_SIGNING_PRIVATE_KEY` — contents of the `.key` file
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the password you chose
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — only if you set a password during generation (omit if passwordless)
 
 Add the **public key** to `tauri.conf.json`:
 
