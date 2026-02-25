@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { authenticatedFetch } from '@/utils/auth'
 import { logger } from '@/utils/logger'
 import { saveTranscript as localSaveTranscript } from '@/lib/storage'
@@ -294,6 +295,187 @@ function buildOncueXmlFromLineEntries(
   return parts.join('')
 }
 
+interface TranscriptRowProps {
+  line: EditorLine
+  isActive: boolean
+  isSelected: boolean
+  isSearchMatch: boolean
+  isCurrentSearchMatch: boolean
+  editingField: { lineId: string; field: 'speaker' | 'text'; value: string } | null
+  onSelect: (lineId: string) => void
+  onDoubleClick: (line: EditorLine) => void
+  onBeginEdit: (line: EditorLine, field: 'speaker' | 'text') => void
+  onCommitEdit: () => void
+  onCancelEdit: () => void
+  onEditingFieldChange: (updater: (prev: { lineId: string; field: 'speaker' | 'text'; value: string } | null) => { lineId: string; field: 'speaker' | 'text'; value: string } | null) => void
+  onLineFieldChange: (lineId: string, field: keyof EditorLine, value: string | number) => void
+  editInputRef: React.MutableRefObject<HTMLInputElement | HTMLTextAreaElement | null>
+}
+
+const TranscriptRow = React.memo(function TranscriptRow({
+  line,
+  isActive,
+  isSelected,
+  isSearchMatch,
+  isCurrentSearchMatch,
+  editingField,
+  onSelect,
+  onDoubleClick,
+  onBeginEdit,
+  onCommitEdit,
+  onCancelEdit,
+  onEditingFieldChange,
+  onLineFieldChange,
+  editInputRef,
+}: TranscriptRowProps) {
+  const rowBackgroundClass = isSelected
+    ? 'bg-primary-100 hover:bg-primary-100'
+    : isCurrentSearchMatch
+      ? 'bg-amber-300'
+      : isSearchMatch
+        ? 'bg-amber-100'
+        : isActive
+          ? 'bg-yellow-200'
+          : 'bg-white hover:bg-primary-200'
+  const rowClasses = [
+    'grid grid-cols-[70px_170px_minmax(0,1fr)_140px] items-start gap-3 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
+    rowBackgroundClass,
+    isSelected ? 'ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : '',
+  ]
+  const timingInputClass = line.timestamp_error
+    ? 'w-28 rounded border border-red-400 bg-red-50 px-2 py-1.5 text-sm text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400 text-right font-mono tabular-nums'
+    : 'w-28 rounded border border-primary-200 px-2 py-1.5 text-sm text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400 text-right font-mono tabular-nums'
+
+  const isEditingSpeaker = editingField && editingField.lineId === line.id && editingField.field === 'speaker'
+  const isEditingText = editingField && editingField.lineId === line.id && editingField.field === 'text'
+
+  return (
+    <div
+      onClick={() => onSelect(line.id)}
+      onDoubleClick={() => onDoubleClick(line)}
+      className={rowClasses.join(' ')}
+    >
+      <div className="text-sm font-mono text-primary-500">
+        {line.page ?? '—'}:{line.line ?? '—'}
+      </div>
+      <div
+        className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
+        onClick={(event) => {
+          event.stopPropagation()
+          if (!isSelected) {
+            onSelect(line.id)
+            return
+          }
+          onBeginEdit(line, 'speaker')
+        }}
+      >
+        {isEditingSpeaker ? (
+          <input
+            ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
+            className="input text-sm uppercase"
+            value={editingField!.value}
+            onChange={(event) =>
+              onEditingFieldChange((prev) =>
+                prev ? { ...prev, value: event.target.value.toUpperCase() } : prev,
+              )
+            }
+            onBlur={onCommitEdit}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                onCommitEdit()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                onCancelEdit()
+              }
+            }}
+          />
+        ) : (
+          <span className="uppercase">{line.speaker || '—'}</span>
+        )}
+      </div>
+      <div
+        className="min-w-0 cursor-text whitespace-pre-wrap break-words font-mono text-primary-800"
+        onClick={(event) => {
+          event.stopPropagation()
+          if (!isSelected) {
+            onSelect(line.id)
+            return
+          }
+          onBeginEdit(line, 'text')
+        }}
+      >
+        {isEditingText ? (
+          <textarea
+            ref={editInputRef as React.MutableRefObject<HTMLTextAreaElement | null>}
+            className="textarea text-sm"
+            rows={3}
+            value={editingField!.value}
+            onChange={(event) =>
+              onEditingFieldChange((prev) => (prev ? { ...prev, value: event.target.value } : prev))
+            }
+            onBlur={onCommitEdit}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                onCommitEdit()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                onCancelEdit()
+              }
+            }}
+          />
+        ) : (
+          <span>{line.text || '—'}</span>
+        )}
+      </div>
+      <div className="flex flex-col items-end gap-2 text-sm text-primary-600">
+        {isSelected ? (
+          <>
+            <div className="flex items-center gap-2 text-xs text-primary-500">
+              <span className="uppercase tracking-wide text-xs text-primary-400">Start</span>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={line.start}
+                onChange={(event) =>
+                  onLineFieldChange(line.id, 'start', parseFloat(event.target.value))
+                }
+                className={timingInputClass}
+                title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
+              />
+            </div>
+            <div className="flex items-center gap-2 text-xs text-primary-500">
+              <span className="uppercase tracking-wide text-xs text-primary-400">End</span>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={line.end}
+                onChange={(event) =>
+                  onLineFieldChange(line.id, 'end', parseFloat(event.target.value))
+                }
+                className={timingInputClass}
+                title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
+              />
+            </div>
+            {line.timestamp_error && (
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600">
+                Fix timing
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="font-mono tabular-nums text-xs text-primary-600">
+            {secondsToLabel(line.start)}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+})
+
 export default function TranscriptEditor({
   mediaKey: initialMediaKey,
   initialData,
@@ -330,6 +512,7 @@ export default function TranscriptEditor({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMatches, setSearchMatches] = useState<string[]>([])
   const [searchCurrentIndex, setSearchCurrentIndex] = useState(-1)
+  const searchMatchSet = useMemo(() => new Set(searchMatches), [searchMatches])
   const [resolvedMediaUrl, setResolvedMediaUrl] = useState<string | undefined>(undefined)
 
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -338,8 +521,8 @@ export default function TranscriptEditor({
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
   const programmaticScrollRef = useRef(false)
   const scrollReleaseTimerRef = useRef<number | null>(null)
-  const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const activeLineMarker = useRef<string | null>(null)
+  const timeUpdateRafRef = useRef<number | null>(null)
   // Skip resetting isDirty/history in SYNC EFFECT when we've just done a local update (e.g., resync)
   const skipSyncEffectReset = useRef(false)
 
@@ -408,24 +591,27 @@ export default function TranscriptEditor({
     [lines],
   )
 
-  const isLineVisibleInTranscript = useCallback((lineId: string) => {
-    const container = transcriptScrollRef.current
-    const row = lineRefs.current[lineId]
-    if (!container || !row) return false
-    const containerRect = container.getBoundingClientRect()
-    const rowRect = row.getBoundingClientRect()
-    return rowRect.top >= containerRect.top && rowRect.bottom <= containerRect.bottom
-  }, [])
+  // Virtualizer for the transcript list
+  const rowVirtualizer = useVirtualizer({
+    count: lines.length,
+    getScrollElement: () => transcriptScrollRef.current,
+    estimateSize: () => 56,
+    overscan: 25,
+  })
 
-  const scrollTranscriptToLine = useCallback((lineId: string, behavior: ScrollBehavior = 'smooth') => {
-    const target = lineRefs.current[lineId]
-    const container = transcriptScrollRef.current
-    if (!target || !container) return
+  // Stable line-index lookup for scroll-to-line by ID
+  const lineIndexMap = useMemo(() => {
+    const map = new Map<string, number>()
+    lines.forEach((line, i) => map.set(line.id, i))
+    return map
+  }, [lines])
+
+  // Virtualizer-aware scroll to line
+  const scrollVirtualToLine = useCallback((lineId: string, behavior: 'smooth' | 'auto' = 'smooth') => {
+    const index = lineIndexMap.get(lineId)
+    if (index === undefined) return
     programmaticScrollRef.current = true
-    // Scroll within the editor container only, not the whole page
-    const targetTop = target.offsetTop - container.offsetTop
-    const targetCenter = targetTop - container.clientHeight / 2 + target.clientHeight / 2
-    container.scrollTo({ top: targetCenter, behavior })
+    rowVirtualizer.scrollToIndex(index, { align: 'center', behavior })
     if (scrollReleaseTimerRef.current) {
       window.clearTimeout(scrollReleaseTimerRef.current)
     }
@@ -433,7 +619,7 @@ export default function TranscriptEditor({
       programmaticScrollRef.current = false
       scrollReleaseTimerRef.current = null
     }, behavior === 'smooth' ? 450 : 150)
-  }, [])
+  }, [lineIndexMap, rowVirtualizer])
 
   useEffect(() => {
     return () => {
@@ -510,35 +696,44 @@ export default function TranscriptEditor({
     if (!player) return
 
     const handleTimeUpdate = () => {
-      const currentTime = player.currentTime
-      let currentLineId: string | null = null
-      for (let i = 0; i < lineBoundaries.length; i += 1) {
-        const boundary = lineBoundaries[i]
-        if (currentTime >= boundary.start && currentTime < boundary.end + 0.01) {
-          currentLineId = boundary.id
-          break
+      // Coalesce rapid timeupdate events into a single rAF callback
+      if (timeUpdateRafRef.current !== null) return
+      timeUpdateRafRef.current = requestAnimationFrame(() => {
+        timeUpdateRafRef.current = null
+        const currentTime = player.currentTime
+        let currentLineId: string | null = null
+        for (let i = 0; i < lineBoundaries.length; i += 1) {
+          const boundary = lineBoundaries[i]
+          if (currentTime >= boundary.start && currentTime < boundary.end + 0.01) {
+            currentLineId = boundary.id
+            break
+          }
         }
-      }
-      if (!currentLineId && lineBoundaries.length) {
-        const lastBoundary = lineBoundaries[lineBoundaries.length - 1]
-        if (currentTime >= lastBoundary.end) {
-          currentLineId = lastBoundary.id
+        if (!currentLineId && lineBoundaries.length) {
+          const lastBoundary = lineBoundaries[lineBoundaries.length - 1]
+          if (currentTime >= lastBoundary.end) {
+            currentLineId = lastBoundary.id
+          }
         }
-      }
-      if (currentLineId && currentLineId !== activeLineMarker.current) {
-        activeLineMarker.current = currentLineId
-        setActiveLineId(currentLineId)
-        if (autoScroll && !manualScrollOverride) {
-          scrollTranscriptToLine(currentLineId)
+        if (currentLineId && currentLineId !== activeLineMarker.current) {
+          activeLineMarker.current = currentLineId
+          setActiveLineId(currentLineId)
+          if (autoScroll && !manualScrollOverride) {
+            scrollVirtualToLine(currentLineId)
+          }
         }
-      }
+      })
     }
 
     player.addEventListener('timeupdate', handleTimeUpdate)
     return () => {
       player.removeEventListener('timeupdate', handleTimeUpdate)
+      if (timeUpdateRafRef.current !== null) {
+        cancelAnimationFrame(timeUpdateRafRef.current)
+        timeUpdateRafRef.current = null
+      }
     }
-  }, [resolvedMediaUrl, isVideo, lineBoundaries, autoScroll, manualScrollOverride, scrollTranscriptToLine])
+  }, [resolvedMediaUrl, isVideo, lineBoundaries, autoScroll, manualScrollOverride, scrollVirtualToLine])
 
   const handleLineFieldChange = useCallback(
     (lineId: string, field: keyof EditorLine, value: string | number) => {
@@ -700,11 +895,11 @@ export default function TranscriptEditor({
     if (matches.length > 0) {
       setSearchCurrentIndex(0)
       setManualScrollOverride(true)
-      scrollTranscriptToLine(matches[0])
+      scrollVirtualToLine(matches[0])
     } else {
       setSearchCurrentIndex(-1)
     }
-  }, [lines, scrollTranscriptToLine])
+  }, [lines, scrollVirtualToLine])
 
   const goToSearchResult = useCallback((direction: 'next' | 'prev') => {
     if (searchMatches.length === 0) return
@@ -717,8 +912,8 @@ export default function TranscriptEditor({
     setSearchCurrentIndex(newIndex)
     const lineId = searchMatches[newIndex]
     setManualScrollOverride(true)
-    scrollTranscriptToLine(lineId)
-  }, [searchMatches, searchCurrentIndex, scrollTranscriptToLine])
+    scrollVirtualToLine(lineId)
+  }, [searchMatches, searchCurrentIndex, scrollVirtualToLine])
 
   const clearSearch = useCallback(() => {
     setSearchQuery('')
@@ -728,19 +923,22 @@ export default function TranscriptEditor({
 
   const handleTranscriptScroll = useCallback(() => {
     if (!autoScroll || programmaticScrollRef.current || !activeLineId) return
-    const activeVisible = isLineVisibleInTranscript(activeLineId)
+    const activeIndex = lineIndexMap.get(activeLineId)
+    if (activeIndex === undefined) return
+    const virtualItems = rowVirtualizer.getVirtualItems()
+    const activeVisible = virtualItems.some((item) => item.index === activeIndex)
     setManualScrollOverride((prev) => {
       if (!prev && !activeVisible) return true
       if (prev && activeVisible) return false
       return prev
     })
-  }, [activeLineId, autoScroll, isLineVisibleInTranscript])
+  }, [activeLineId, autoScroll, lineIndexMap, rowVirtualizer])
 
   const handleReturnToCurrentLine = useCallback(() => {
     if (!activeLineId) return
     setManualScrollOverride(false)
-    scrollTranscriptToLine(activeLineId)
-  }, [activeLineId, scrollTranscriptToLine])
+    scrollVirtualToLine(activeLineId)
+  }, [activeLineId, scrollVirtualToLine])
 
   useEffect(() => {
     try {
@@ -1286,6 +1484,19 @@ export default function TranscriptEditor({
     return () => window.removeEventListener('keydown', handleKeydown)
   }, [canSave, handleSave, isTypingInField, isVideo, saving, sessionMeta])
 
+  // Stable callbacks for the memoized row component
+  const handleRowSelect = useCallback((lineId: string) => {
+    setSelectedLineId(lineId)
+  }, [])
+
+  const handleRowDoubleClick = useCallback((line: EditorLine) => {
+    playLine(line)
+  }, [playLine])
+
+  const handleEditingFieldChange = useCallback((updater: (prev: { lineId: string; field: 'speaker' | 'text'; value: string } | null) => { lineId: string; field: 'speaker' | 'text'; value: string } | null) => {
+    setEditingField(updater)
+  }, [])
+
   return (
     <div className="space-y-6 relative">
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
@@ -1610,158 +1821,49 @@ export default function TranscriptEditor({
               ) : lines.length === 0 ? (
                 <div className="p-6 text-center text-primary-500">No lines available.</div>
               ) : (
-                lines.map((line) => {
-                  const isActive = activeLineId === line.id
-                  const isSelected = selectedLineId === line.id
-                  const isSearchMatch = searchMatches.includes(line.id)
-                  const isCurrentSearchMatch = searchMatches[searchCurrentIndex] === line.id
-                  const rowBackgroundClass = isSelected
-                    ? 'bg-primary-100 hover:bg-primary-100'
-                    : isCurrentSearchMatch
-                      ? 'bg-amber-300'
-                      : isSearchMatch
-                        ? 'bg-amber-100'
-                        : isActive
-                          ? 'bg-yellow-200'
-                          : 'bg-white hover:bg-primary-200'
-                  const rowClasses = [
-                    'grid grid-cols-[70px_170px_minmax(0,1fr)_140px] items-start gap-3 border-b border-primary-100 px-5 py-3 text-sm transition-colors',
-                    rowBackgroundClass,
-                    isSelected ? 'ring-2 ring-inset ring-primary-500 border-l-4 border-l-primary-600' : '',
-                  ]
-                  const timingInputClass = line.timestamp_error
-                    ? 'w-28 rounded border border-red-400 bg-red-50 px-2 py-1.5 text-sm text-red-700 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-400 text-right font-mono tabular-nums'
-                    : 'w-28 rounded border border-primary-200 px-2 py-1.5 text-sm text-primary-800 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-400 text-right font-mono tabular-nums'
-                  return (
-                    <div
-                      key={line.id}
-                      ref={(el) => {
-                        lineRefs.current[line.id] = el
-                      }}
-                      onClick={() => setSelectedLineId(line.id)}
-                      onDoubleClick={() => playLine(line)}
-                      className={rowClasses.join(' ')}
-                    >
-                      <div className="text-sm font-mono text-primary-500">
-                        {line.page ?? '—'}:{line.line ?? '—'}
-                      </div>
+                <div
+                  style={{
+                    height: `${rowVirtualizer.getTotalSize()}px`,
+                    width: '100%',
+                    position: 'relative',
+                  }}
+                >
+                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const line = lines[virtualRow.index]
+                    const currentSearchMatchId = searchMatches[searchCurrentIndex] ?? null
+                    return (
                       <div
-                        className="min-w-0 cursor-pointer truncate text-primary-900 pr-4"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          if (!isSelected) {
-                            setSelectedLineId(line.id)
-                            return
-                          }
-                          beginEdit(line, 'speaker')
+                        key={line.id}
+                        ref={rowVirtualizer.measureElement}
+                        data-index={virtualRow.index}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start}px)`,
                         }}
                       >
-                        {editingField && editingField.lineId === line.id && editingField.field === 'speaker' ? (
-                          <input
-                            ref={editInputRef as React.MutableRefObject<HTMLInputElement | null>}
-                            className="input text-sm uppercase"
-                            value={editingField.value}
-                            onChange={(event) =>
-                              setEditingField((prev) =>
-                                prev ? { ...prev, value: event.target.value.toUpperCase() } : prev,
-                              )
-                            }
-                            onBlur={commitEdit}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault()
-                                commitEdit()
-                              } else if (event.key === 'Escape') {
-                                event.preventDefault()
-                                cancelEdit()
-                              }
-                            }}
-                          />
-                        ) : (
-                          <span className="uppercase">{line.speaker || '—'}</span>
-                        )}
+                        <TranscriptRow
+                          line={line}
+                          isActive={activeLineId === line.id}
+                          isSelected={selectedLineId === line.id}
+                          isSearchMatch={searchMatchSet.has(line.id)}
+                          isCurrentSearchMatch={currentSearchMatchId === line.id}
+                          editingField={editingField && editingField.lineId === line.id ? editingField : null}
+                          onSelect={handleRowSelect}
+                          onDoubleClick={handleRowDoubleClick}
+                          onBeginEdit={beginEdit}
+                          onCommitEdit={commitEdit}
+                          onCancelEdit={cancelEdit}
+                          onEditingFieldChange={handleEditingFieldChange}
+                          onLineFieldChange={handleLineFieldChange}
+                          editInputRef={editInputRef}
+                        />
                       </div>
-                      <div
-                        className="min-w-0 cursor-text whitespace-pre-wrap break-words font-mono text-primary-800"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          if (!isSelected) {
-                            setSelectedLineId(line.id)
-                            return
-                          }
-                          beginEdit(line, 'text')
-                        }}
-                      >
-                        {editingField && editingField.lineId === line.id && editingField.field === 'text' ? (
-                          <textarea
-                            ref={editInputRef as React.MutableRefObject<HTMLTextAreaElement | null>}
-                            className="textarea text-sm"
-                            rows={3}
-                            value={editingField.value}
-                            onChange={(event) =>
-                              setEditingField((prev) => (prev ? { ...prev, value: event.target.value } : prev))
-                            }
-                            onBlur={commitEdit}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' && !event.shiftKey) {
-                                event.preventDefault()
-                                commitEdit()
-                              } else if (event.key === 'Escape') {
-                                event.preventDefault()
-                                cancelEdit()
-                              }
-                            }}
-                          />
-                        ) : (
-                          <span>{line.text || '—'}</span>
-                        )}
-                      </div>
-                      <div className="flex flex-col items-end gap-2 text-sm text-primary-600">
-                        {isSelected ? (
-                          <>
-                            <div className="flex items-center gap-2 text-xs text-primary-500">
-                              <span className="uppercase tracking-wide text-xs text-primary-400">Start</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min={0}
-                                value={line.start}
-                                onChange={(event) =>
-                                  handleLineFieldChange(line.id, 'start', parseFloat(event.target.value))
-                                }
-                                className={timingInputClass}
-                                title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
-                              />
-                            </div>
-                            <div className="flex items-center gap-2 text-xs text-primary-500">
-                              <span className="uppercase tracking-wide text-xs text-primary-400">End</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min={0}
-                                value={line.end}
-                                onChange={(event) =>
-                                  handleLineFieldChange(line.id, 'end', parseFloat(event.target.value))
-                                }
-                                className={timingInputClass}
-                                title={line.timestamp_error ? 'Missing timestamp — adjust start/end to fix.' : undefined}
-                              />
-                            </div>
-                            {line.timestamp_error && (
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600">
-                                Fix timing
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="font-mono tabular-nums text-xs text-primary-600">
-                            {secondsToLabel(line.start)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })
+                    )
+                  })}
+                </div>
               )}
             </div>
           </div>
