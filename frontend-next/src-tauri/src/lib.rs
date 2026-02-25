@@ -47,20 +47,17 @@ pub fn run() {
             // Store child handle so we can kill the sidecar on exit
             app.manage(SidecarChild(std::sync::Mutex::new(Some(child))));
 
-            // Kill sidecar when the main window is destroyed
-            let app_handle = app.handle().clone();
-            app.on_window_event(move |_window, event| {
-                if let tauri::WindowEvent::Destroyed = event {
-                    if let Some(state) = app_handle.try_state::<SidecarChild>() {
-                        if let Some(child) = state.0.lock().unwrap().take() {
-                            let _ = child.kill();
-                            log::info!("[sidecar] killed on window destroy");
-                        }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.try_state::<SidecarChild>() {
+                    if let Some(child) = state.0.lock().unwrap().take() {
+                        let _ = child.kill();
+                        log::info!("[sidecar] killed on window destroy");
                     }
                 }
-            });
-
-            Ok(())
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
