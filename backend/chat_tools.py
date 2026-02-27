@@ -124,6 +124,7 @@ def execute_tool(
             return _execute_search_text(
                 tool_input, workspace_path, case_id, filters,
                 search_transcript_lines,
+                list_case_transcript_metadata,
             )
         elif tool_name == "read_transcript":
             return _execute_read_transcript(
@@ -210,7 +211,7 @@ def _execute_list_transcripts(
 
 
 def _execute_search_text(
-    tool_input, workspace_path, case_id, filters, search_fn
+    tool_input, workspace_path, case_id, filters, search_fn, list_fn
 ) -> str:
     import json
 
@@ -220,10 +221,13 @@ def _execute_search_text(
 
     max_results = min(tool_input.get("max_results", 20), 50)
 
-    # If filters restrict to specific transcripts, pass those keys
+    # Apply all user filters (evidence type, speakers, location, date) to restrict search scope
     transcript_keys = None
-    if filters and filters.get("transcript_keys"):
-        transcript_keys = filters["transcript_keys"]
+    if filters:
+        meta = list_fn(workspace_path, case_id)
+        filtered_meta = _apply_filters(meta, filters)
+        allowed_keys = [m["media_key"] for m in filtered_meta]
+        transcript_keys = allowed_keys
 
     matches = search_fn(
         workspace_path, case_id, query,

@@ -144,6 +144,8 @@ export function useChat(): UseChatReturn {
 
             case 'error':
               setError((event.data.message as string) || 'An error occurred')
+              // Remove empty assistant placeholder so next send doesn't create consecutive user messages
+              setMessages(prev => prev.filter(m => m.id !== assistantMsg.id || m.content !== ''))
               break
           }
         }
@@ -157,7 +159,15 @@ export function useChat(): UseChatReturn {
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
           setError((err as Error).message || 'Stream failed')
+          // Remove empty assistant placeholder so next send doesn't create consecutive user messages
+          setMessages(prev => prev.filter(m => m.id !== assistantMsg.id || m.content !== ''))
         }
+        // Clear tool spinner on any stream failure (including abort)
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === assistantMsg.id ? { ...m, toolActivity: undefined } : m,
+          ),
+        )
       } finally {
         setIsStreaming(false)
         abortRef.current = null

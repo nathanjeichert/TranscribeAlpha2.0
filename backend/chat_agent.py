@@ -29,7 +29,7 @@ You are a legal investigation assistant analyzing evidence transcripts for a cas
 
 ## Citation Format
 When citing specific transcript content, use this exact format:
-[[CITE: media_key=MEDIA_KEY line_id=LINE_ID snippet="EXACT QUOTED TEXT"]]
+[[CITE: media_key=MEDIA_KEY line_id=LINE_ID snippet="EXACT QUOTED TEXT (escape inner quotes with \\")"]]
 
 Example: [[CITE: media_key=abc123 line_id=3-5 snippet="I saw him at the store"]]
 
@@ -74,7 +74,7 @@ def _build_evidence_list(metadata: list[dict]) -> str:
 # ─── Citation Parsing ─────────────────────────────────────────────────
 
 CITE_PATTERN = re.compile(
-    r'\[\[CITE:\s*media_key=(\S+)\s+line_id=(\S+)\s+snippet="([^"]*?)"\]\]'
+    r'\[\[CITE:\s*media_key=(\S+)\s+line_id=(\S+)\s+snippet="((?:[^"\\]|\\.)*)"\]\]'
 )
 
 

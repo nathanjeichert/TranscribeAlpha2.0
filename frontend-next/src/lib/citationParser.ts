@@ -13,7 +13,7 @@ export type TextSegment =
   | { type: 'text'; content: string }
   | { type: 'citation'; citation: ParsedCitation }
 
-const CITE_REGEX = /\[\[CITE:\s*media_key=(\S+)\s+line_id=(\S+)\s+snippet="([^"]*?)"\]\]/g
+const CITE_REGEX = /\[\[CITE:\s*media_key=(\S+)\s+line_id=(\S+)\s+snippet="((?:[^"\\]|\\.)*)"\]\]/g
 
 /**
  * Split agent text into alternating text and citation segments.
