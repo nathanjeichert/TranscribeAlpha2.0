@@ -128,14 +128,48 @@ def execute_tool(
             )
         elif tool_name == "read_transcript":
             return _execute_read_transcript(
-                tool_input, workspace_path, case_id,
+                tool_input, workspace_path, case_id, filters,
                 read_transcript_pages,
+                list_case_transcript_metadata,
             )
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
         logger.warning("Tool execution error (%s): %s", tool_name, e)
         return json.dumps({"error": str(e)})
+
+
+def _normalize_date(date_str: str) -> str:
+    """Normalize a date string to YYYY-MM-DD for reliable comparison.
+    Handles MM/DD/YYYY, M/D/YYYY, YYYY-MM-DD, and similar formats."""
+    if not date_str:
+        return ""
+    # Already ISO format
+    if len(date_str) >= 10 and date_str[4] == '-':
+        return date_str[:10]
+    # Try common US formats (MM/DD/YYYY, M/D/YYYY)
+    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y"):
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(date_str.strip(), fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return date_str
+
+
+def _date_in_range(
+    date_str: str, date_from: Optional[str] = None, date_to: Optional[str] = None
+) -> bool:
+    """Check if a date string falls within the given range after normalization."""
+    normalized = _normalize_date(date_str)
+    if not normalized:
+        return False
+    if date_from and normalized < _normalize_date(date_from):
+        return False
+    if date_to and normalized > _normalize_date(date_to):
+        return False
+    return True
 
 
 def _apply_filters(
@@ -157,11 +191,11 @@ def _apply_filters(
     if type_filter:
         result = [m for m in result if m.get("evidence_type") in type_filter]
 
-    # Date filters
-    if f.get("date_from"):
-        result = [m for m in result if (m.get("date") or "") >= f["date_from"]]
-    if f.get("date_to"):
-        result = [m for m in result if (m.get("date") or "") <= f["date_to"]]
+    # Date filters (normalize to ISO for reliable comparison)
+    if f.get("date_from") or f.get("date_to"):
+        result = [m for m in result if _date_in_range(
+            m.get("date", ""), f.get("date_from"), f.get("date_to")
+        )]
 
     # Speaker filter
     if f.get("speakers"):
@@ -243,13 +277,21 @@ def _execute_search_text(
 
 
 def _execute_read_transcript(
-    tool_input, workspace_path, case_id, read_fn
+    tool_input, workspace_path, case_id, filters, read_fn, list_fn
 ) -> str:
     import json
 
     media_key = tool_input.get("media_key", "")
     if not media_key:
         return json.dumps({"error": "Missing 'media_key' parameter"})
+
+    # Enforce user filters — block reads of filtered-out transcripts
+    if filters:
+        meta = list_fn(workspace_path, case_id)
+        filtered = _apply_filters(meta, filters)
+        allowed = {m["media_key"] for m in filtered}
+        if media_key not in allowed:
+            return json.dumps({"error": f"Transcript '{media_key}' is excluded by active filters"})
 
     result = read_fn(
         workspace_path,

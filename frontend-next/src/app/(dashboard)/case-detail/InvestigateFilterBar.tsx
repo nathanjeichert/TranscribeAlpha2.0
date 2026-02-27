@@ -40,7 +40,7 @@ export default function InvestigateFilterBar({
 }: FilterBarProps) {
   const [expanded, setExpanded] = useState(false)
 
-  if (availableEvidenceTypes.length === 0 && availableSpeakers.length === 0) {
+  if (availableEvidenceTypes.length === 0 && availableSpeakers.length === 0 && availableLocations.length === 0) {
     return null
   }
 

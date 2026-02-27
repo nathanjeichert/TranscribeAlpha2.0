@@ -72,8 +72,18 @@ async def chat(request: Request):
         logger.warning("Failed to load transcript metadata: %s", e)
         metadata = []
 
-    # Get case name from metadata dir
+    # Get case name from meta.json
     case_name = chat_req.case_id
+    try:
+        import json as _json
+        from pathlib import Path
+        meta_path = Path(workspace_path) / "cases" / chat_req.case_id / "meta.json"
+        if meta_path.is_file():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                case_meta = _json.load(f)
+            case_name = case_meta.get("name", case_name)
+    except Exception:
+        pass  # Fall back to case_id
 
     # Build filters dict
     filters = None

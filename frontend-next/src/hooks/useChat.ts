@@ -32,6 +32,7 @@ export function useChat(): UseChatReturn {
   const [error, setError] = useState<string | null>(null)
   const [tokenUsage, setTokenUsage] = useState<{ input: number; output: number } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const apiMessagesRef = useRef<ChatMessage[]>([])
 
   const cancelStream = useCallback(() => {
     abortRef.current?.abort()
@@ -63,24 +64,15 @@ export function useChat(): UseChatReturn {
       const userMsg: ChatUIMessage = { id: nextId(), role: 'user', content: text }
       const assistantMsg: ChatUIMessage = { id: nextId(), role: 'assistant', content: '', citations: [], toolActivity: undefined }
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg])
-      setIsStreaming(true)
-
-      // Build API messages from history
-      const apiMessages: ChatMessage[] = []
-      // Include existing messages + the new user message
       setMessages((prev) => {
-        for (const m of prev) {
-          if (m.role === 'user' || (m.role === 'assistant' && m.content)) {
-            apiMessages.push({ role: m.role, content: m.content })
-          }
-        }
-        return prev
+        const next = [...prev, userMsg, assistantMsg]
+        // Build API messages synchronously from the latest state
+        apiMessagesRef.current = next
+          .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
+          .map((m) => ({ role: m.role, content: m.content }))
+        return next
       })
-      // Ensure the new user message is included
-      if (!apiMessages.length || apiMessages[apiMessages.length - 1].content !== text) {
-        apiMessages.push({ role: 'user', content: text })
-      }
+      setIsStreaming(true)
 
       const controller = new AbortController()
       abortRef.current = controller
@@ -88,7 +80,7 @@ export function useChat(): UseChatReturn {
       try {
         const stream = streamChat(
           {
-            messages: apiMessages,
+            messages: apiMessagesRef.current,
             case_id: caseId,
             filters,
           },

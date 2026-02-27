@@ -34,7 +34,7 @@ export function splitTextAndCitations(text: string): TextSegment[] {
       citation: {
         media_key: match[1],
         line_id: match[2],
-        snippet: match[3],
+        snippet: match[3].replace(/\\"/g, '"'),
       },
     })
 

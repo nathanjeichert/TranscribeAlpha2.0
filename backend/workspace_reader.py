@@ -204,7 +204,7 @@ def read_transcript_pages(
     if time_start is not None or time_end is not None:
         filtered = []
         for line in lines:
-            ts = line.get("start_time") or line.get("timestamp_seconds") or 0
+            ts = line.get("start") or line.get("start_time") or line.get("timestamp_seconds") or 0
             if isinstance(ts, str):
                 try:
                     ts = float(ts)

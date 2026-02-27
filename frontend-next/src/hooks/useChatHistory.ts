@@ -27,10 +27,11 @@ export function useChatHistory(caseId: string) {
   const [activeConversationId, setActiveConversationId] = useState<string>('')
   const loadedRef = useRef(false)
 
-  // Load history from workspace
+  // Load history from workspace (reset conversation state on case switch)
   useEffect(() => {
     if (!caseId) return
     loadedRef.current = false
+    setActiveConversationId('')
 
     readJSON<ChatHistoryData>(historyPath(caseId))
       .then((data) => {

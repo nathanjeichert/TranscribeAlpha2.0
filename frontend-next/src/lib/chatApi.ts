@@ -103,6 +103,7 @@ export function streamChat(
 
         const decoder = new TextDecoder()
         let buffer = ''
+        let currentEventType = ''
 
         while (true) {
           const { done, value } = await reader.read()
@@ -112,7 +113,6 @@ export function streamChat(
           const lines = buffer.split('\n')
           buffer = lines.pop() || ''
 
-          let currentEventType = ''
           for (const line of lines) {
             if (line.startsWith('event: ')) {
               currentEventType = line.slice(7).trim()

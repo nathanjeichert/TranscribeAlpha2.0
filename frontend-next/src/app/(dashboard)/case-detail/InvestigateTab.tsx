@@ -52,6 +52,22 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const historyRef = useRef<HTMLDivElement>(null)
+
+  // Cancel stream on unmount to prevent state updates on unmounted component
+  useEffect(() => () => cancelStream(), [cancelStream])
+
+  // Close history dropdown on outside click
+  useEffect(() => {
+    if (!showHistory) return
+    const handleClick = (e: MouseEvent) => {
+      if (historyRef.current && !historyRef.current.contains(e.target as Node)) {
+        setShowHistory(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showHistory])
 
   // Auto-scroll to bottom during streaming
   useEffect(() => {
@@ -127,7 +143,7 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
           )}
         </div>
         <div className="flex items-center gap-2">
-          <div className="relative">
+          <div className="relative" ref={historyRef}>
             <button
               onClick={() => setShowHistory(!showHistory)}
               className="btn-outline text-sm px-3 py-1.5"
