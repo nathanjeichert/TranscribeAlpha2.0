@@ -19,6 +19,8 @@ interface InvestigateTabProps {
     evidence_type?: EvidenceType
     ai_summary?: string
     updated_at?: string | null
+    speakers?: string[]
+    location?: string
   }>
 }
 

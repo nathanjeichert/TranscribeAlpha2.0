@@ -30,6 +30,8 @@ export interface TranscriptSummary {
   case_id?: string | null
   ai_summary?: string
   evidence_type?: EvidenceType
+  speakers?: string[]
+  location?: string
 }
 
 export interface TranscriptData {
@@ -414,6 +416,16 @@ export async function deleteCase(caseId: string, deleteTranscripts = false): Pro
 
 function buildTranscriptSummary(data: TranscriptData, caseId?: string | null): TranscriptSummary {
   const titleData = data.title_data || {}
+
+  // Extract unique speakers for filter population
+  const speakerSet = new Set<string>()
+  if (Array.isArray(data.lines)) {
+    for (const l of data.lines as Array<Record<string, unknown>>) {
+      const s = l?.speaker
+      if (typeof s === 'string' && s.trim()) speakerSet.add(s.trim())
+    }
+  }
+
   return {
     media_key: data.media_key,
     title_label: titleData.FILE_NAME || titleData.CASE_NAME || data.media_key,
@@ -424,6 +436,8 @@ function buildTranscriptSummary(data: TranscriptData, caseId?: string | null): T
     case_id: caseId ?? data.case_id ?? null,
     ai_summary: data.ai_summary,
     evidence_type: data.evidence_type,
+    speakers: Array.from(speakerSet).sort(),
+    location: titleData.LOCATION || '',
   }
 }
 

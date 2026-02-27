@@ -39,6 +39,8 @@ interface TranscriptItem {
   audio_duration?: number
   ai_summary?: string
   evidence_type?: EvidenceType
+  speakers?: string[]
+  location?: string
 }
 
 interface SearchMatch {
@@ -161,6 +163,8 @@ export default function CaseDetailPage() {
           audio_duration: t.audio_duration,
           ai_summary: t.ai_summary,
           evidence_type: t.evidence_type,
+          speakers: t.speakers,
+          location: t.location,
         })),
       )
 

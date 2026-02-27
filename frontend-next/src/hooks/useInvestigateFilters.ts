@@ -13,6 +13,8 @@ interface TranscriptMeta {
   media_key: string
   evidence_type?: EvidenceType
   updated_at?: string | null
+  speakers?: string[]
+  location?: string
 }
 
 const GENERIC_SPEAKER_PATTERN = /^Speaker\s+\d+$/i
@@ -34,13 +36,10 @@ export function useInvestigateFilters(transcripts: TranscriptMeta[]) {
     return Array.from(types).sort()
   }, [transcripts])
 
-  // Speakers and locations are derived from transcript data if available
-  // For now, these come from the transcripts array which may not have speaker/location data
-  // They'll be populated when full metadata is passed from the page
   const availableSpeakers = useMemo(() => {
     const speakers = new Set<string>()
-    for (const t of transcripts as Array<TranscriptMeta & { speakers?: string[] }>) {
-      if ('speakers' in t && Array.isArray(t.speakers)) {
+    for (const t of transcripts) {
+      if (Array.isArray(t.speakers)) {
         for (const s of t.speakers) {
           if (!GENERIC_SPEAKER_PATTERN.test(s)) {
             speakers.add(s)
@@ -53,9 +52,9 @@ export function useInvestigateFilters(transcripts: TranscriptMeta[]) {
 
   const availableLocations = useMemo(() => {
     const locations = new Set<string>()
-    for (const t of transcripts as Array<TranscriptMeta & { location?: string }>) {
-      if ('location' in t && t.location) {
-        locations.add(t.location as string)
+    for (const t of transcripts) {
+      if (t.location) {
+        locations.add(t.location)
       }
     }
     return Array.from(locations).sort()
