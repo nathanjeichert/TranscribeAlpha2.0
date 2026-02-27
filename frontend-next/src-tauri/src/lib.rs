@@ -1,4 +1,5 @@
 use tauri::Manager;
+use tauri_plugin_fs::FsExt;
 use tauri_plugin_shell::ShellExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -11,6 +12,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Allow full filesystem access so the user can pick any workspace folder
+            let fs_scope = app.fs_scope();
+            fs_scope.allow_directory("/", true);
+
             let sidecar = app
                 .shell()
                 .sidecar("transcribealpha-server")
