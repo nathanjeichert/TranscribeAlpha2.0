@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "assemblyai_api_key": "",
     "gemini_api_key": "",
     "rev_ai_api_key": "",
+    "anthropic_api_key": "",
 }
 
 

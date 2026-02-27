@@ -60,7 +60,7 @@ async def update_api_keys(keys: Dict = Body(...)):
     config = load_config()
 
     # Only update keys that are provided and not masked placeholders
-    for key in ["assemblyai_api_key", "gemini_api_key", "rev_ai_api_key"]:
+    for key in ["assemblyai_api_key", "gemini_api_key", "rev_ai_api_key", "anthropic_api_key"]:
         if key in keys:
             value = keys[key].strip()
             # Don't overwrite with masked value

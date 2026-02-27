@@ -8,13 +8,18 @@ import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import { formatDate, formatDuration } from '@/utils/helpers'
 import { useTranscriptActions } from '@/hooks/useTranscriptActions'
+import { isTauri } from '@/lib/platform'
 import {
   getCase as localGetCase,
   updateCase as localUpdateCase,
   deleteCase as localDeleteCase,
   searchCaseTranscripts as localSearchCaseTranscripts,
   listTranscriptsInCase as localListTranscriptsInCase,
+  getTranscript as localGetTranscript,
+  saveTranscript as localSaveTranscript,
+  type EvidenceType,
 } from '@/lib/storage'
+import InvestigateTab from './InvestigateTab'
 
 interface CaseMeta {
   case_id: string
@@ -32,6 +37,8 @@ interface TranscriptItem {
   updated_at?: string | null
   line_count?: number
   audio_duration?: number
+  ai_summary?: string
+  evidence_type?: EvidenceType
 }
 
 interface SearchMatch {
@@ -61,8 +68,18 @@ function highlightSearchTerm(text: string, query: string): React.ReactNode {
   )
 }
 
+const EVIDENCE_TYPE_LABELS: Record<string, { label: string; color: string }> = {
+  jail_call: { label: 'Jail Call', color: 'bg-orange-100 text-orange-700' },
+  '911_call': { label: '911 Call', color: 'bg-red-100 text-red-700' },
+  body_worn_camera: { label: 'BWC', color: 'bg-blue-100 text-blue-700' },
+  interrogation: { label: 'Interrogation', color: 'bg-purple-100 text-purple-700' },
+  deposition: { label: 'Deposition', color: 'bg-green-100 text-green-700' },
+  other: { label: 'Other', color: 'bg-gray-100 text-gray-700' },
+}
+
 type SortField = 'updated_at' | 'title_label' | 'audio_duration' | 'line_count'
 type SortDir = 'asc' | 'desc'
+type CaseTab = 'transcripts' | 'investigate'
 
 export default function CaseDetailPage() {
   const searchParams = useSearchParams()
@@ -91,6 +108,25 @@ export default function CaseDetailPage() {
 
   const [sortField, setSortField] = useState<SortField>('updated_at')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [activeTab, setActiveTab] = useState<CaseTab>('transcripts')
+  const [editingBadgeKey, setEditingBadgeKey] = useState<string | null>(null)
+  const inTauri = isTauri()
+
+  const handleEvidenceTypeChange = async (mediaKey: string, newType: EvidenceType) => {
+    setEditingBadgeKey(null)
+    try {
+      const existing = await localGetTranscript(mediaKey)
+      if (existing) {
+        existing.evidence_type = newType
+        await localSaveTranscript(mediaKey, existing, caseId || undefined)
+        setTranscripts((prev) =>
+          prev.map((t) => (t.media_key === mediaKey ? { ...t, evidence_type: newType } : t)),
+        )
+      }
+    } catch {
+      // Best effort
+    }
+  }
 
   const loadCase = useCallback(async () => {
     if (!caseId) {
@@ -123,6 +159,8 @@ export default function CaseDetailPage() {
           updated_at: t.updated_at,
           line_count: t.line_count,
           audio_duration: t.audio_duration,
+          ai_summary: t.ai_summary,
+          evidence_type: t.evidence_type,
         })),
       )
 
@@ -340,6 +378,35 @@ export default function CaseDetailPage() {
         </div>
       )}
 
+      {inTauri && (
+        <div className="flex gap-1 mb-6 border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('transcripts')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'transcripts'
+                ? 'border-primary-600 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Transcripts
+          </button>
+          <button
+            onClick={() => setActiveTab('investigate')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'investigate'
+                ? 'border-primary-600 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Investigate
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'investigate' && inTauri ? (
+        <InvestigateTab caseId={caseId} transcripts={transcripts} />
+      ) : (
+      <>
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-6">
         <div className="flex gap-3">
           <div className="relative flex-1">
@@ -508,7 +575,41 @@ export default function CaseDetailPage() {
                     </svg>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-900 truncate">{transcript.title_label}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-gray-900 truncate">{transcript.title_label}</p>
+                      {transcript.evidence_type && EVIDENCE_TYPE_LABELS[transcript.evidence_type] && (
+                        <div className="relative flex-shrink-0">
+                          <button
+                            onClick={(e) => {
+                              if (!inTauri) return
+                              e.stopPropagation()
+                              setEditingBadgeKey(editingBadgeKey === transcript.media_key ? null : transcript.media_key)
+                            }}
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${EVIDENCE_TYPE_LABELS[transcript.evidence_type].color} ${inTauri ? 'cursor-pointer hover:ring-2 hover:ring-primary-200' : 'cursor-default'}`}
+                          >
+                            {EVIDENCE_TYPE_LABELS[transcript.evidence_type].label}
+                          </button>
+                          {inTauri && editingBadgeKey === transcript.media_key && (
+                            <div className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 py-1 w-36">
+                              {Object.entries(EVIDENCE_TYPE_LABELS).map(([type, { label }]) => (
+                                <button
+                                  key={type}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleEvidenceTypeChange(transcript.media_key, type as EvidenceType)
+                                  }}
+                                  className={`w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 ${
+                                    transcript.evidence_type === type ? 'font-medium text-primary-600' : 'text-gray-700'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     <p className="text-sm text-gray-500">
                       {transcript.line_count || 0} lines • {formatDuration(transcript.audio_duration)} • Updated {formatDate(transcript.updated_at)}
                     </p>
@@ -574,6 +675,8 @@ export default function CaseDetailPage() {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">

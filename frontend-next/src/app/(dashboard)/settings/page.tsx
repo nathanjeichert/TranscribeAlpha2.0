@@ -28,6 +28,7 @@ function ApiKeysSection() {
   const [assemblyaiKey, setAssemblyaiKey] = useState('')
   const [geminiKey, setGeminiKey] = useState('')
   const [revaiKey, setRevaiKey] = useState('')
+  const [anthropicKey, setAnthropicKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -39,6 +40,7 @@ function ApiKeysSection() {
         setAssemblyaiKey(data.assemblyai_api_key || '')
         setGeminiKey(data.gemini_api_key || '')
         setRevaiKey(data.rev_ai_api_key || '')
+        setAnthropicKey(data.anthropic_api_key || '')
         setLoaded(true)
       })
       .catch(() => setLoaded(true))
@@ -55,6 +57,7 @@ function ApiKeysSection() {
           assemblyai_api_key: assemblyaiKey,
           gemini_api_key: geminiKey,
           rev_ai_api_key: revaiKey,
+          anthropic_api_key: anthropicKey,
         }),
       })
       if (resp.ok) {
@@ -105,6 +108,17 @@ function ApiKeysSection() {
             value={revaiKey}
             onChange={(e) => { setRevaiKey(e.target.value); setStatus('') }}
             placeholder="Enter your Rev AI API key"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-900 mb-1">Anthropic API Key</label>
+          <p className="text-xs text-gray-400 mb-1">Used for AI case investigation and transcript summaries.</p>
+          <input
+            type="password"
+            value={anthropicKey}
+            onChange={(e) => { setAnthropicKey(e.target.value); setStatus('') }}
+            placeholder="Enter your Anthropic API key"
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
           />
         </div>

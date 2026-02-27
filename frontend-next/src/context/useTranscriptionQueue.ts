@@ -5,9 +5,11 @@ import { nowIso, sleep, getFileExtension } from '@/utils/helpers'
 import {
   resolveWorkspaceRelativePathForHandle,
   saveTranscript as localSaveTranscript,
+  getTranscript,
   type TranscriptData,
 } from '@/lib/storage'
 import { cacheMediaForPlayback } from '@/lib/mediaCache'
+import { summarizeTranscript } from '@/lib/chatApi'
 import { logger } from '@/utils/logger'
 import { getMediaFile, storeMediaHandle } from '@/lib/mediaHandles'
 import {
@@ -470,6 +472,22 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
                 mediaKey,
                 error: '',
               })
+
+              // After transcript is saved, generate AI summary (non-blocking)
+              const payload = responseData as Record<string, unknown>
+              summarizeTranscript({
+                media_key: mediaKey,
+                media_filename: String(payload.media_filename || ''),
+                transcript_text: String(payload.transcript_text || ''),
+              }).then(async (summary) => {
+                const existing = await getTranscript(mediaKey)
+                if (existing) {
+                  existing.ai_summary = summary.ai_summary
+                  existing.evidence_type = summary.evidence_type
+                  const existingCaseId = existing.case_id
+                  await localSaveTranscript(mediaKey, existing, existingCaseId || undefined)
+                }
+              }).catch(() => { /* non-critical, ignore */ })
 
               resolve()
             } catch (err) {

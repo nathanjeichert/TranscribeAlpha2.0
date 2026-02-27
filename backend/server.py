@@ -40,6 +40,16 @@ try:
 except ImportError:
     from api.settings import router as settings_router
 
+try:
+    from .api.summarize import router as summarize_router
+except ImportError:
+    from api.summarize import router as summarize_router
+
+try:
+    from .api.chat import router as chat_router
+except ImportError:
+    from api.chat import router as chat_router
+
 
 app = FastAPI(
     title="TranscribeAlpha API",
@@ -59,6 +69,8 @@ app.include_router(auth_router)
 app.include_router(transcripts_router)
 app.include_router(health_router)
 app.include_router(settings_router)
+app.include_router(summarize_router)
+app.include_router(chat_router)
 
 frontend_candidates = [
     os.path.join(os.path.dirname(__file__), "..", "frontend"),

@@ -18,6 +18,8 @@ export interface CaseDetail extends CaseMeta {
   transcripts: TranscriptSummary[]
 }
 
+export type EvidenceType = 'jail_call' | '911_call' | 'body_worn_camera' | 'interrogation' | 'deposition' | 'other'
+
 export interface TranscriptSummary {
   media_key: string
   title_label: string
@@ -26,6 +28,8 @@ export interface TranscriptSummary {
   audio_duration?: number
   line_count?: number
   case_id?: string | null
+  ai_summary?: string
+  evidence_type?: EvidenceType
 }
 
 export interface TranscriptData {
@@ -51,6 +55,8 @@ export interface TranscriptData {
   playback_cache_path?: string
   playback_cache_content_type?: string
   case_id?: string | null
+  ai_summary?: string
+  evidence_type?: EvidenceType
   [key: string]: unknown
 }
 
@@ -416,6 +422,8 @@ function buildTranscriptSummary(data: TranscriptData, caseId?: string | null): T
     audio_duration: data.audio_duration,
     line_count: Array.isArray(data.lines) ? data.lines.length : 0,
     case_id: caseId ?? data.case_id ?? null,
+    ai_summary: data.ai_summary,
+    evidence_type: data.evidence_type,
   }
 }
 
