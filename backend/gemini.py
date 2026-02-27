@@ -47,7 +47,11 @@ def _normalize_speaker_label(raw_value: Any, fallback: str) -> str:
 
 
 def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hint: float) -> List[dict]:
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    try:
+        from standalone_config import get_api_key
+    except ImportError:
+        from .standalone_config import get_api_key
+    api_key = get_api_key("gemini_api_key") or os.getenv("GOOGLE_API_KEY")
     if api_key:
         api_key = api_key.strip()
         if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):
@@ -254,7 +258,11 @@ def transcribe_with_gemini(
     Returns:
         List of transcript line objects with speaker, text, start, end fields
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    try:
+        from standalone_config import get_api_key
+    except ImportError:
+        from .standalone_config import get_api_key
+    api_key = get_api_key("gemini_api_key") or os.getenv("GOOGLE_API_KEY")
     if api_key:
         api_key = api_key.strip()
         if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):

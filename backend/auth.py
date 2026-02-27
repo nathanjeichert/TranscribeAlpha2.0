@@ -27,8 +27,9 @@ REFRESH_TOKEN_EXPIRE_DAYS = 3650  # 10 years - effectively permanent
 PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 SECRET_NAME = "transcribealpha-users"
 
-# Security scheme
-security = HTTPBearer()
+# Security scheme — auto_error=False so standalone/Tauri requests without
+# a Bearer token reach get_current_user instead of being rejected early.
+security = HTTPBearer(auto_error=False)
 
 # In-memory cache for users (refreshed periodically)
 _users_cache: Optional[Dict[str, dict]] = None
@@ -242,7 +243,7 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
     """
     Dependency to get the current authenticated user from JWT token.
     Raises HTTPException if authentication fails.
@@ -258,6 +259,9 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    if credentials is None:
+        raise credentials_exception
 
     try:
         token = credentials.credentials

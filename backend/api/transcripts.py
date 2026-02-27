@@ -276,9 +276,22 @@ async def transcribe(
     if multichannel and transcription_model != "assemblyai":
         raise HTTPException(status_code=400, detail="multichannel is only supported with AssemblyAI")
 
-    if transcription_model == "assemblyai" and not os.getenv("ASSEMBLYAI_API_KEY"):
-        raise HTTPException(status_code=500, detail="Server configuration error: AssemblyAI API key not configured")
-    if transcription_model == "gemini" and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+    try:
+        from standalone_config import get_api_key
+    except ImportError:
+        from ..standalone_config import get_api_key
+
+    if transcription_model == "assemblyai":
+        _aai_key = get_api_key("assemblyai_api_key")
+        if not _aai_key:
+            raise HTTPException(status_code=500, detail="Server configuration error: AssemblyAI API key not configured")
+        # Ensure the SDK has the latest key from config
+        try:
+            import assemblyai as aai
+            aai.settings.api_key = _aai_key
+        except ImportError:
+            pass
+    if transcription_model == "gemini" and not (get_api_key("gemini_api_key") or os.getenv("GOOGLE_API_KEY")):
         raise HTTPException(status_code=500, detail="Server configuration error: Gemini API key not configured")
 
     display_filename = (source_filename or "").strip() or file.filename or "media"
@@ -595,7 +608,7 @@ async def resync_transcript(
         )
         audio_url = str(request.url_for("serve_resync_media", token=resync_media_token))
 
-        rev_api_key = os.getenv("REV_AI_API_KEY")
+        rev_api_key = get_api_key("rev_ai_api_key")
         if not rev_api_key:
             raise HTTPException(status_code=500, detail="Rev AI API Key not configured")
 
