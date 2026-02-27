@@ -5,8 +5,14 @@
   "permissions": [
     "core:default",
     "fs:default",
-    "fs:read-all",
-    "fs:write-all",
+    {
+      "identifier": "fs:allow-read",
+      "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "fs:allow-write",
+      "allow": [{ "path": "**" }]
+    },
     "fs:allow-exists",
     "fs:allow-mkdir",
     "fs:allow-remove",

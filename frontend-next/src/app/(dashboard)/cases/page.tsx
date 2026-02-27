@@ -96,8 +96,9 @@ export default function CasesPage() {
       setShowNewCaseModal(false)
       setNewCaseName('')
       setNewCaseDescription('')
-    } catch {
-      setError('Failed to create case')
+    } catch (err) {
+      console.error('Failed to create case:', err)
+      setError(`Failed to create case: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setCreatingCase(false)
     }
