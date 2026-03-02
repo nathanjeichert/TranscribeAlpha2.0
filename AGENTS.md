@@ -62,7 +62,6 @@ TranscribeAlpha/
 │   ├── workspace_reader.py    # Reads transcript files from workspace (traversal-safe)
 │   ├── transcript_formatting.py # PDF/XML generation + line timing helpers
 │   ├── transcript_utils.py    # Session serialization + viewer HTML generation
-│   ├── word_legacy.py         # Deprecated Word/DOCX helpers (legacy import path)
 │   ├── storage.py             # Temp upload helper for stateless endpoints
 │   ├── gemini.py              # Gemini transcription + refine flow
 │   ├── api/                   # FastAPI routers
@@ -78,7 +77,6 @@ TranscribeAlpha/
 │   ├── transcriber.py         # AssemblyAI integration + media probing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
 │   ├── auth.py                # JWT authentication
-│   ├── templates/             # Legacy Word templates (deprecated)
 │   └── requirements.txt       # Python dependencies (includes anthropic>=0.42.0)
 │
 ├── frontend-next/             # Next.js frontend
@@ -116,7 +114,19 @@ TranscribeAlpha/
 │   │   │       │   └── CitationCard.tsx   # Clickable citation → viewer deep-link
 │   │   │       └── settings/        # App settings
 │   │   ├── components/        # React components
-│   │   │   ├── TranscriptEditor.tsx  # Line-by-line editor (imports shared utils from transcriptFormat.ts)
+│   │   │   ├── TranscriptEditor/     # Line-by-line editor (modular)
+│   │   │   │   ├── index.tsx             # Root component: virtualizer, keyboard shortcuts, JSX shell
+│   │   │   │   ├── editorTypes.ts        # Shared interfaces (EditorLine, EditorSessionResponse, props)
+│   │   │   │   ├── editorUtils.ts        # Pure functions (secondsToLabel, buildRenderedText, XML builder)
+│   │   │   │   ├── _hooks/
+│   │   │   │   │   ├── useEditorLines.ts   # Lines state, inline editing, undo/redo, CRUD, speaker rename
+│   │   │   │   │   ├── useEditorPlayer.ts  # Media time-sync, auto-scroll, playLine
+│   │   │   │   │   ├── useEditorSearch.ts  # Search query, match cursor, navigation
+│   │   │   │   │   └── useEditorSave.ts    # Save, auto-save, artifact build, downloads, resync
+│   │   │   │   └── _components/
+│   │   │   │       ├── TranscriptRow.tsx   # Virtualized transcript row
+│   │   │   │       ├── EditorToolbar.tsx   # Toolbar (undo/redo/save/export buttons)
+│   │   │   │       └── SpeakerRenameModal.tsx # Speaker rename dialog
 │   │   │   ├── MediaMissingBanner.tsx # Media re-import banner
 │   │   │   ├── AuthProvider.tsx      # Auth context
 │   │   │   ├── LoginModal.tsx        # Login UI
@@ -578,11 +588,6 @@ docker run --rm -it -p 8080:8080 \
 - Edit `backend/transcript_formatting.py`
 - Functions: `create_pdf()`, `generate_oncue_xml_from_line_entries()`, `compute_transcript_line_entries()`
 
-### Legacy Word Path (Deprecated)
-- Word/DOCX logic is isolated in `backend/word_legacy.py`
-- Deprecated behavior notes live in `docs/word-export-deprecated.md`
-- New export changes should target the PDF pipeline, not DOCX generation
-
 ### Modify HTML Viewer
 - Edit `backend/viewer/template.html`
 - Viewer payload built in `backend/transcript_utils.py` → `build_viewer_payload()`
@@ -619,4 +624,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-03-02 — viewer page refactored into 8 colocated hooks + 3 sub-components + shared transcriptFormat.ts*
+*Last updated: 2026-03-02 — TranscriptEditor refactored into 10-file modular structure (4 hooks + 3 sub-components + types/utils); deprecated docx_base64 field and legacy Word path removed throughout*

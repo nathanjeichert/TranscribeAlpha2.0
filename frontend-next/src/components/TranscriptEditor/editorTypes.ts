@@ -47,8 +47,6 @@ export interface EditorSessionResponse {
   updated_at?: string
   expires_at?: string
   pdf_base64?: string | null
-  // Deprecated, retained for legacy sessions.
-  docx_base64?: string | null
   oncue_xml_base64?: string | null
   viewer_html_base64?: string | null
   source_turns?: unknown[]

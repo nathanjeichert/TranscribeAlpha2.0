@@ -156,7 +156,7 @@ export default function TranscriptEditor({
   })
 
   // ── Save hook ────────────────────────────────────────────────────────────
-  const pdfData = pdfBase64 ?? sessionMeta?.pdf_base64 ?? sessionMeta?.docx_base64 ?? ''
+  const pdfData = pdfBase64 ?? sessionMeta?.pdf_base64 ?? ''
 
   const save = useEditorSave({
     activeMediaKey,

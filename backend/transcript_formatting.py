@@ -35,7 +35,7 @@ MIN_LINE_DURATION_SECONDS = 1.25
 ONCUE_FIRST_PGLN = 101      # First page-line number (page 1, line 1 = 101)
 DEFAULT_VIDEO_ID = "1"      # Default video ID for single-video transcripts
 
-# PDF layout constants (mirrors transcript_template.docx transcript section)
+# PDF layout constants
 PDF_PAGE_WIDTH, PDF_PAGE_HEIGHT = letter
 PDF_MARGIN_LEFT = 1.0 * inch
 PDF_MARGIN_RIGHT = 1.0 * inch
