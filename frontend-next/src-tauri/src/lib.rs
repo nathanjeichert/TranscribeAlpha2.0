@@ -14,7 +14,7 @@ pub fn run() {
         .setup(|app| {
             // Allow full filesystem access so the user can pick any workspace folder
             let fs_scope = app.fs_scope();
-            fs_scope.allow_directory("/", true);
+            let _ = fs_scope.allow_directory("/", true);
 
             let sidecar = app
                 .shell()
