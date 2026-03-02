@@ -311,7 +311,6 @@ export default function EditorPage() {
         mediaUrl={mediaAvailable ? mediaUrl : undefined}
         mediaType={mediaContentType}
         pdfBase64={transcriptData?.pdf_base64 ?? transcriptData?.docx_base64}
-        docxBase64={transcriptData?.docx_base64}
         xmlBase64={transcriptData?.oncue_xml_base64}
         viewerHtmlBase64={transcriptData?.viewer_html_base64}
         oncueXmlEnabled={oncueXmlEnabled}
