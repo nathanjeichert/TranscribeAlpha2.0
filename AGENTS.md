@@ -91,6 +91,21 @@ TranscribeAlpha/
 │   │   │       ├── transcribe/      # Wizard transcription flow
 │   │   │       ├── editor/          # Transcript editor (?key=)
 │   │   │       ├── viewer/          # Transcript viewer + clips/sequences (?key=)
+│   │   │       │   ├── page.tsx         # Root page: composes hooks + layout (~967 lines)
+│   │   │       │   ├── viewerTypes.ts   # Local types (TitleCardState, SequenceState, etc.)
+│   │   │       │   ├── _hooks/          # Feature-domain hooks (colocated with viewer)
+│   │   │       │   │   ├── useViewerLoader.ts      # Transcript + media load lifecycle, relinkMedia
+│   │   │       │   │   ├── useCaseArtifacts.ts     # Clips + sequences fetch
+│   │   │       │   │   ├── usePlayerSync.ts        # Time sync, scroll, WaveSurfer, clip RAF loop
+│   │   │       │   │   ├── useViewerSearch.ts      # Search state + scroll-to-match
+│   │   │       │   │   ├── useClipManagement.ts    # Clip CRUD, inline edit, drag-reorder, export
+│   │   │       │   │   ├── useSequenceManagement.ts # Sequence CRUD, ZIP export
+│   │   │       │   │   ├── usePresentationMode.ts  # Fullscreen presentation + sequence playback
+│   │   │       │   │   └── useExport.ts            # PDF/viewer/clip export, exportMenuRef
+│   │   │       │   └── _components/     # Presentational sub-components
+│   │   │       │       ├── CaptionWindow.tsx  # 5-line caption display (prev2/prev1/current/next1/next2)
+│   │   │       │       ├── ClipsPanel.tsx     # Clip builder form + list with drag/edit/export
+│   │   │       │       └── SequencesPanel.tsx # Sequence list with entry management + present/ZIP
 │   │   │       ├── converter/       # Local media converter
 │   │   │       ├── cases/           # Cases list
 │   │   │       ├── case-detail/     # Case detail + Investigate tab
@@ -101,7 +116,7 @@ TranscribeAlpha/
 │   │   │       │   └── CitationCard.tsx   # Clickable citation → viewer deep-link
 │   │   │       └── settings/        # App settings
 │   │   ├── components/        # React components
-│   │   │   ├── TranscriptEditor.tsx  # Line-by-line editor
+│   │   │   ├── TranscriptEditor.tsx  # Line-by-line editor (imports shared utils from transcriptFormat.ts)
 │   │   │   ├── MediaMissingBanner.tsx # Media re-import banner
 │   │   │   ├── AuthProvider.tsx      # Auth context
 │   │   │   ├── LoginModal.tsx        # Login UI
@@ -118,6 +133,11 @@ TranscribeAlpha/
 │   │   │   ├── citationParser.ts    # [[CITE:...]] marker → TextSegment[]
 │   │   │   └── storage.ts          # Workspace storage (includes EvidenceType, ai_summary)
 │   │   └── utils/             # Utility functions
+│   │       ├── transcriptFormat.ts  # Shared transcript formatting + normalization
+│   │       │                        #   formatClock/Range, parseTimeInput, escapeScriptBoundary,
+│   │       │                        #   sanitizeDownloadStem, buildViewerPayload, normalizeViewerTranscript
+│   │       └── helpers.ts           # General utilities incl. downloadBlob, bytesToBase64,
+│   │                                #   fileToBase64, utf8ToBase64
 │   └── out/                   # Static export (production)
 │
 ├── scripts/                   # Admin utility scripts
@@ -599,4 +619,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-03-02*
+*Last updated: 2026-03-02 — viewer page refactored into 8 colocated hooks + 3 sub-components + shared transcriptFormat.ts*
