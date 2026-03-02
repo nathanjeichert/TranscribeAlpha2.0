@@ -6,6 +6,8 @@ import { authenticatedFetch } from '@/utils/auth'
 import { logger } from '@/utils/logger'
 import { saveTranscript as localSaveTranscript } from '@/lib/storage'
 import { getMediaFile } from '@/lib/mediaHandles'
+import { escapeScriptBoundary, sanitizeDownloadStem, buildViewerPayload } from '@/utils/transcriptFormat'
+import { bytesToBase64, utf8ToBase64 } from '@/utils/helpers'
 
 interface EditorLine {
   id: string
@@ -104,22 +106,6 @@ const secondsToLabel = (seconds: number) => {
 const AUTO_SHIFT_STORAGE_KEY = 'editor_auto_shift_next'
 const AUTO_SHIFT_PADDING_SECONDS = 0.01
 
-const escapeScriptBoundary = (value: string) => value.replace(/<\/script/gi, '<\\/script')
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize)
-    binary += String.fromCharCode(...Array.from(chunk))
-  }
-  return btoa(binary)
-}
-
-function utf8ToBase64(value: string): string {
-  return bytesToBase64(new TextEncoder().encode(value))
-}
-
 function buildRenderedText(line: Pick<EditorLine, 'speaker' | 'text' | 'is_continuation'>): string {
   const speaker = (line.speaker || '').trim().replace(/:+$/, '')
   const text = line.text || ''
@@ -130,14 +116,6 @@ function buildRenderedText(line: Pick<EditorLine, 'speaker' | 'text' | 'is_conti
     return text
   }
   return `          ${speaker}:   ${text}`
-}
-
-function sanitizeDownloadStem(value: string): string {
-  const sanitized = value
-    .replace(/[\\/:*?"<>|]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  return sanitized || 'transcript'
 }
 
 function normalizeLineEntriesForArtifacts(lineEntries: EditorLine[], linesPerPage: number): EditorLine[] {
@@ -165,72 +143,6 @@ function normalizeLineEntriesForArtifacts(lineEntries: EditorLine[], linesPerPag
       is_continuation: Boolean(line.is_continuation),
     }
   })
-}
-
-function buildViewerPayloadFromLines(
-  lineEntries: EditorLine[],
-  titleData: Record<string, string>,
-  audioDuration: number,
-  linesPerPage: number,
-  mediaFilename: string,
-  mediaContentType: string,
-) {
-  const normalizedEntries = normalizeLineEntriesForArtifacts(lineEntries, linesPerPage)
-  const speakers = Array.from(
-    new Set(
-      normalizedEntries
-        .map((line) => line.speaker)
-        .filter((speaker) => speaker && speaker.trim().length > 0),
-    ),
-  )
-
-  const normalizedLines = normalizedEntries.map((line, index) => {
-    const pageNumber = Number(line.page)
-    const lineNumber = Number(line.line)
-    return {
-      id: line.id || `line-${index}`,
-      speaker: line.speaker || '',
-      text: line.text || '',
-      rendered_text: line.rendered_text || buildRenderedText(line),
-      start: Number.isFinite(line.start) ? line.start : 0,
-      end: Number.isFinite(line.end) ? line.end : (Number.isFinite(line.start) ? line.start : 0),
-      page_number: pageNumber,
-      line_number: lineNumber,
-      pgln: Number.isFinite(line.pgln as number) ? Number(line.pgln) : (pageNumber * 100) + lineNumber,
-      is_continuation: Boolean(line.is_continuation),
-    }
-  })
-
-  const pageMap = new Map<number, number[]>()
-  normalizedLines.forEach((line, idx) => {
-    if (!pageMap.has(line.page_number)) pageMap.set(line.page_number, [])
-    pageMap.get(line.page_number)?.push(idx)
-  })
-
-  const pages = Array.from(pageMap.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([pageNumber, lineIndexes]) => ({
-      page_number: pageNumber,
-      line_indexes: lineIndexes,
-      pgln_start: lineIndexes.length ? normalizedLines[lineIndexes[0]].pgln : 101,
-      pgln_end: lineIndexes.length ? normalizedLines[lineIndexes[lineIndexes.length - 1]].pgln : 101,
-    }))
-
-  return {
-    meta: {
-      title: titleData || {},
-      duration_seconds: Number.isFinite(audioDuration) ? audioDuration : 0,
-      lines_per_page: linesPerPage > 0 ? linesPerPage : 25,
-      speakers,
-    },
-    media: {
-      filename: mediaFilename,
-      content_type: mediaContentType || 'video/mp4',
-      relative_path: mediaFilename,
-    },
-    lines: normalizedLines,
-    pages,
-  }
 }
 
 function escapeXmlAttribute(value: string): string {
@@ -1169,14 +1081,14 @@ export default function TranscriptEditor({
         sourceSessionMeta.media_blob_name ||
         sourceSessionMeta.title_data?.FILE_NAME ||
         `${mediaKeyForSave}.${mediaContentType.startsWith('audio/') ? 'wav' : 'mp4'}`
-      const viewerPayload = buildViewerPayloadFromLines(
-        lineEntries,
-        titleData,
-        sourceSessionMeta.audio_duration ?? 0,
-        linesPerPage,
-        mediaFilename,
-        mediaContentType,
-      )
+      const viewerPayload = buildViewerPayload({
+        lines: lineEntries,
+        title_data: titleData,
+        audio_duration: sourceSessionMeta.audio_duration ?? 0,
+        lines_per_page: linesPerPage,
+        media_filename: mediaFilename,
+        media_content_type: mediaContentType,
+      })
       const transcriptJson = escapeScriptBoundary(JSON.stringify(viewerPayload))
       const viewerHtml = template.replace('__TRANSCRIPT_JSON__', transcriptJson)
       if (viewerHtml === template) {

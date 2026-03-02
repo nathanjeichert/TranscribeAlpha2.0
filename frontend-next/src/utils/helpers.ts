@@ -73,3 +73,33 @@ export function formatDuration(seconds?: number): string {
   const secs = Math.floor(seconds % 60)
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
+
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize)
+    binary += String.fromCharCode(...Array.from(chunk))
+  }
+  return btoa(binary)
+}
+
+export async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  return bytesToBase64(new Uint8Array(buffer))
+}
+
+export function utf8ToBase64(value: string): string {
+  return bytesToBase64(new TextEncoder().encode(value))
+}
