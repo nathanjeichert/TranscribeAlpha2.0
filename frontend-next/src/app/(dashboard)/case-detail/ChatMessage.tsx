@@ -1,5 +1,5 @@
 import React from 'react'
-import { splitTextAndCitations } from '@/lib/citationParser'
+import Markdown from 'react-markdown'
 import CitationCard from './CitationCard'
 import type { ChatUIMessage } from '@/hooks/useChat'
 
@@ -19,8 +19,9 @@ export default function ChatMessage({ message, caseId }: ChatMessageProps) {
     )
   }
 
-  // Assistant message
-  const segments = message.content ? splitTextAndCitations(message.content) : []
+  // Assistant message — citations come from the API as structured metadata,
+  // no longer embedded in text as [[CITE:...]] markers.
+  const hasCitations = message.citations && message.citations.length > 0
 
   return (
     <div className="flex justify-start">
@@ -35,38 +36,26 @@ export default function ChatMessage({ message, caseId }: ChatMessageProps) {
           </div>
         )}
 
-        {/* Message content */}
-        {segments.length > 0 && (
+        {/* Message content with markdown rendering */}
+        {message.content && (
           <div className="bg-gray-50 border border-gray-200 rounded-2xl rounded-bl-md px-4 py-2.5">
-            <div className="text-sm text-gray-900 whitespace-pre-wrap">
-              {segments.map((segment, i) => {
-                if (segment.type === 'text') {
-                  return <React.Fragment key={i}>{segment.content}</React.Fragment>
-                }
-                return (
-                  <CitationCard
-                    key={i}
-                    citation={{
-                      media_key: segment.citation.media_key,
-                      line_id: segment.citation.line_id,
-                      snippet: segment.citation.snippet,
-                      title: message.citations?.find(
-                        (c) => c.media_key === segment.citation.media_key && c.line_id === segment.citation.line_id,
-                      )?.title,
-                      date: message.citations?.find(
-                        (c) => c.media_key === segment.citation.media_key && c.line_id === segment.citation.line_id,
-                      )?.date,
-                    }}
-                    caseId={caseId}
-                  />
-                )
-              })}
+            <div className="text-sm text-gray-900 prose prose-sm prose-gray max-w-none">
+              <Markdown>{message.content}</Markdown>
             </div>
           </div>
         )}
 
+        {/* Citations rendered below the message */}
+        {hasCitations && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {message.citations!.map((citation, i) => (
+              <CitationCard key={i} citation={citation} caseId={caseId} />
+            ))}
+          </div>
+        )}
+
         {/* Streaming placeholder if no content yet and tool is running */}
-        {segments.length === 0 && !message.toolActivity && message.content === '' && (
+        {!message.content && !message.toolActivity && (
           <div className="bg-gray-50 border border-gray-200 rounded-2xl rounded-bl-md px-4 py-2.5">
             <div className="flex items-center gap-1.5">
               <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>

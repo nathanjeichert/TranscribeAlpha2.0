@@ -47,12 +47,15 @@ export interface ChatRequest {
   conversation_id?: string
 }
 
+/** Citation from Anthropic's native search_result citations API. */
 export interface CitationData {
-  media_key: string
-  line_id: string
-  snippet: string
-  title?: string
-  date?: string
+  type: string // "search_result_location"
+  source: string // media_key or media_key:line_id
+  title: string
+  cited_text: string
+  search_result_index: number
+  start_block_index: number
+  end_block_index: number
 }
 
 export type SSEEventType = 'token' | 'tool_use' | 'citation' | 'done' | 'error'

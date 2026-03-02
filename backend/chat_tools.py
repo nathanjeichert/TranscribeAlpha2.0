@@ -1,8 +1,12 @@
 """
 Chat tool definitions and execution for the investigation agent.
 Three tools: list_transcripts, search_text, read_transcript.
+
+Tool results use Anthropic's search_result content blocks so the API
+generates structured citations automatically (no custom [[CITE:...]] markers).
 """
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -97,10 +101,16 @@ def execute_tool(
     workspace_path: str,
     case_id: str,
     filters: Optional[dict] = None,
-) -> str:
-    """Execute a tool and return the result as a JSON string."""
-    import json
+    cached_metadata: Optional[list[dict]] = None,
+) -> list[dict]:
+    """Execute a tool and return content blocks for the tool_result.
 
+    Returns a list of content blocks (text blocks and/or search_result blocks).
+    search_result blocks enable the API's native citation system.
+
+    If cached_metadata is provided, it will be used instead of re-reading
+    from disk (avoids redundant filesystem scans in multi-tool-call loops).
+    """
     try:
         from workspace_reader import (
             list_case_transcript_metadata,
@@ -114,29 +124,34 @@ def execute_tool(
             search_transcript_lines,
         )
 
+    def _list_fn(wp, cid):
+        if cached_metadata is not None:
+            return cached_metadata
+        return list_case_transcript_metadata(wp, cid)
+
     try:
         if tool_name == "list_transcripts":
             return _execute_list_transcripts(
                 tool_input, workspace_path, case_id, filters,
-                list_case_transcript_metadata,
+                _list_fn,
             )
         elif tool_name == "search_text":
             return _execute_search_text(
                 tool_input, workspace_path, case_id, filters,
                 search_transcript_lines,
-                list_case_transcript_metadata,
+                _list_fn,
             )
         elif tool_name == "read_transcript":
             return _execute_read_transcript(
                 tool_input, workspace_path, case_id, filters,
                 read_transcript_pages,
-                list_case_transcript_metadata,
+                _list_fn,
             )
         else:
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return [{"type": "text", "text": json.dumps({"error": f"Unknown tool: {tool_name}"})}]
     except Exception as e:
         logger.warning("Tool execution error (%s): %s", tool_name, e)
-        return json.dumps({"error": str(e)})
+        return [{"type": "text", "text": json.dumps({"error": str(e)})}]
 
 
 def _normalize_date(date_str: str) -> str:
@@ -220,14 +235,12 @@ def _apply_filters(
 
 def _execute_list_transcripts(
     tool_input, workspace_path, case_id, filters, list_fn
-) -> str:
-    import json
-
+) -> list[dict]:
+    """list_transcripts returns plain text (metadata only, not citable)."""
     metadata = list_fn(workspace_path, case_id)
     extra_type = tool_input.get("evidence_type")
     filtered = _apply_filters(metadata, filters, extra_type)
 
-    # Return concise metadata
     results = []
     for m in filtered:
         results.append({
@@ -241,21 +254,20 @@ def _execute_list_transcripts(
             "line_count": m.get("line_count", 0),
         })
 
-    return json.dumps({"count": len(results), "transcripts": results})
+    return [{"type": "text", "text": json.dumps({"count": len(results), "transcripts": results})}]
 
 
 def _execute_search_text(
     tool_input, workspace_path, case_id, filters, search_fn, list_fn
-) -> str:
-    import json
-
+) -> list[dict]:
+    """search_text returns search_result blocks for each match (citable)."""
     query = tool_input.get("query", "")
     if not query:
-        return json.dumps({"error": "Missing 'query' parameter"})
+        return [{"type": "text", "text": json.dumps({"error": "Missing 'query' parameter"})}]
 
     max_results = min(tool_input.get("max_results", 20), 50)
 
-    # Apply all user filters (evidence type, speakers, location, date) to restrict search scope
+    # Apply user filters to restrict search scope
     transcript_keys = None
     if filters:
         meta = list_fn(workspace_path, case_id)
@@ -269,21 +281,63 @@ def _execute_search_text(
         transcript_keys=transcript_keys,
     )
 
-    return json.dumps({
-        "query": query,
-        "match_count": len(matches),
-        "matches": matches,
-    })
+    if not matches:
+        return [{"type": "text", "text": f"No matches found for '{query}'."}]
+
+    # Summary text block (not citable)
+    blocks: list[dict] = [
+        {"type": "text", "text": f"Found {len(matches)} matches for '{query}'."},
+    ]
+
+    # Each match becomes a search_result block (citable)
+    for match in matches:
+        media_key = match.get("media_key", "")
+        line_id = match.get("line_id", "")
+        speaker = match.get("speaker", "")
+        text = match.get("text", "")
+        title = match.get("transcript_title", "")
+        page = match.get("page", 0)
+        line_num = match.get("line", 0)
+        timestamp = match.get("timestamp", "")
+
+        # Build content text with context
+        content_parts = []
+        ctx_before = match.get("context_before")
+        if ctx_before and ctx_before.get("text"):
+            before_speaker = ctx_before.get("speaker", "")
+            content_parts.append(f"{before_speaker}: {ctx_before['text']}")
+
+        content_parts.append(f"{speaker}: {text}")
+
+        ctx_after = match.get("context_after")
+        if ctx_after and ctx_after.get("text"):
+            after_speaker = ctx_after.get("speaker", "")
+            content_parts.append(f"{after_speaker}: {ctx_after['text']}")
+
+        # Source encodes media_key:line_id for frontend navigation
+        source = f"{media_key}:{line_id}" if line_id else media_key
+        result_title = f"{title} (p.{page}, line {line_num})"
+        if timestamp:
+            result_title += f" [{timestamp}]"
+
+        blocks.append({
+            "type": "search_result",
+            "source": source,
+            "title": result_title,
+            "content": [{"type": "text", "text": line} for line in content_parts],
+            "citations": {"enabled": True},
+        })
+
+    return blocks
 
 
 def _execute_read_transcript(
     tool_input, workspace_path, case_id, filters, read_fn, list_fn
-) -> str:
-    import json
-
+) -> list[dict]:
+    """read_transcript returns a search_result block with transcript lines (citable)."""
     media_key = tool_input.get("media_key", "")
     if not media_key:
-        return json.dumps({"error": "Missing 'media_key' parameter"})
+        return [{"type": "text", "text": json.dumps({"error": "Missing 'media_key' parameter"})}]
 
     # Enforce user filters — block reads of filtered-out transcripts
     if filters:
@@ -291,7 +345,7 @@ def _execute_read_transcript(
         filtered = _apply_filters(meta, filters)
         allowed = {m["media_key"] for m in filtered}
         if media_key not in allowed:
-            return json.dumps({"error": f"Transcript '{media_key}' is excluded by active filters"})
+            return [{"type": "text", "text": json.dumps({"error": f"Transcript '{media_key}' is excluded by active filters"})}]
 
     result = read_fn(
         workspace_path,
@@ -304,6 +358,46 @@ def _execute_read_transcript(
     )
 
     if result is None:
-        return json.dumps({"error": f"Transcript not found: {media_key}"})
+        return [{"type": "text", "text": json.dumps({"error": f"Transcript not found: {media_key}"})}]
 
-    return json.dumps(result)
+    title = result.get("title", media_key)
+    total_pages = result.get("total_pages", 0)
+    total_lines = result.get("total_lines", 0)
+    returned_lines = result.get("returned_lines", 0)
+    lines = result.get("lines", [])
+
+    # Summary text block
+    blocks: list[dict] = [
+        {"type": "text", "text": (
+            f"Transcript: {title}. "
+            f"Total: {total_pages} pages, {total_lines} lines. "
+            f"Showing {returned_lines} lines."
+        )},
+    ]
+
+    if not lines:
+        return blocks
+
+    # Build content blocks — one per line so citations can reference specific lines
+    content_blocks = []
+    for line in lines:
+        line_id = line.get("id", "")
+        speaker = line.get("speaker", "")
+        text = line.get("text", "")
+        timestamp = line.get("timestamp", "")
+
+        line_text = f"{speaker}: {text}" if speaker else text
+        if timestamp:
+            line_text = f"[{timestamp}] {line_text}"
+
+        content_blocks.append({"type": "text", "text": line_text})
+
+    blocks.append({
+        "type": "search_result",
+        "source": media_key,
+        "title": title,
+        "content": content_blocks,
+        "citations": {"enabled": True},
+    })
+
+    return blocks

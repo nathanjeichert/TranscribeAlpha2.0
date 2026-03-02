@@ -13,7 +13,7 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 | Desktop App | Tauri v2 (Rust shell + Python sidecar via PyInstaller) |
 | Transcription | AssemblyAI (slam-1) or Gemini 3.0 Pro |
 | Timestamp Alignment | Rev AI Forced Alignment API |
-| AI Investigation | Anthropic Claude API — Sonnet 4.6 (chat agent) + Haiku 4.5 (auto-summary) |
+| AI Investigation | Anthropic Claude API — Haiku 4.5 (chat agent + auto-summary) with native search_result citations |
 | Storage Model | Local-first (File System Access API + IndexedDB) |
 | Deployment | Google Cloud Run (backend proxy), GitHub Actions (Tauri desktop releases) |
 | HTTP Server | Hypercorn (HTTP/2 support) |
@@ -140,7 +140,6 @@ TranscribeAlpha/
 │   │   │   └── useInvestigateFilters.ts # Filter state + available options
 │   │   ├── lib/               # Shared utilities
 │   │   │   ├── chatApi.ts           # API client for chat + summarize
-│   │   │   ├── citationParser.ts    # [[CITE:...]] marker → TextSegment[]
 │   │   │   └── storage.ts          # Workspace storage (includes EvidenceType, ai_summary)
 │   │   └── utils/             # Utility functions
 │   │       ├── transcriptFormat.ts  # Shared transcript formatting + normalization
@@ -269,9 +268,9 @@ There is no backend TTL cleanup for cases, transcripts, or media.
 
 ### AI-Powered Investigation Chat (Tauri Only)
 
-The case-detail page has an "Investigate" tab (gated behind `isTauri()`) that provides an AI-powered chat interface for asking natural-language questions across all transcripts in a case. The AI agent uses Claude Sonnet with custom tools to search, read, and cite transcript content.
+The case-detail page has an "Investigate" tab (gated behind `isTauri()`) that provides an AI-powered chat interface for asking natural-language questions across all transcripts in a case. The AI agent uses Claude Haiku 4.5 with custom tools to search, read, and cite transcript content. Citations use the Anthropic API's native `search_result` content blocks — tool results return structured search results, and the API automatically generates accurate `search_result_location` citations with exact `cited_text`.
 
-**This feature uses the Anthropic Python SDK (`anthropic`) with tool use — not the Agent SDK.** The backend implements a manual agentic loop.
+**This feature uses the Anthropic Python SDK (`anthropic`) with tool use — not the Agent SDK.** The backend implements a manual agentic loop with prompt caching enabled.
 
 #### Architecture
 
@@ -298,8 +297,7 @@ Frontend (Next.js in Tauri)          Backend (Python Sidecar :18080)
 
 | Model | Purpose | Cost Profile |
 |-------|---------|-------------|
-| `claude-sonnet-4-6` | Chat agent (tool use + streaming + adaptive thinking) | ~$3/$15 per 1M tokens |
-| `claude-haiku-4-5` | Auto-summary + evidence type classification | ~$1/$5 per 1M tokens |
+| `claude-haiku-4-5` | Chat agent (tool use + streaming + adaptive thinking) + auto-summary | ~$1/$5 per 1M tokens |
 
 #### Data Flow: Auto-Summary After Transcription
 
@@ -324,15 +322,15 @@ Evidence types: `jail_call | 911_call | body_worn_camera | interrogation | depos
 3. Backend validates API key + workspace path, loads transcript metadata from disk
 4. `chat_agent.run_agent()` runs the agentic loop (max 10 iterations):
    - Builds system prompt with case context + transcript metadata summaries
-   - Calls `client.messages.stream()` with Claude Sonnet 4.6, adaptive thinking, and 3 tool definitions
-   - Streams text tokens as SSE `token` events
+   - Calls `client.messages.stream()` with Claude Haiku 4.5, adaptive thinking, prompt caching, and 3 tool definitions
+   - Streams text tokens as SSE `token` events, citations as `citation` events (from API's `citations_delta`)
    - On `tool_use` stop reason: executes the tool, emits `tool_use` SSE event, feeds result back
-   - On `end_turn`: parses `[[CITE:...]]` markers from response, emits `citation` events, then `done`
+   - On `end_turn`: emits `done` with token usage and tool history summary
 5. Frontend's `useChat` hook processes the SSE stream:
    - `token` events → accumulates into assistant message content
    - `tool_use` events → shows tool activity spinner ("Using search_text...")
-   - `citation` events → stores citation metadata for enriching CitationCards
-   - `done` events → records token usage
+   - `citation` events → stores structured citation metadata (source, title, cited_text)
+   - `done` events → accumulates token usage, stores tool history for multi-turn context
    - `error` events → displays error banner (with Settings link for API key errors)
 
 #### SSE Event Protocol
@@ -342,8 +340,8 @@ The `/api/chat` endpoint returns `text/event-stream` with these event types:
 ```
 event: token\ndata: {"text": "..."}\n\n
 event: tool_use\ndata: {"tool": "search_text", "input": {...}}\n\n
-event: citation\ndata: {"media_key": "...", "line_id": "...", "snippet": "...", "title": "...", "date": "..."}\n\n
-event: done\ndata: {"input_tokens": N, "output_tokens": N}\n\n
+event: citation\ndata: {"type": "search_result_location", "source": "media_key:line_id", "title": "...", "cited_text": "...", "search_result_index": N, "start_block_index": N, "end_block_index": N}\n\n
+event: done\ndata: {"input_tokens": N, "output_tokens": N, "tool_history": ["tool(input)", ...]}\n\n
 event: error\ndata: {"message": "..."}\n\n
 ```
 
@@ -359,13 +357,15 @@ The agent has three tools defined in `backend/chat_tools.py`:
 
 All tools receive `workspace_path`, `case_id`, and user-level filters as injected context (not agent-provided). Filters are applied server-side via `_apply_filters()` which handles evidence_type, date range, speaker, location, and transcript key filtering.
 
-#### Citation System
+#### Citation System (API Native Search Results)
 
-1. The system prompt instructs the agent to format citations as: `[[CITE: media_key=abc123 line_id=3-5 snippet="exact quote"]]`
-2. Backend `chat_agent.py` parses markers via regex (`CITE_PATTERN`) after the agent finishes, enriches them with transcript title/date from metadata, and emits `citation` SSE events
-3. Frontend `citationParser.ts` has `splitTextAndCitations(text)` which splits agent text into alternating `TextSegment` objects (`{type: 'text', content}` and `{type: 'citation', citation}`)
-4. `ChatMessage.tsx` renders text segments normally and citation segments as `CitationCard` components
-5. `CitationCard.tsx` renders a clickable card that links to `/viewer?key={media_key}&case={case_id}&highlight={line_id}` using the existing viewer deep-link support (`queryHighlightLineId`)
+Citations use the Anthropic API's native `search_result` content blocks — no custom markers or regex parsing.
+
+1. Tool results in `chat_tools.py` return `search_result` content blocks with `citations.enabled=True`. The `source` field encodes `media_key:line_id` for viewer deep-linking.
+2. The API automatically generates `search_result_location` citations with exact `cited_text` extracted from the search results (not hallucinated by the model).
+3. `chat_agent.py` streams `citations_delta` events from the API and emits them as SSE `citation` events with serialized citation data.
+4. `ChatMessage.tsx` renders assistant text with `react-markdown` and displays citation cards below the message content.
+5. `CitationCard.tsx` parses the `source` field (`media_key:line_id`), renders a clickable card with title and cited text, and links to `/viewer?key={media_key}&case={case_id}&highlight={line_id}`.
 
 #### Workspace Path Communication
 
@@ -406,8 +406,8 @@ On the Transcripts tab of case-detail, each transcript card shows a colored evid
 |--------|----------------|
 | `api/chat.py` | SSE endpoint — validates inputs, loads metadata, wires up `run_agent()` generator into `StreamingResponse` |
 | `api/summarize.py` | Haiku classification endpoint — truncated transcript → structured JSON output |
-| `chat_agent.py` | Orchestrator — system prompt template, agentic loop (stream → detect tool_use → execute → feed back → repeat), citation parsing, error handling |
-| `chat_tools.py` | Tool definitions (Anthropic API format) + execution dispatch with filter application |
+| `chat_agent.py` | Orchestrator — system prompt template (with prompt caching), agentic loop (stream → detect tool_use → execute → feed back → repeat), citation streaming, error handling |
+| `chat_tools.py` | Tool definitions (Anthropic API format) + execution dispatch with filter application. Returns `search_result` content blocks for citation-enabled results. |
 | `chat_models.py` | Pydantic models: `ChatRequest`, `ChatFilters`, `ChatMessageModel` |
 | `workspace_reader.py` | Reads transcript JSONs from workspace with directory traversal prevention. Functions: `list_case_transcript_metadata`, `search_transcript_lines`, `read_transcript_pages` |
 
@@ -416,13 +416,12 @@ On the Transcripts tab of case-detail, each transcript card shows a colored evid
 | Module | Responsibility |
 |--------|----------------|
 | `lib/chatApi.ts` | API client — `summarizeTranscript()` for summary, `streamChat()` returns `ReadableStream<SSEEvent>` from SSE response |
-| `lib/citationParser.ts` | Parses `[[CITE:...]]` markers into structured `TextSegment[]` for rendering |
-| `hooks/useChat.ts` | Chat state management — messages array, streaming state, SSE consumption, abort support |
+| `hooks/useChat.ts` | Chat state management — messages array, streaming state, SSE consumption, abort support, tool history tracking |
 | `hooks/useChatHistory.ts` | Conversation persistence to workspace JSON files |
 | `hooks/useInvestigateFilters.ts` | Filter state + available option computation from transcript metadata |
-| `case-detail/InvestigateTab.tsx` | Main container — chat UI, filter bar, history dropdown, starter questions, input area |
-| `case-detail/ChatMessage.tsx` | Message rendering — user bubbles, assistant text with inline citations, tool activity spinner, typing indicator |
-| `case-detail/CitationCard.tsx` | Clickable citation card with title, date, snippet, and "View in transcript" link |
+| `case-detail/InvestigateTab.tsx` | Main container — chat UI, filter bar, history dropdown, auto-expanding input area |
+| `case-detail/ChatMessage.tsx` | Message rendering — user bubbles, assistant markdown text, API citations below message, tool activity spinner, typing indicator |
+| `case-detail/CitationCard.tsx` | Clickable citation card with title, cited text, and "View in transcript" deep-link |
 | `case-detail/InvestigateFilterBar.tsx` | Collapsible filter controls with active filter pills |
 
 #### Error Handling
@@ -441,10 +440,14 @@ On the Transcripts tab of case-detail, each transcript card shows a colored evid
 
 #### Cost Efficiency Measures
 
+- Haiku 4.5 for everything (~10x cheaper than Sonnet)
+- Prompt caching via `cache_control: {"type": "ephemeral"}` on system prompt (saves ~90% on cached input in multi-iteration loops)
 - System prompt includes transcript summaries (~200 tokens each) instead of full text
 - Agent strategy: `list_transcripts` first → `search_text` for keywords → `read_transcript` for context
 - `read_transcript` caps at 20 pages per call to prevent context blowout
-- Haiku for summaries (~$0.001/transcript), Sonnet for chat
+- `cited_text` from API search results doesn't count toward output tokens
+- Transcript metadata cached per-request (loaded once, passed to all tool executions)
+- Tool history summaries appended to multi-turn messages for context continuity
 - Conversation messages truncated to last 20 for long chats
 
 #### API Key Storage
@@ -480,7 +483,7 @@ except ImportError:
 | `/api/resync` | POST | Re-align transcript with audio (Rev AI, multipart) |
 | `/api/gemini-refine` | POST | Gemini refinement pass (multipart) |
 | `/api/summarize` | POST | AI summary + evidence type classification (Haiku) |
-| `/api/chat` | POST | Agentic chat SSE stream (Sonnet + tools) |
+| `/api/chat` | POST | Agentic chat SSE stream (Haiku 4.5 + tools + search_result citations) |
 | `/api/auth/login` | POST | User authentication |
 | `/api/auth/refresh` | POST | Refresh access token |
 | `/api/auth/logout` | POST | Logout (client deletes tokens) |
@@ -624,4 +627,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-03-02 — TranscriptEditor refactored into 10-file modular structure (4 hooks + 3 sub-components + types/utils); deprecated docx_base64 field and legacy Word path removed throughout*
+*Last updated: 2026-03-02 — Investigation chat: switched to Haiku 4.5, replaced custom [[CITE:...]] markers with API native search_result citations, added prompt caching, markdown rendering, auto-expanding textarea, and multi-turn tool history context*

@@ -1,11 +1,14 @@
 """
-Chat Agent — orchestrates the agentic loop with Claude Sonnet,
+Chat Agent — orchestrates the agentic loop with Claude Haiku,
 executing tools and streaming SSE events back to the frontend.
+
+Uses Anthropic's native search_result citations instead of custom
+[[CITE:...]] markers. Tool results containing search_result blocks
+cause the API to automatically generate structured citations.
 """
 
 import json
 import logging
-import re
 from typing import Any, Generator, Optional
 
 logger = logging.getLogger(__name__)
@@ -27,15 +30,8 @@ You are a legal investigation assistant analyzing evidence transcripts for a cas
 2. Use `search_text` to find specific keywords, phrases, names, or topics across all transcripts.
 3. Use `read_transcript` to read detailed context around search results or review specific pages.
 
-## Citation Format
-When citing specific transcript content, use this exact format:
-[[CITE: media_key=MEDIA_KEY line_id=LINE_ID snippet="EXACT QUOTED TEXT (escape inner quotes with \\")"]]
-
-Example: [[CITE: media_key=abc123 line_id=3-5 snippet="I saw him at the store"]]
-
 ## Guidelines
 - NEVER fabricate or invent transcript content. Only quote what you find in the actual transcripts.
-- Cite every factual claim with the [[CITE:...]] format so the user can verify.
 - Clearly distinguish direct quotes from your interpretation or analysis.
 - If you cannot find relevant information, say so clearly rather than guessing.
 - When summarizing findings, organize by theme or chronology as appropriate.
@@ -71,30 +67,17 @@ def _build_evidence_list(metadata: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ─── Citation Parsing ─────────────────────────────────────────────────
-
-CITE_PATTERN = re.compile(
-    r'\[\[CITE:\s*media_key=(\S+)\s+line_id=(\S+)\s+snippet="((?:[^"\\]|\\.)*)"\]\]'
-)
-
-
-def parse_citations(text: str, metadata_by_key: dict) -> list[dict]:
-    """Parse [[CITE:...]] markers from text and enrich with metadata."""
-    citations = []
-    for match in CITE_PATTERN.finditer(text):
-        media_key = match.group(1)
-        line_id = match.group(2)
-        snippet = match.group(3)
-
-        meta = metadata_by_key.get(media_key, {})
-        citations.append({
-            "media_key": media_key,
-            "line_id": line_id,
-            "snippet": snippet,
-            "title": meta.get("title", ""),
-            "date": meta.get("date", ""),
-        })
-    return citations
+def _serialize_citation(citation) -> dict:
+    """Convert an Anthropic citation object to a JSON-serializable dict."""
+    return {
+        "type": getattr(citation, "type", ""),
+        "source": getattr(citation, "source", ""),
+        "title": getattr(citation, "title", ""),
+        "cited_text": getattr(citation, "cited_text", ""),
+        "search_result_index": getattr(citation, "search_result_index", 0),
+        "start_block_index": getattr(citation, "start_block_index", 0),
+        "end_block_index": getattr(citation, "end_block_index", 0),
+    }
 
 
 # ─── Agentic Loop ─────────────────────────────────────────────────────
@@ -126,16 +109,20 @@ def run_agent(
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    # Build system prompt
+    # Build system prompt with cache control for prompt caching
     evidence_list = _build_evidence_list(transcript_metadata)
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+    system_text = SYSTEM_PROMPT_TEMPLATE.format(
         case_name=case_name,
         transcript_count=len(transcript_metadata),
         evidence_list=evidence_list,
     )
-
-    # Build metadata lookup for citation enrichment
-    metadata_by_key = {m["media_key"]: m for m in transcript_metadata}
+    system = [
+        {
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
     # Prepare messages for the API
     api_messages = []
@@ -151,23 +138,26 @@ def run_agent(
 
     total_input_tokens = 0
     total_output_tokens = 0
+    tool_summaries: list[str] = []  # Track tool calls for context in subsequent turns
     max_iterations = 10  # prevent runaway loops
 
     for iteration in range(max_iterations):
         try:
             with client.messages.stream(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5",
                 max_tokens=4096,
-                system=system_prompt,
+                system=system,
                 tools=TOOL_DEFINITIONS,
                 messages=api_messages,
                 thinking={"type": "adaptive"},
             ) as stream:
-                # Stream text tokens as they arrive
+                # Stream text tokens and citations as they arrive
                 for event in stream:
                     if event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             yield {"event": "token", "data": {"text": event.delta.text}}
+                        elif event.delta.type == "citations_delta":
+                            yield {"event": "citation", "data": _serialize_citation(event.delta.citation)}
 
                 response = stream.get_final_message()
 
@@ -197,21 +187,18 @@ def run_agent(
 
         if not tool_use_blocks:
             # No tool calls — agent is done.
-            # Parse citations from the final text
-            full_text = ""
+            # Also emit any citations from the final response's text blocks
             for block in response.content:
-                if block.type == "text":
-                    full_text += block.text
-
-            citations = parse_citations(full_text, metadata_by_key)
-            for citation in citations:
-                yield {"event": "citation", "data": citation}
+                if block.type == "text" and hasattr(block, "citations") and block.citations:
+                    for citation in block.citations:
+                        yield {"event": "citation", "data": _serialize_citation(citation)}
 
             yield {
                 "event": "done",
                 "data": {
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
+                    "tool_history": tool_summaries if tool_summaries else None,
                 },
             }
             return
@@ -235,7 +222,12 @@ def run_agent(
                 workspace_path,
                 case_id,
                 filters,
+                cached_metadata=transcript_metadata,
             )
+
+            # Build compact summary for multi-turn context
+            tool_input_str = json.dumps(tool_block.input, default=str)
+            tool_summaries.append(f"{tool_block.name}({tool_input_str})")
 
             tool_results.append({
                 "type": "tool_result",
@@ -251,5 +243,6 @@ def run_agent(
         "data": {
             "input_tokens": total_input_tokens,
             "output_tokens": total_output_tokens,
+            "tool_history": tool_summaries if tool_summaries else None,
         },
     }

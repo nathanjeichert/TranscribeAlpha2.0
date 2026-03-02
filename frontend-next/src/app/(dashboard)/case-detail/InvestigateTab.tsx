@@ -24,13 +24,6 @@ interface InvestigateTabProps {
   }>
 }
 
-const STARTER_QUESTIONS = [
-  'What are the key facts across all transcripts in this case?',
-  'Are there any contradictions between different witnesses?',
-  'Summarize what each speaker said about the incident.',
-  'What timeline of events can be established from the transcripts?',
-]
-
 export default function InvestigateTab({ caseId, transcripts }: InvestigateTabProps) {
   const {
     messages, isStreaming, error, tokenUsage,
@@ -104,6 +97,13 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
       e.preventDefault()
       handleSend()
     }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value)
+    const el = e.target
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 150) + 'px' // ~6 rows max
   }
 
   const handleNewConversation = () => {
@@ -227,24 +227,10 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
               </svg>
             </div>
             <h3 className="text-lg font-medium text-gray-900 mb-2">Investigate this case</h3>
-            <p className="text-sm text-gray-500 mb-6 max-w-md">
+            <p className="text-sm text-gray-500 max-w-md">
               Ask questions about the {transcripts.length} transcript{transcripts.length !== 1 ? 's' : ''} in this case.
               The AI will search through the evidence and cite specific passages.
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-lg w-full">
-              {STARTER_QUESTIONS.map((q, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    setInput(q)
-                    inputRef.current?.focus()
-                  }}
-                  className="text-left text-sm text-gray-600 bg-gray-50 hover:bg-primary-50 hover:text-primary-700 rounded-lg px-3 py-2 transition-colors border border-gray-100"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
           </div>
         ) : (
           <div className="space-y-4">
@@ -261,7 +247,7 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
         <textarea
           ref={inputRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={handleInputChange}
           onKeyDown={handleKeyDown}
           placeholder="Ask a question about this case..."
           rows={1}
