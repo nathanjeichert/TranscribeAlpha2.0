@@ -32,14 +32,20 @@ Use these branches consistently:
 
 | Branch | Purpose | Deploy Expectation |
 |--------|---------|--------------------|
-| `main` | Production/live website source of truth | May trigger Cloud Build/Cloud Run deploys |
+| `main` | Production/live website source of truth | Pushes do NOT auto-deploy (trigger is manual-only) |
 | `alpha` | Pre-live integration/testing branch | Should be safe for ongoing work not ready for production |
+
+**Deploying to Cloud Run:**
+The Cloud Build trigger (`transcribealpha-criminal-deploy`) is set to **manual invocation only** — pushing to any branch will NOT trigger a build. To deploy:
+```bash
+gcloud builds triggers run transcribealpha-criminal-deploy --branch=main --region=global
+```
 
 Agent commit/PR rules:
 - Default all new work to the `alpha` branch unless explicitly told to target `main`.
 - Do not open PRs directly to `main` unless the change is approved for live deployment.
 - Promote changes with a deliberate PR from `alpha` to `main` after validation.
-- Keep Cloud Build triggers scoped to `main` branch only to avoid build-cost churn from `alpha` commits.
+- Never run the Cloud Build trigger unless explicitly asked by the user.
 
 ## Codebase Architecture
 
@@ -500,22 +506,18 @@ This app is designed for **Google Cloud Run**.
 
 ### Cloud Build
 
-A single Cloud Build trigger deploys from the `main` branch using `cloudbuild-criminal.yaml`:
+A single Cloud Build trigger (`transcribealpha-criminal-deploy`) is configured for **manual invocation only** — no branch pushes auto-trigger builds.
 
-| Cloudbuild File | Service Name |
-|-----------------|--------------|
-| `cloudbuild-criminal.yaml` | `transcribealpha-criminal` |
+| Cloudbuild File | Service Name | Trigger Name |
+|-----------------|--------------|--------------|
+| `cloudbuild.yaml` | `transcribealpha-criminal` | `transcribealpha-criminal-deploy` |
 
-Important trigger configuration:
-- Restrict trigger branch filters to `^main$`.
-- Do not auto-deploy from `alpha`.
-
-### Manual Deployment
-
+To deploy (builds from `main` branch on GitHub):
 ```bash
-gcloud builds submit --config cloudbuild-criminal.yaml \
-  --substitutions=_ASSEMBLYAI_API_KEY=your_key
+gcloud builds triggers run transcribealpha-criminal-deploy --branch=main --region=global
 ```
+
+All substitution variables (API keys, service name, etc.) are stored in the trigger config — no need to pass them manually.
 
 ### Local Testing with Docker (Cloud Run Parity)
 
@@ -597,4 +599,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-02-27*
+*Last updated: 2026-03-02*
