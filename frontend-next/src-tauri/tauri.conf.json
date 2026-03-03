@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDAxOTZEN0MzQ0ZFN0NBRjgKUldUNHl1ZlB3OWVXQVVxMTAxTGRLSGh6VjlXTVVoWDBXQnZibWNnbDJ3WXNzK2E4N1FzcDNLUDQK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEwQ0RDQkVGN0VDREMxRjMKUldUendjMSs3OHZOb01scEF2dEt0NzM4OUZST0RSenlsYnplL1p6SGNtc0FQZWFpQWZ1WlJlR2MK",
       "endpoints": [
         "https://github.com/nathanjeichert/TranscribeAlpha2.0/releases/latest/download/latest.json"
       ]
