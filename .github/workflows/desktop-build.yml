@@ -104,17 +104,17 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          VERSION="${TAG_NAME#v}"
-          echo "Setting app version to $VERSION"
+          echo "Setting app version from tag $TAG_NAME"
           cd frontend-next
           node -e "
             const fs = require('fs');
             const f = 'src-tauri/tauri.conf.json';
             const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-            c.version = process.env.TAG_NAME.replace(/^v/, '');
+            // Strip 'v' prefix and any pre-release suffix (MSI requires numeric-only versions)
+            c.version = process.env.TAG_NAME.replace(/^v/, '').replace(/-.*$/, '');
             fs.writeFileSync(f, JSON.stringify(c, null, 2) + '\n');
+            console.log('Set version to', c.version);
           "
-          cat src-tauri/tauri.conf.json | head -5
 
       # ── Frontend + Tauri build ────────────────────────────────────────
       - name: Install frontend dependencies
@@ -127,13 +127,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS signing (optional — builds work without these)
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # To enable macOS code signing, add APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+          # APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID secrets.
+          # See docs/DESKTOP_SIGNING.md for details.
         with:
           projectPath: frontend-next
           tauriScript: npx tauri
