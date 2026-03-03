@@ -3,6 +3,9 @@
 import { useEffect, useState } from 'react'
 import { isTauri } from '@/lib/platform'
 
+// Module-level storage for the pending update object (avoids window global)
+let pendingUpdate: import('@tauri-apps/plugin-updater').Update | null = null
+
 export default function TauriUpdater() {
   const [updateAvailable, setUpdateAvailable] = useState(false)
   const [version, setVersion] = useState('')
@@ -23,8 +26,7 @@ export default function TauriUpdater() {
           setVersion(update.version)
           setUpdateAvailable(true)
 
-          // Store install function for later
-          ;(window as any).__tauriUpdate = update
+          pendingUpdate = update
         }
       } catch {
         // No update available or network error — silently ignore
@@ -41,9 +43,8 @@ export default function TauriUpdater() {
     setInstalling(true)
     setError('')
     try {
-      const update = (window as any).__tauriUpdate
-      if (update) {
-        await update.downloadAndInstall()
+      if (pendingUpdate) {
+        await pendingUpdate.downloadAndInstall()
         const { relaunch } = await import('@tauri-apps/plugin-process')
         await relaunch()
       }

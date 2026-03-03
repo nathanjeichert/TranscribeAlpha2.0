@@ -16,12 +16,23 @@ pub fn run() {
             let fs_scope = app.fs_scope();
             let _ = fs_scope.allow_directory("/", true);
 
-            let sidecar = app
-                .shell()
-                .sidecar("transcribealpha-server")
-                .expect("failed to create sidecar command");
+            let sidecar_cmd = match app.shell().sidecar("transcribealpha-server") {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    log::error!("Failed to create sidecar command: {e}");
+                    app.manage(SidecarChild(std::sync::Mutex::new(None)));
+                    return Ok(());
+                }
+            };
 
-            let (mut rx, child) = sidecar.spawn().expect("failed to spawn sidecar");
+            let (mut rx, child) = match sidecar_cmd.spawn() {
+                Ok(result) => result,
+                Err(e) => {
+                    log::error!("Failed to spawn sidecar: {e}");
+                    app.manage(SidecarChild(std::sync::Mutex::new(None)));
+                    return Ok(());
+                }
+            };
 
             // Log sidecar stdout/stderr in a background task
             tauri::async_runtime::spawn(async move {

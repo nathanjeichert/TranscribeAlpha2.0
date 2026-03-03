@@ -4,7 +4,8 @@
 
 param(
     [switch]$SkipPython,   # skip rebuilding the Python sidecar
-    [switch]$SkipInstall   # skip launching the installer after build
+    [switch]$SkipInstall,  # skip launching the installer after build
+    [switch]$Force         # rebuild even if no git changes
 )
 
 Set-StrictMode -Version Latest
@@ -22,12 +23,12 @@ function Die($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
 Log "Pulling latest from origin/main..."
 Push-Location $RepoRoot
 $before = git rev-parse HEAD
-git fetch origin main | Out-Host
-git reset --hard origin/main | Out-Host
+git pull --ff-only origin main | Out-Host
+if ($LASTEXITCODE -ne 0) { Die "Pull failed — you may have local changes or conflicts. Commit or stash first." }
 $after = git rev-parse HEAD
 
-if ($before -eq $after) {
-    Log "Already up to date ($after). Nothing changed — skipping rebuild."
+if (($before -eq $after) -and (-not $Force)) {
+    Log "Already up to date ($after). Nothing changed — skipping rebuild. Use -Force to rebuild anyway."
     Pop-Location
     exit 0
 }
@@ -40,6 +41,7 @@ if (-not $SkipPython) {
 
     Log "Building Python sidecar with PyInstaller..."
     New-Item -ItemType Directory -Force -Path $BinariesDir | Out-Null
+    $env:TAURI_TRIPLE = $Triple
     pyinstaller backend/sidecar.spec `
         --distpath "$BinariesDir" `
         --workpath "$RepoRoot\.pyinstaller-build" `
@@ -79,12 +81,12 @@ npm install | Out-Host
 Log "Building Tauri app (this takes a few minutes)..."
 # Ensure Rust/cargo is in PATH
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-npm run tauri:build | Out-Host
+npm run tauri:build -- --target $Triple | Out-Host
 
 # ── 6. Install ───────────────────────────────────────────────────────────────
 if (-not $SkipInstall) {
     $installer = Get-ChildItem -Recurse `
-        -Path (Join-Path $FrontendDir "src-tauri\target\release\bundle") `
+        -Path (Join-Path $FrontendDir "src-tauri\target\$Triple\release\bundle") `
         -Include "*.msi","*-setup.exe" | Select-Object -First 1
     if ($installer) {
         Log "Launching installer: $($installer.FullName)"

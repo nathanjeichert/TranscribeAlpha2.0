@@ -10,10 +10,12 @@ BINARIES_DIR="$FRONTEND_DIR/src-tauri/binaries"
 
 SKIP_PYTHON=false
 SKIP_INSTALL=false
+FORCE=false
 for arg in "$@"; do
   case "$arg" in
     --skip-python) SKIP_PYTHON=true ;;
     --skip-install) SKIP_INSTALL=true ;;
+    --force) FORCE=true ;;
     *) echo "Unknown arg: $arg"; exit 1 ;;
   esac
 done
@@ -33,12 +35,11 @@ esac
 log "Pulling latest from origin/main..."
 cd "$REPO_ROOT"
 BEFORE=$(git rev-parse HEAD)
-git fetch origin main
-git reset --hard origin/main
+git pull --ff-only origin main || die "Pull failed — you may have local changes or conflicts. Commit or stash first."
 AFTER=$(git rev-parse HEAD)
 
-if [ "$BEFORE" = "$AFTER" ]; then
-  log "Already up to date ($AFTER). Nothing changed — skipping rebuild."
+if [ "$BEFORE" = "$AFTER" ] && [ "$FORCE" = false ]; then
+  log "Already up to date ($AFTER). Nothing changed — skipping rebuild. Use --force to rebuild anyway."
   exit 0
 fi
 log "Updated $BEFORE -> $AFTER"
