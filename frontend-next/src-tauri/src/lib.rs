@@ -6,6 +6,7 @@ const SIDECAR_PORT: u16 = 18080;
 
 /// Kill any existing process listening on the sidecar port.
 /// Prevents zombie sidecars from previous app sessions blocking the new one.
+#[cfg(unix)]
 fn kill_zombie_sidecar() {
     let output = std::process::Command::new("lsof")
         .args(["-ti", &format!("tcp:{SIDECAR_PORT}")])
@@ -22,6 +23,35 @@ fn kill_zombie_sidecar() {
         }
         // Brief pause to let the port free up
         if !pids.trim().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_zombie_sidecar() {
+    // Use netstat + taskkill on Windows to find and kill processes on the sidecar port
+    let output = std::process::Command::new("cmd")
+        .args(["/C", &format!("netstat -ano | findstr :{SIDECAR_PORT} | findstr LISTENING")])
+        .output();
+
+    if let Ok(out) = output {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut killed = false;
+        for line in text.lines() {
+            // netstat output: "  TCP  0.0.0.0:18080  0.0.0.0:0  LISTENING  <PID>"
+            if let Some(pid_str) = line.split_whitespace().last() {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    if pid == 0 { continue; }
+                    log::info!("[sidecar] killing zombie process {pid} on port {SIDECAR_PORT}");
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string()])
+                        .output();
+                    killed = true;
+                }
+            }
+        }
+        if killed {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
