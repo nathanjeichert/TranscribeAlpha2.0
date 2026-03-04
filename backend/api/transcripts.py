@@ -12,7 +12,7 @@ from typing import List, Optional
 
 import anyio
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -678,7 +678,13 @@ async def transcribe_local(
     req: TranscribeLocalRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Path-based transcription for Tauri/sidecar mode. Backend reads the file directly from disk."""
+    """Path-based transcription for Tauri/sidecar mode. Backend reads the file directly from disk.
+
+    Returns a StreamingResponse that sends periodic heartbeat newlines while
+    the ASR provider processes.  This prevents WebKit (Tauri's macOS WebView)
+    from killing the connection with its ~60 s idle-data timeout.  The final
+    line of the stream is the full JSON payload.
+    """
     _ = current_user
 
     # Gate behind STANDALONE_MODE
@@ -724,118 +730,149 @@ async def transcribe_local(
         "MEDIA_ID": effective_media_key,
     }
 
-    duration_seconds = 0.0
-    asr_start_time = time.time()
+    # ── Run ASR in a background thread; stream heartbeat newlines to keep
+    #    the WebKit connection alive while we wait. ────────────────────────
 
-    if req.transcription_model == "assemblyai":
+    import asyncio
+
+    result_holder: dict = {}
+    error_holder: list = []
+    done_event = asyncio.Event()
+
+    async def _run_transcription():
+        nonlocal result_holder
         try:
-            import assemblyai as aai
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"AssemblyAI SDK unavailable: {exc}") from exc
-
-        try:
-            config = (
-                build_assemblyai_multichannel_config()
-                if req.multichannel
-                else build_assemblyai_config(req.speakers_expected)
-            )
-            # Open file from disk and pass handle directly to AssemblyAI
-            def _run_aai():
-                with open(file_path, "rb") as f:
-                    return aai.Transcriber().transcribe(f, config=config)
-
-            transcript = await anyio.to_thread.run_sync(_run_aai)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.error("AssemblyAI transcription failed: %s", exc)
-            raise HTTPException(status_code=502, detail=f"AssemblyAI transcription failed: {exc}") from exc
-
-        status_obj = getattr(transcript, "status", None)
-        status_value = getattr(status_obj, "value", None) or str(status_obj or "")
-        if status_value and status_value != "completed":
-            if status_value == "error":
-                error_value = getattr(transcript, "error", None) or "AssemblyAI job failed"
-                raise HTTPException(status_code=502, detail=error_value)
-            raise HTTPException(status_code=502, detail=f"AssemblyAI returned status={status_value}")
-
-        audio_duration = getattr(transcript, "audio_duration", None) or 0
-        try:
-            duration_seconds = float(audio_duration)
-        except (TypeError, ValueError):
             duration_seconds = 0.0
+            asr_start_time = time.time()
 
-        hours, rem = divmod(duration_seconds, 3600)
-        minutes, seconds = divmod(rem, 60)
-        title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+            if req.transcription_model == "assemblyai":
+                try:
+                    import assemblyai as aai
+                except Exception as exc:
+                    raise RuntimeError(f"AssemblyAI SDK unavailable: {exc}") from exc
 
-        if req.multichannel:
-            turns = turns_from_assemblyai_multichannel_response(transcript, parsed_channel_labels)
-        else:
-            turns = turns_from_assemblyai_response(transcript)
-        if not turns:
-            raise HTTPException(status_code=400, detail="AssemblyAI transcription returned no usable turns")
-
-        logger.info("AssemblyAI (local) completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
-    else:
-        # Gemini
-        with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = file_path
-            audio_mime = "audio/mpeg"
-
-            supported_video_types = ["mp4", "mov", "avi", "mkv"]
-            if ext in supported_video_types:
-                output_audio = os.path.join(
-                    temp_dir,
-                    f"{os.path.splitext(os.path.basename(display_filename))[0]}.mp3",
+                config = (
+                    build_assemblyai_multichannel_config()
+                    if req.multichannel
+                    else build_assemblyai_config(req.speakers_expected)
                 )
-                converted_audio = convert_video_to_audio(file_path, output_audio)
-                if converted_audio:
-                    audio_path = converted_audio
-                    audio_mime = "audio/mpeg"
+
+                def _run_aai():
+                    with open(file_path, "rb") as f:
+                        return aai.Transcriber().transcribe(f, config=config)
+
+                transcript = await anyio.to_thread.run_sync(_run_aai)
+
+                status_obj = getattr(transcript, "status", None)
+                status_value = getattr(status_obj, "value", None) or str(status_obj or "")
+                if status_value and status_value != "completed":
+                    if status_value == "error":
+                        error_value = getattr(transcript, "error", None) or "AssemblyAI job failed"
+                        raise RuntimeError(error_value)
+                    raise RuntimeError(f"AssemblyAI returned status={status_value}")
+
+                audio_duration = getattr(transcript, "audio_duration", None) or 0
+                try:
+                    duration_seconds = float(audio_duration)
+                except (TypeError, ValueError):
+                    duration_seconds = 0.0
+
+                hours, rem = divmod(duration_seconds, 3600)
+                minutes, seconds = divmod(rem, 60)
+                title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+                if req.multichannel:
+                    turns = turns_from_assemblyai_multichannel_response(transcript, parsed_channel_labels)
                 else:
-                    video_mime_map = {
-                        "mp4": "video/mp4", "mov": "video/quicktime",
-                        "avi": "video/x-msvideo", "mkv": "video/x-matroska",
-                    }
-                    audio_mime = video_mime_map.get(ext) or "video/mp4"
-                    logger.warning("Video conversion failed for %s; falling back to source media", display_filename)
+                    turns = turns_from_assemblyai_response(transcript)
+                if not turns:
+                    raise RuntimeError("AssemblyAI transcription returned no usable turns")
+
+                logger.info("AssemblyAI (local) completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
             else:
-                audio_ext_map = {
-                    "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
-                    "flac": "audio/flac", "ogg": "audio/ogg", "aac": "audio/aac",
-                }
-                audio_mime = audio_ext_map.get(ext, "audio/mpeg")
+                # Gemini
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    audio_path = file_path
+                    audio_mime = "audio/mpeg"
 
-            duration_seconds = get_media_duration(audio_path) or 0.0
+                    supported_video_types = ["mp4", "mov", "avi", "mkv"]
+                    if ext in supported_video_types:
+                        output_audio = os.path.join(
+                            temp_dir,
+                            f"{os.path.splitext(os.path.basename(display_filename))[0]}.mp3",
+                        )
+                        converted_audio = convert_video_to_audio(file_path, output_audio)
+                        if converted_audio:
+                            audio_path = converted_audio
+                            audio_mime = "audio/mpeg"
+                        else:
+                            video_mime_map = {
+                                "mp4": "video/mp4", "mov": "video/quicktime",
+                                "avi": "video/x-msvideo", "mkv": "video/x-matroska",
+                            }
+                            audio_mime = video_mime_map.get(ext) or "video/mp4"
+                            logger.warning("Video conversion failed for %s; falling back to source media", display_filename)
+                    else:
+                        audio_ext_map = {
+                            "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                            "flac": "audio/flac", "ogg": "audio/ogg", "aac": "audio/aac",
+                        }
+                        audio_mime = audio_ext_map.get(ext, "audio/mpeg")
 
-            hours, rem = divmod(duration_seconds, 3600)
-            minutes, seconds = divmod(rem, 60)
-            title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+                    duration_seconds = get_media_duration(audio_path) or 0.0
 
-            gemini_lines = await anyio.to_thread.run_sync(
-                transcribe_with_gemini,
-                audio_path,
-                audio_mime,
-                duration_seconds,
-                None,
+                    hours, rem = divmod(duration_seconds, 3600)
+                    minutes, seconds = divmod(rem, 60)
+                    title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+                    gemini_lines = await anyio.to_thread.run_sync(
+                        transcribe_with_gemini,
+                        audio_path,
+                        audio_mime,
+                        duration_seconds,
+                        None,
+                    )
+
+                    normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
+                    turns = construct_turns_from_lines(normalized_lines)
+                    if not turns:
+                        raise RuntimeError("Gemini transcription returned no usable turns")
+
+                    duration_seconds = normalized_duration
+                    logger.info("Gemini (local) completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
+
+            result_holder = _build_transcription_response(
+                turns, title_data, duration_seconds, effective_media_key,
+                display_filename, media_content_type, req.multichannel,
+                parsed_channel_labels, req.case_id,
             )
+        except Exception as exc:
+            error_holder.append(exc)
+        finally:
+            done_event.set()
 
-            normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
-            turns = construct_turns_from_lines(normalized_lines)
-            if not turns:
-                raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
+    async def _heartbeat_stream():
+        """Yield heartbeat newlines every 15s while ASR runs, then yield the JSON result."""
+        task = asyncio.ensure_future(_run_transcription())
+        try:
+            while not done_event.is_set():
+                try:
+                    await asyncio.wait_for(done_event.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield b"\n"  # heartbeat — keeps WebKit connection alive
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
 
-            duration_seconds = normalized_duration
-            logger.info("Gemini (local) completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
+        if error_holder:
+            exc = error_holder[0]
+            error_body = json.dumps({"detail": str(exc)}).encode()
+            yield error_body
+            return
 
-    transcript_data = _build_transcription_response(
-        turns, title_data, duration_seconds, effective_media_key,
-        display_filename, media_content_type, req.multichannel,
-        parsed_channel_labels, req.case_id,
-    )
+        yield json.dumps(result_holder).encode()
 
-    return JSONResponse(transcript_data)
+    return StreamingResponse(_heartbeat_stream(), media_type="application/json")
 
 
 @router.get("/api/resync-media/{token}", include_in_schema=False)

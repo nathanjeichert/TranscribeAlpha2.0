@@ -439,7 +439,15 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
         abortRef.current.delete(jobId)
 
         if (response.ok) {
-          const responseData = await response.json()
+          // Backend streams heartbeat newlines while ASR processes, then the JSON payload.
+          // Strip the heartbeat lines before parsing.
+          const rawText = await response.text()
+          const responseData = JSON.parse(rawText.trim())
+
+          // Streaming endpoint always returns 200; check for embedded error
+          if (responseData.detail && !responseData.transcript_text) {
+            throw new Error(responseData.detail)
+          }
 
           updateJob(jobId, {
             status: 'finalizing',
