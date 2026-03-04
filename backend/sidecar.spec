@@ -33,6 +33,7 @@ a = Analysis(
         (str(root / "backend"), "backend"),
     ],
     hiddenimports=[
+        # uvicorn / ASGI
         "uvicorn",
         "uvicorn.logging",
         "uvicorn.loops",
@@ -44,6 +45,7 @@ a = Analysis(
         "uvicorn.protocols.websockets.auto",
         "uvicorn.lifespan",
         "uvicorn.lifespan.on",
+        # FastAPI / Starlette
         "fastapi",
         "fastapi.middleware.cors",
         "fastapi.staticfiles",
@@ -52,22 +54,65 @@ a = Analysis(
         "starlette.middleware",
         "starlette.middleware.cors",
         "starlette.formparsers",
+        "starlette.responses",
+        # multipart
         "multipart",
         "multipart.multipart",
         "multipart.decoders",
         "multipart.exceptions",
+        # pydantic
         "pydantic",
         "pydantic.v1",
+        # async
         "anyio",
         "anyio._backends._asyncio",
         "asyncio",
+        # stdlib
         "email.mime.multipart",
         "email.mime.text",
+        # ASR providers (imported at call-time; PyInstaller may miss them)
+        "assemblyai",
+        "assemblyai.types",
+        # Google genai (Gemini)
+        "google.genai",
+        "google.genai.types",
+        # Anthropic (chat agent)
+        "anthropic",
+        # PDF generation (see backend/transcript_formatting.py imports)
+        "reportlab",
+        "reportlab.lib",
+        "reportlab.lib.colors",
+        "reportlab.lib.pagesizes",
+        "reportlab.lib.units",
+        "reportlab.pdfgen",
+        "reportlab.pdfgen.canvas",
+        # ffmpeg probing
+        "ffmpeg",
+        # HTTP
+        "requests",
+        "httpx",
+        "httpx._transports",
+        "httpx._transports.default",
+        "httpcore",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Auth deps — not needed in standalone/sidecar mode.
+        # IMPORTANT: these are safe to exclude ONLY because backend/auth.py
+        # imports them lazily (inside function bodies).  If those imports are
+        # ever moved back to module-level, this exclusion will break the bundle.
+        "google.cloud.secretmanager",
+        "google.cloud.secret_manager",
+        "grpc",
+        "grpcio",
+        "jose",
+        "bcrypt",
+        # Test / dev tooling
+        "pytest",
+        "setuptools",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

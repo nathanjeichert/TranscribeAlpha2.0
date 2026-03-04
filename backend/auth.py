@@ -9,11 +9,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 
-from jose import JWTError, jwt
-import bcrypt
-from google.cloud import secretmanager
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# Heavy deps (jose, bcrypt, google-cloud-secret-manager) are imported lazily
+# inside the functions that use them.  This lets the sidecar (standalone mode)
+# load this module without bundling or installing those packages.
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ CACHE_TTL_MINUTES = 5
 def get_secret_manager_client():
     """Get Secret Manager client."""
     try:
+        from google.cloud import secretmanager
         return secretmanager.SecretManagerServiceClient()
     except Exception as e:
         logger.error(f"Failed to create Secret Manager client: {e}")
@@ -129,6 +131,7 @@ def save_users_to_secret_manager(users_dict: Dict[str, dict]) -> None:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     try:
+        import bcrypt
         return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
     except Exception as e:
         logger.error(f"Password verification error: {e}")
@@ -137,6 +140,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     """Generate password hash (for admin use)."""
+    import bcrypt
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
@@ -195,6 +199,7 @@ def register_user(username: str, password: str) -> dict:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token."""
+    from jose import jwt
     to_encode = data.copy()
 
     if expires_delta:
@@ -209,6 +214,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 def create_media_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create a short-lived JWT token scoped for media access."""
+    from jose import jwt
     to_encode = data.copy()
 
     if expires_delta:
@@ -223,6 +229,7 @@ def create_media_token(data: dict, expires_delta: Optional[timedelta] = None) ->
 
 def create_refresh_token(data: dict) -> str:
     """Create a JWT refresh token."""
+    from jose import jwt
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
@@ -236,9 +243,10 @@ def decode_token(token: str) -> Optional[dict]:
     Returns the payload if valid, None otherwise.
     """
     try:
+        from jose import jwt
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         return payload
-    except JWTError as e:
+    except Exception as e:
         logger.warning(f"Token decode error: {e}")
         return None
 
