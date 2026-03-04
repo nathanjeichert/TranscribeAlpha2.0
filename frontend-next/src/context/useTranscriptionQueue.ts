@@ -393,9 +393,16 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
       updateJob(jobId, {
         status: 'running',
         unloadSensitive: true,
-        detail: 'Sending to backend (path-based)...',
+        detail: 'Starting transcription...',
         error: '',
       })
+
+      // The backend processes the entire transcription before responding,
+      // so update the status message on a timer so the user knows it's working.
+      const modelLabel = input.transcriptionModel === 'gemini' ? 'Gemini' : 'AssemblyAI'
+      const statusTimer = window.setTimeout(() => {
+        updateJob(jobId, { detail: `Transcribing with ${modelLabel}...` })
+      }, 3000)
 
       try {
         const body: Record<string, unknown> = {
@@ -426,6 +433,8 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
           body: JSON.stringify(body),
           signal: controller.signal,
         })
+
+        window.clearTimeout(statusTimer)
 
         abortRef.current.delete(jobId)
 
@@ -472,6 +481,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
           throw new Error(String(detail))
         }
       } catch (err) {
+        window.clearTimeout(statusTimer)
         abortRef.current.delete(jobId)
         if (err instanceof DOMException && err.name === 'AbortError') {
           updateJob(jobId, { status: 'canceled', unloadSensitive: false, error: 'Canceled.', detail: 'Canceled' })
