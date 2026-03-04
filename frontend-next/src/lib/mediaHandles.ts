@@ -279,11 +279,11 @@ async function promptRelinkMediaTauri(
  * Returns file objects + stored paths. Used by the transcribe page in Tauri mode.
  */
 export async function pickMediaFilesTauri(): Promise<
-  Array<{ file: File; filePath: string; handleId: string; filename: string }>
+  Array<{ file: File; filePath: string; handleId: string; filename: string; fileSizeBytes: number }>
 > {
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const { readFile } = await import('@tauri-apps/plugin-fs')
+    const { stat, open: fsOpen } = await import('@tauri-apps/plugin-fs')
     const selected = await open({
       title: 'Choose audio or video files',
       filters: [
@@ -294,7 +294,7 @@ export async function pickMediaFilesTauri(): Promise<
     if (!selected) return []
 
     const paths = Array.isArray(selected) ? selected : [selected]
-    const results: Array<{ file: File; filePath: string; handleId: string; filename: string }> = []
+    const results: Array<{ file: File; filePath: string; handleId: string; filename: string; fileSizeBytes: number }> = []
 
     for (const raw of paths) {
       const filePath = typeof raw === 'string' ? raw : (raw as any).path ?? String(raw)
@@ -308,12 +308,25 @@ export async function pickMediaFilesTauri(): Promise<
       const contentType = mimeMap[ext] || 'application/octet-stream'
       const handleId = crypto.randomUUID()
 
-      // Read file content for immediate use (e.g., codec detection, upload)
-      const bytes = await readFile(filePath)
-      const file = new File([bytes], filename, { type: contentType })
+      // Get real file size via stat, then read only the first 4KB for WAV header detection.
+      // The backend will read the full file from disk — no need to load it into JS memory.
+      const fileStat = await stat(filePath)
+      const fileSizeBytes = fileStat.size
+      const HEADER_BYTES = 4096
+      let headerData: Uint8Array<ArrayBuffer>
+      try {
+        const fh = await fsOpen(filePath, { read: true })
+        const buf = new Uint8Array(HEADER_BYTES)
+        const bytesRead = await fh.read(buf)
+        headerData = bytesRead !== null && bytesRead !== undefined ? buf.slice(0, Number(bytesRead)) as Uint8Array<ArrayBuffer> : buf
+        await fh.close()
+      } catch {
+        headerData = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+      }
+      const file = new File([headerData], filename, { type: contentType })
 
       await storeMediaPath(handleId, filePath, filename)
-      results.push({ file, filePath, handleId, filename })
+      results.push({ file, filePath, handleId, filename, fileSizeBytes })
     }
 
     return results

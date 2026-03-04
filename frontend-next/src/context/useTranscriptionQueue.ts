@@ -75,7 +75,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
 
   const transcriptionInputsRef = useRef<Map<string, TranscriptionRuntimeInput>>(new Map())
   const preparedAudioRef = useRef<Map<string, File>>(new Map())
-  const abortRef = useRef<Map<string, XMLHttpRequest>>(new Map())
+  const abortRef = useRef<Map<string, { abort(): void }>>(new Map())
   const inFlightUploadBytesRef = useRef<Map<string, number>>(new Map())
   const activeTranscriptionJobIdsRef = useRef<Set<string>>(new Set())
   const transcriptionRunnerActiveRef = useRef(false)
@@ -256,6 +256,12 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
     async (jobId: string, sourceFile: File): Promise<File> => {
       const job = jobsRef.current.find((entry) => entry.id === jobId)
 
+      // Path-based flow (Tauri): the backend reads directly from disk, so skip
+      // all in-browser ffmpeg extraction and return a placeholder.
+      if (job?.sourceFilePath) {
+        return sourceFile
+      }
+
       if (job?.multichannel) {
         const cached = preparedAudioRef.current.get(jobId)
         if (cached) return cached
@@ -376,6 +382,113 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
       }
     },
     [jobsRef, updateJob, waitForMemoryBudget, waitForPreparedAudioCapacity],
+  )
+
+  const submitLocalTranscriptionJob = useCallback(
+    async (jobId: string, input: TranscriptionRuntimeInput): Promise<void> => {
+      const endpoint = apiUrl('/api/transcribe-local')
+      const controller = new AbortController()
+      abortRef.current.set(jobId, controller)
+
+      updateJob(jobId, {
+        status: 'running',
+        unloadSensitive: true,
+        detail: 'Sending to backend (path-based)...',
+        error: '',
+      })
+
+      try {
+        const body: Record<string, unknown> = {
+          file_path: input.sourceFilePath,
+          source_filename: input.originalFileName,
+          transcription_model: input.transcriptionModel,
+          media_key: input.mediaKey,
+          case_name: input.case_name?.trim() || '',
+          case_number: input.case_number?.trim() || '',
+          firm_name: input.firm_name?.trim() || '',
+          input_date: input.input_date || '',
+          input_time: input.input_time || '',
+          location: input.location?.trim() || '',
+          speakers_expected: typeof input.speakers_expected === 'number' && input.speakers_expected > 0 ? input.speakers_expected : null,
+          speaker_names: input.speaker_names?.trim() || '',
+          multichannel: Boolean(input.multichannel),
+          channel_labels: input.channelLabels && Object.keys(input.channelLabels).length > 0 ? input.channelLabels : null,
+          case_id: input.caseId || null,
+        }
+
+        const authHeaders = getAuthHeaders()
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+
+        abortRef.current.delete(jobId)
+
+        if (response.ok) {
+          const responseData = await response.json()
+
+          updateJob(jobId, {
+            status: 'finalizing',
+            unloadSensitive: true,
+            detail: 'Saving transcript...',
+          })
+
+          const mediaKey = await saveTranscriptLocally(jobId, responseData as Record<string, unknown>)
+          updateJob(jobId, {
+            status: 'succeeded',
+            unloadSensitive: false,
+            detail: 'Complete',
+            mediaKey,
+            error: '',
+          })
+
+          // AI summary (non-blocking)
+          const payload = responseData as Record<string, unknown>
+          summarizeTranscript({
+            media_key: mediaKey,
+            media_filename: String(payload.media_filename || ''),
+            transcript_text: String(payload.transcript_text || ''),
+          }).then(async (summary) => {
+            const existing = await getTranscript(mediaKey)
+            if (existing) {
+              existing.ai_summary = summary.ai_summary
+              existing.evidence_type = summary.evidence_type
+              const existingCaseId = existing.case_id
+              await localSaveTranscript(mediaKey, existing, existingCaseId || undefined)
+            }
+          }).catch(() => { /* non-critical */ })
+        } else {
+          let detail = 'Transcription failed'
+          try {
+            const errData = await response.json()
+            detail = errData?.detail || detail
+          } catch { /* ignore */ }
+          updateJob(jobId, { status: 'failed', unloadSensitive: false, error: String(detail), detail: 'Failed' })
+          throw new Error(String(detail))
+        }
+      } catch (err) {
+        abortRef.current.delete(jobId)
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          updateJob(jobId, { status: 'canceled', unloadSensitive: false, error: 'Canceled.', detail: 'Canceled' })
+          const abortErr = new Error('Canceled')
+          abortErr.name = 'AbortError'
+          throw abortErr
+        }
+        // Re-throw if not already handled above
+        const job = jobsRef.current.find((j) => j.id === jobId)
+        if (job && job.status !== 'failed') {
+          const message = err instanceof Error ? err.message : 'Transcription failed.'
+          updateJob(jobId, { status: 'failed', unloadSensitive: false, error: message, detail: 'Failed' })
+        }
+        throw err
+      }
+    },
+    [saveTranscriptLocally, updateJob, jobsRef],
   )
 
   const submitTranscriptionJob = useCallback(
@@ -568,6 +681,45 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
           updateJob(nextJob.id, { status: 'running', unloadSensitive: true, detail: 'Preparing...' })
 
           try {
+            // Reconstruct input from persisted job record if needed (e.g. after tab reload)
+            let input = transcriptionInputsRef.current.get(nextJob.id)
+            if (!input && nextJob.mediaKey && nextJob.transcriptionModel) {
+              input = {
+                originalFileName: nextJob.sourceFilename || nextJob.title,
+                mediaKey: nextJob.mediaKey,
+                transcriptionModel: nextJob.transcriptionModel,
+                caseId: nextJob.caseId ?? null,
+                case_name: nextJob.caseName || '',
+                case_number: nextJob.caseNumber || '',
+                firm_name: nextJob.firmName || '',
+                input_date: nextJob.inputDate || '',
+                input_time: nextJob.inputTime || '',
+                location: nextJob.location || '',
+                speakers_expected: nextJob.speakersExpected ?? null,
+                speaker_names: nextJob.speakerNames || '',
+                multichannel: Boolean(nextJob.multichannel),
+                channelLabels: nextJob.channelLabels,
+                sourceFilePath: nextJob.sourceFilePath ?? null,
+              }
+              transcriptionInputsRef.current.set(nextJob.id, input)
+            }
+            if (!input) {
+              updateJob(nextJob.id, {
+                status: 'failed',
+                unloadSensitive: false,
+                detail: 'Failed',
+                error: 'This job is missing required details. Please remove it and start again.',
+              })
+              continue
+            }
+
+            // Path-based flow: backend reads the file directly from disk
+            if (input.sourceFilePath) {
+              await submitLocalTranscriptionJob(nextJob.id, input)
+              continue
+            }
+
+            // Upload-based flow: need the file in JS memory
             let activeFile = jobFilesRef.current.get(nextJob.id)
             if (!activeFile?.file && nextJob.sourceMediaRefId) {
               try {
@@ -603,36 +755,6 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
               continue
             }
 
-            let input = transcriptionInputsRef.current.get(nextJob.id)
-            if (!input && nextJob.mediaKey && nextJob.transcriptionModel) {
-              input = {
-                originalFileName: nextJob.sourceFilename || nextJob.title,
-                mediaKey: nextJob.mediaKey,
-                transcriptionModel: nextJob.transcriptionModel,
-                caseId: nextJob.caseId ?? null,
-                case_name: nextJob.caseName || '',
-                case_number: nextJob.caseNumber || '',
-                firm_name: nextJob.firmName || '',
-                input_date: nextJob.inputDate || '',
-                input_time: nextJob.inputTime || '',
-                location: nextJob.location || '',
-                speakers_expected: nextJob.speakersExpected ?? null,
-                speaker_names: nextJob.speakerNames || '',
-                multichannel: Boolean(nextJob.multichannel),
-                channelLabels: nextJob.channelLabels,
-              }
-              transcriptionInputsRef.current.set(nextJob.id, input)
-            }
-            if (!input) {
-              updateJob(nextJob.id, {
-                status: 'failed',
-                unloadSensitive: false,
-                detail: 'Failed',
-                error: 'This job is missing required details. Please remove it and start again.',
-              })
-              continue
-            }
-
             const fileForUpload = await prepareUploadFile(nextJob.id, activeFile.file)
             // Release prepared audio now — the file has been handed to FormData
             // and inFlightUploadBytesRef will track memory from here.
@@ -663,7 +785,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
       transcriptionRunnerActiveRef.current = false
       activeTranscriptionJobIdsRef.current.clear()
     }
-  }, [jobsRef, jobFilesRef, jobsHydratedRef, getMaxConcurrentUploads, prepareUploadFile, submitTranscriptionJob, updateJob])
+  }, [jobsRef, jobFilesRef, jobsHydratedRef, getMaxConcurrentUploads, prepareUploadFile, submitTranscriptionJob, submitLocalTranscriptionJob, updateJob])
 
   const enqueueTranscriptionJobs = useCallback(
     (items: TranscriptionJobInput[]) => {
@@ -692,6 +814,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
           speaker_names: item.speaker_names,
           multichannel: Boolean(item.multichannel),
           channelLabels: normalizeChannelLabels(item.channelLabels),
+          sourceFilePath: item.sourceFilePath ?? null,
         })
 
         // Store handle immediately when available so reloads can still playback/relink.
@@ -704,7 +827,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
           kind: 'transcription',
           status: 'queued',
           title: item.originalFileName || item.file.name,
-          fileSizeBytes: item.file.size,
+          fileSizeBytes: item.fileSizeBytes || item.file.size,
           detail: 'Queued',
           createdAt,
           updatedAt: createdAt,
@@ -723,6 +846,7 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
           speakerNames: item.speaker_names,
           multichannel: Boolean(item.multichannel),
           channelLabels: normalizeChannelLabels(item.channelLabels),
+          sourceFilePath: item.sourceFilePath ?? null,
           unloadSensitive: false,
         }
         return job

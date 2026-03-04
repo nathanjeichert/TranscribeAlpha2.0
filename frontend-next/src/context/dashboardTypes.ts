@@ -43,6 +43,7 @@ export type JobRecord = {
   speakerNames?: string
   multichannel?: boolean
   channelLabels?: Record<number, string>
+  sourceFilePath?: string | null
 
   unloadSensitive: boolean
 
@@ -71,6 +72,8 @@ export type TranscriptionJobInput = {
   speaker_names?: string
   multichannel?: boolean
   channelLabels?: Record<number, string>
+  sourceFilePath?: string | null
+  fileSizeBytes?: number
 }
 
 export type ActiveFileEntry = {

@@ -28,6 +28,8 @@ interface QueueItem {
   file: File
   originalFileName: string
   fileHandle?: FileSystemFileHandle | null
+  filePath?: string
+  fileSizeBytes?: number
   speaker_names: string
   speakers_expected: string
   channel_label_1: string
@@ -45,7 +47,7 @@ const CASE_USE_BATCH = '__batch__'
 const CASE_UNCATEGORIZED = '__uncategorized__'
 
 const buildQueueId = () => `${Date.now()}_${Math.random().toString(16).slice(2)}`
-const buildFileSignature = (file: File) => `${file.name}::${file.size}::${file.lastModified}`
+const buildFileSignature = (file: File, realSize?: number) => `${file.name}::${realSize ?? file.size}::${file.lastModified}`
 
 function isLikelyG729Codec(codec: CodecInfo | null): boolean {
   if (!codec) return false
@@ -164,12 +166,14 @@ export default function TranscribePage() {
     })
   }, [])
 
-  const createQueueItem = useCallback((file: File, fileHandle?: FileSystemFileHandle | null): QueueItem => {
+  const createQueueItem = useCallback((file: File, fileHandle?: FileSystemFileHandle | null, filePath?: string, fileSizeBytes?: number): QueueItem => {
     return {
       id: buildQueueId(),
       file,
       originalFileName: fileHandle?.name || file.name,
       fileHandle: fileHandle ?? null,
+      filePath,
+      fileSizeBytes,
       speaker_names: '',
       speakers_expected: '',
       channel_label_1: '',
@@ -300,7 +304,7 @@ export default function TranscribePage() {
         const acceptedFiles: File[] = []
         for (const item of accepted) {
           acceptedFiles.push(item.file)
-          nextItems.push(createQueueItem(item.file, null))
+          nextItems.push(createQueueItem(item.file, null, item.filePath, item.fileSizeBytes))
         }
         setQueue([...baseQueue, ...nextItems])
         void inspectForJailCalls(acceptedFiles)
@@ -478,6 +482,8 @@ export default function TranscribePage() {
         speaker_names: jailCallMode ? '' : item.speaker_names,
         multichannel: jailCallMode,
         channelLabels: Object.keys(channelLabels).length > 0 ? channelLabels : undefined,
+        sourceFilePath: item.filePath ?? null,
+        fileSizeBytes: item.fileSizeBytes,
       }
     })
 
@@ -705,7 +711,7 @@ export default function TranscribePage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-900 truncate">{item.file.name}</p>
-                      <p className="text-sm text-gray-500">{(item.file.size / (1024 * 1024)).toFixed(1)} MB</p>
+                      <p className="text-sm text-gray-500">{((item.fileSizeBytes ?? item.file.size) / (1024 * 1024)).toFixed(1)} MB</p>
                     </div>
                     <button
                       type="button"
@@ -857,7 +863,7 @@ export default function TranscribePage() {
                       <p className="font-medium text-gray-900">
                         {index + 1}. {item.file.name}
                       </p>
-                      <p className="text-xs text-gray-500">{(item.file.size / (1024 * 1024)).toFixed(1)} MB</p>
+                      <p className="text-xs text-gray-500">{((item.fileSizeBytes ?? item.file.size) / (1024 * 1024)).toFixed(1)} MB</p>
                     </div>
                   </div>
 

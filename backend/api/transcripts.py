@@ -13,6 +13,7 @@ from typing import List, Optional
 import anyio
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel
 
 try:
     from ..auth import get_current_user
@@ -534,6 +535,307 @@ async def transcribe(
                 os.remove(temp_upload_path)
             except OSError:
                 pass
+
+
+def _validate_transcription_params(
+    transcription_model: str,
+    multichannel: bool,
+    speakers_expected: Optional[int],
+    channel_labels: Optional[str],
+):
+    """Validate model, API keys, and parse channel labels. Returns (parsed_channel_labels,)."""
+    valid_models = {"assemblyai", "gemini"}
+    if transcription_model not in valid_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid transcription model. Must be one of: {', '.join(valid_models)}",
+        )
+
+    if multichannel and transcription_model != "assemblyai":
+        raise HTTPException(status_code=400, detail="multichannel is only supported with AssemblyAI")
+
+    try:
+        from standalone_config import get_api_key
+    except ImportError:
+        from ..standalone_config import get_api_key
+
+    if transcription_model == "assemblyai":
+        _aai_key = get_api_key("assemblyai_api_key")
+        if not _aai_key:
+            raise HTTPException(status_code=500, detail="Server configuration error: AssemblyAI API key not configured")
+        try:
+            import assemblyai as aai
+            aai.settings.api_key = _aai_key
+        except ImportError:
+            pass
+    if transcription_model == "gemini" and not (get_api_key("gemini_api_key") or os.getenv("GOOGLE_API_KEY")):
+        raise HTTPException(status_code=500, detail="Server configuration error: Gemini API key not configured")
+
+    if not multichannel and speakers_expected is not None and speakers_expected <= 0:
+        raise HTTPException(status_code=400, detail="speakers_expected must be a positive integer")
+
+    parsed_channel_labels: Optional[dict[int, str]] = None
+    if channel_labels:
+        try:
+            raw_channel_labels = json.loads(channel_labels) if isinstance(channel_labels, str) else channel_labels
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="channel_labels must be valid JSON") from exc
+        if not isinstance(raw_channel_labels, dict):
+            raise HTTPException(status_code=400, detail="channel_labels must be a JSON object")
+        parsed_channel_labels = {}
+        for raw_key, raw_value in raw_channel_labels.items():
+            try:
+                channel_index = int(raw_key)
+            except (TypeError, ValueError):
+                continue
+            label = str(raw_value or "").strip()
+            if channel_index > 0 and label:
+                parsed_channel_labels[channel_index] = label
+        if not parsed_channel_labels:
+            parsed_channel_labels = None
+
+    return parsed_channel_labels
+
+
+def _build_transcription_response(
+    turns,
+    title_data: dict,
+    duration_seconds: float,
+    effective_media_key: str,
+    display_filename: str,
+    media_content_type: str,
+    multichannel: bool,
+    parsed_channel_labels,
+    case_id: Optional[str],
+) -> dict:
+    """Build the transcript response dict from ASR turns."""
+    pdf_bytes, oncue_xml, transcript_text, line_payloads = build_session_artifacts(
+        turns,
+        title_data,
+        duration_seconds or 0,
+        DEFAULT_LINES_PER_PAGE,
+    )
+
+    transcript_data = {
+        "media_key": effective_media_key,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "title_data": title_data,
+        "audio_duration": float(duration_seconds or 0),
+        "lines_per_page": DEFAULT_LINES_PER_PAGE,
+        "turns": serialize_transcript_turns(turns),
+        "source_turns": serialize_transcript_turns(turns),
+        "lines": line_payloads,
+        "pdf_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+        "transcript_text": transcript_text,
+        "transcript": transcript_text,
+        "media_blob_name": None,
+        "media_content_type": media_content_type,
+        "media_filename": display_filename,
+        "media_handle_id": effective_media_key,
+        "multichannel": bool(multichannel),
+        "channel_labels": parsed_channel_labels or None,
+        "clips": [],
+        "case_id": case_id or None,
+    }
+
+    media_filename = resolve_media_filename(title_data, None, fallback=display_filename or "media.mp4")
+    transcript_data.update(
+        build_variant_exports(
+            line_payloads,
+            title_data,
+            duration_seconds or 0,
+            DEFAULT_LINES_PER_PAGE,
+            media_filename,
+            media_content_type,
+            oncue_xml=oncue_xml,
+        )
+    )
+
+    return transcript_data
+
+
+class TranscribeLocalRequest(BaseModel):
+    file_path: str
+    source_filename: str = ""
+    transcription_model: str = "assemblyai"
+    media_key: Optional[str] = None
+    case_name: str = ""
+    case_number: str = ""
+    firm_name: str = ""
+    input_date: str = ""
+    input_time: str = ""
+    location: str = ""
+    speakers_expected: Optional[int] = None
+    speaker_names: Optional[str] = None
+    multichannel: bool = False
+    channel_labels: Optional[dict] = None
+    case_id: Optional[str] = None
+
+
+@router.post("/api/transcribe-local")
+async def transcribe_local(
+    req: TranscribeLocalRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Path-based transcription for Tauri/sidecar mode. Backend reads the file directly from disk."""
+    _ = current_user
+
+    # Gate behind STANDALONE_MODE
+    standalone = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
+    if not standalone:
+        raise HTTPException(status_code=403, detail="This endpoint is only available in standalone mode")
+
+    file_path = req.file_path
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(status_code=400, detail="File not found at the specified path")
+
+    file_size = os.path.getsize(file_path)
+    if file_size > 2 * 1024 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+
+    logger.info("Received local transcription request for path=%s model=%s size=%.2f MB",
+                file_path, req.transcription_model, file_size / (1024 * 1024))
+
+    display_filename = (req.source_filename or "").strip() or os.path.basename(file_path) or "media"
+    ext = display_filename.rsplit(".", 1)[-1].lower() if "." in display_filename else ""
+    mime_map = {
+        "mp4": "video/mp4", "mov": "video/quicktime", "avi": "video/x-msvideo", "mkv": "video/x-matroska",
+        "wav": "audio/wav", "mp3": "audio/mpeg", "m4a": "audio/mp4", "flac": "audio/flac",
+        "ogg": "audio/ogg", "aac": "audio/aac", "wma": "audio/x-ms-wma", "webm": "video/webm",
+    }
+    media_content_type = mimetypes.guess_type(display_filename)[0] or mime_map.get(ext, "application/octet-stream")
+
+    channel_labels_str = json.dumps(req.channel_labels) if req.channel_labels else None
+    parsed_channel_labels = _validate_transcription_params(
+        req.transcription_model, req.multichannel, req.speakers_expected, channel_labels_str,
+    )
+
+    effective_media_key = _normalize_media_key(req.media_key) or uuid.uuid4().hex
+    title_data = {
+        "CASE_NAME": req.case_name,
+        "CASE_NUMBER": req.case_number,
+        "FIRM_OR_ORGANIZATION_NAME": req.firm_name,
+        "DATE": req.input_date,
+        "TIME": req.input_time,
+        "LOCATION": req.location,
+        "FILE_NAME": display_filename,
+        "FILE_DURATION": "Calculating...",
+        "MEDIA_ID": effective_media_key,
+    }
+
+    duration_seconds = 0.0
+    asr_start_time = time.time()
+
+    if req.transcription_model == "assemblyai":
+        try:
+            import assemblyai as aai
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"AssemblyAI SDK unavailable: {exc}") from exc
+
+        try:
+            config = (
+                build_assemblyai_multichannel_config()
+                if req.multichannel
+                else build_assemblyai_config(req.speakers_expected)
+            )
+            # Open file from disk and pass handle directly to AssemblyAI
+            def _run_aai():
+                with open(file_path, "rb") as f:
+                    return aai.Transcriber().transcribe(f, config=config)
+
+            transcript = await anyio.to_thread.run_sync(_run_aai)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("AssemblyAI transcription failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"AssemblyAI transcription failed: {exc}") from exc
+
+        status_obj = getattr(transcript, "status", None)
+        status_value = getattr(status_obj, "value", None) or str(status_obj or "")
+        if status_value and status_value != "completed":
+            if status_value == "error":
+                error_value = getattr(transcript, "error", None) or "AssemblyAI job failed"
+                raise HTTPException(status_code=502, detail=error_value)
+            raise HTTPException(status_code=502, detail=f"AssemblyAI returned status={status_value}")
+
+        audio_duration = getattr(transcript, "audio_duration", None) or 0
+        try:
+            duration_seconds = float(audio_duration)
+        except (TypeError, ValueError):
+            duration_seconds = 0.0
+
+        hours, rem = divmod(duration_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+        if req.multichannel:
+            turns = turns_from_assemblyai_multichannel_response(transcript, parsed_channel_labels)
+        else:
+            turns = turns_from_assemblyai_response(transcript)
+        if not turns:
+            raise HTTPException(status_code=400, detail="AssemblyAI transcription returned no usable turns")
+
+        logger.info("AssemblyAI (local) completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
+    else:
+        # Gemini
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = file_path
+            audio_mime = "audio/mpeg"
+
+            supported_video_types = ["mp4", "mov", "avi", "mkv"]
+            if ext in supported_video_types:
+                output_audio = os.path.join(
+                    temp_dir,
+                    f"{os.path.splitext(os.path.basename(display_filename))[0]}.mp3",
+                )
+                converted_audio = convert_video_to_audio(file_path, output_audio)
+                if converted_audio:
+                    audio_path = converted_audio
+                    audio_mime = "audio/mpeg"
+                else:
+                    video_mime_map = {
+                        "mp4": "video/mp4", "mov": "video/quicktime",
+                        "avi": "video/x-msvideo", "mkv": "video/x-matroska",
+                    }
+                    audio_mime = video_mime_map.get(ext) or "video/mp4"
+                    logger.warning("Video conversion failed for %s; falling back to source media", display_filename)
+            else:
+                audio_ext_map = {
+                    "mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                    "flac": "audio/flac", "ogg": "audio/ogg", "aac": "audio/aac",
+                }
+                audio_mime = audio_ext_map.get(ext, "audio/mpeg")
+
+            duration_seconds = get_media_duration(audio_path) or 0.0
+
+            hours, rem = divmod(duration_seconds, 3600)
+            minutes, seconds = divmod(rem, 60)
+            title_data["FILE_DURATION"] = "{:0>2}:{:0>2}:{:0>2}".format(int(hours), int(minutes), int(round(seconds)))
+
+            gemini_lines = await anyio.to_thread.run_sync(
+                transcribe_with_gemini,
+                audio_path,
+                audio_mime,
+                duration_seconds,
+                None,
+            )
+
+            normalized_lines, normalized_duration = normalize_line_payloads(gemini_lines, duration_seconds)
+            turns = construct_turns_from_lines(normalized_lines)
+            if not turns:
+                raise HTTPException(status_code=400, detail="Gemini transcription returned no usable turns")
+
+            duration_seconds = normalized_duration
+            logger.info("Gemini (local) completed in %.1fs (%d turns)", time.time() - asr_start_time, len(turns))
+
+    transcript_data = _build_transcription_response(
+        turns, title_data, duration_seconds, effective_media_key,
+        display_filename, media_content_type, req.multichannel,
+        parsed_channel_labels, req.case_id,
+    )
+
+    return JSONResponse(transcript_data)
 
 
 @router.get("/api/resync-media/{token}", include_in_schema=False)
