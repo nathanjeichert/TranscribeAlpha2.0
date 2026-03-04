@@ -49,7 +49,9 @@ export default function TauriUpdater() {
         await relaunch()
       }
     } catch (err: any) {
-      setError(err?.message || 'Update failed')
+      const msg = err?.message || 'Update failed'
+      console.error('[TauriUpdater] downloadAndInstall failed:', msg, err)
+      setError(msg)
       setInstalling(false)
     }
   }
