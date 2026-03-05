@@ -13,6 +13,11 @@ def _load_template() -> str:
     global _TEMPLATE_CACHE
     if _TEMPLATE_CACHE is None:
         template_path = Path(__file__).with_name("template.html")
+        if not template_path.exists():
+            # PyInstaller one-file bundle: data files may be under backend/
+            import sys
+            base = Path(getattr(sys, "_MEIPASS", ""))
+            template_path = base / "backend" / "viewer" / "template.html"
         _TEMPLATE_CACHE = template_path.read_text(encoding="utf-8")
     return _TEMPLATE_CACHE
 
