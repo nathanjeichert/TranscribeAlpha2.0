@@ -284,10 +284,8 @@ def _execute_search_text(
     if not matches:
         return [{"type": "text", "text": f"No matches found for '{query}'."}]
 
-    # Summary text block (not citable)
-    blocks: list[dict] = [
-        {"type": "text", "text": f"Found {len(matches)} matches for '{query}'."},
-    ]
+    # All blocks must be search_result when any are (API constraint)
+    blocks: list[dict] = []
 
     # Each match becomes a search_result block (citable)
     for match in matches:
@@ -366,17 +364,15 @@ def _execute_read_transcript(
     returned_lines = result.get("returned_lines", 0)
     lines = result.get("lines", [])
 
-    # Summary text block
-    blocks: list[dict] = [
-        {"type": "text", "text": (
+    if not lines:
+        return [{"type": "text", "text": (
             f"Transcript: {title}. "
             f"Total: {total_pages} pages, {total_lines} lines. "
-            f"Showing {returned_lines} lines."
-        )},
-    ]
+            f"No lines to show."
+        )}]
 
-    if not lines:
-        return blocks
+    # All blocks must be search_result when any are (API constraint)
+    blocks: list[dict] = []
 
     # Build content blocks — one per line so citations can reference specific lines
     content_blocks = []

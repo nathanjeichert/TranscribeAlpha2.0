@@ -22,18 +22,12 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-export function downloadFileBlob(file: File): void {
-  const url = URL.createObjectURL(file)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = file.name
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+export async function downloadFileBlob(file: File): Promise<void> {
+  const blob = new Blob([file], { type: file.type })
+  await downloadBlob(blob, file.name)
 }
 
-export function downloadBase64(base64Data: string, filename: string, mimeType: string): void {
+export async function downloadBase64(base64Data: string, filename: string, mimeType: string): Promise<void> {
   const byteCharacters = atob(base64Data)
   const byteNumbers = new Array(byteCharacters.length)
   for (let i = 0; i < byteCharacters.length; i++) {
@@ -41,17 +35,7 @@ export function downloadBase64(base64Data: string, filename: string, mimeType: s
   }
   const byteArray = new Uint8Array(byteNumbers)
   const blob = new Blob([byteArray], { type: mimeType })
-
-  const link = document.createElement('a')
-  const blobUrl = URL.createObjectURL(blob)
-  link.href = blobUrl
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  setTimeout(() => {
-    document.body.removeChild(link)
-    URL.revokeObjectURL(blobUrl)
-  }, 1500)
+  await downloadBlob(blob, filename)
 }
 
 export interface TranscriptListItem {
@@ -74,7 +58,31 @@ export function formatDuration(seconds?: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
-export function downloadBlob(blob: Blob, filename: string): void {
+export async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+  // Tauri: show native save dialog
+  try {
+    const { isTauri } = await import('@/lib/platform')
+    if (isTauri()) {
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const { writeFile } = await import('@tauri-apps/plugin-fs')
+
+      const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.') + 1) : ''
+      const filters = ext
+        ? [{ name: ext.toUpperCase(), extensions: [ext] }]
+        : []
+
+      const path = await save({ defaultPath: filename, filters })
+      if (!path) return // User cancelled
+
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      await writeFile(path, bytes)
+      return
+    }
+  } catch {
+    // Fall through to browser download
+  }
+
+  // Browser: standard anchor download
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url

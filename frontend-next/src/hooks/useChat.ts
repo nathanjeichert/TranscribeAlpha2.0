@@ -6,6 +6,8 @@ export interface ChatUIMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  /** Display-only content (e.g., without injected transcript context). Falls back to content. */
+  displayContent?: string
   citations?: CitationData[]
   toolActivity?: string
   /** Compact summary of tools called during this turn (for multi-turn context). */
@@ -17,7 +19,7 @@ interface UseChatReturn {
   isStreaming: boolean
   error: string | null
   tokenUsage: { input: number; output: number } | null
-  sendMessage: (text: string, caseId: string, filters?: ChatFilters) => void
+  sendMessage: (text: string, caseId: string, filters?: ChatFilters, displayText?: string) => void
   cancelStream: () => void
   clearMessages: () => void
   setMessages: React.Dispatch<React.SetStateAction<ChatUIMessage[]>>
@@ -64,7 +66,7 @@ export function useChat(): UseChatReturn {
     )
 
   const sendMessage = useCallback(
-    async (text: string, caseId: string, filters?: ChatFilters) => {
+    async (text: string, caseId: string, filters?: ChatFilters, displayText?: string) => {
       if (!text.trim() || isStreaming) return
 
       setError(null)
@@ -77,8 +79,8 @@ export function useChat(): UseChatReturn {
         return
       }
 
-      // Add user message
-      const userMsg: ChatUIMessage = { id: nextId(), role: 'user', content: text }
+      // Add user message — displayContent shows only the user's question, content includes context
+      const userMsg: ChatUIMessage = { id: nextId(), role: 'user', content: text, displayContent: displayText }
       const assistantMsg: ChatUIMessage = { id: nextId(), role: 'assistant', content: '', citations: [], toolActivity: undefined }
 
       // Build API messages from ref (avoids messages in dep array → no recreation on every token)
@@ -120,23 +122,32 @@ export function useChat(): UseChatReturn {
           const event: SSEEvent = value
 
           switch (event.type) {
-            case 'token':
-              updateAssistant(assistantMsg.id, {
-                content: undefined as never, // handled below
-                toolActivity: undefined,
-              })
-              // Need prev.content for appending — use setMessages directly
+            case 'new_turn':
+              // New agentic iteration after tool use — clear accumulated text
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantMsg.id
-                    ? { ...m, content: m.content + (event.data.text as string), toolActivity: undefined }
+                    ? { ...m, content: '', toolActivity: undefined }
                     : m,
                 ),
               )
               break
 
+            case 'token': {
+              const text = (event.data.text as string) ?? ''
+              if (!text) break
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsg.id
+                    ? { ...m, content: m.content + text, toolActivity: undefined }
+                    : m,
+                ),
+              )
+              break
+            }
+
             case 'tool_use':
-              updateAssistant(assistantMsg.id, { toolActivity: `Using ${event.data.tool as string}...` })
+              updateAssistant(assistantMsg.id, { toolActivity: `Searching transcripts...` })
               break
 
             case 'citation':

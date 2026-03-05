@@ -58,7 +58,7 @@ export interface CitationData {
   end_block_index: number
 }
 
-export type SSEEventType = 'token' | 'tool_use' | 'citation' | 'done' | 'error'
+export type SSEEventType = 'token' | 'tool_use' | 'citation' | 'done' | 'error' | 'new_turn'
 
 export interface SSEEvent {
   type: SSEEventType

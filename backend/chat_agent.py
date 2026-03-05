@@ -67,14 +67,26 @@ def _build_evidence_list(metadata: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _serialize_citation(citation) -> dict:
-    """Convert an Anthropic citation object to a JSON-serializable dict."""
+def _serialize_citation(citation, search_result_registry: list[dict] | None = None) -> dict:
+    """Convert an Anthropic citation object to a JSON-serializable dict.
+
+    search_result_registry maps search_result_index → the original search_result
+    block we sent, so we can recover source/title for navigation.
+    """
+    idx = getattr(citation, "search_result_index", None)
+    source = ""
+    title = ""
+    if search_result_registry and idx is not None and 0 <= idx < len(search_result_registry):
+        sr = search_result_registry[idx]
+        source = sr.get("source", "")
+        title = sr.get("title", "")
+
     return {
         "type": getattr(citation, "type", ""),
-        "source": getattr(citation, "source", ""),
-        "title": getattr(citation, "title", ""),
+        "source": source,
+        "title": title,
         "cited_text": getattr(citation, "cited_text", ""),
-        "search_result_index": getattr(citation, "search_result_index", 0),
+        "search_result_index": idx or 0,
         "start_block_index": getattr(citation, "start_block_index", 0),
         "end_block_index": getattr(citation, "end_block_index", 0),
     }
@@ -139,27 +151,21 @@ def run_agent(
     total_input_tokens = 0
     total_output_tokens = 0
     tool_summaries: list[str] = []  # Track tool calls for context in subsequent turns
+    # Registry of search_result blocks from tool results, ordered by appearance.
+    # The API's citation.search_result_index maps into this list.
+    search_result_registry: list[dict] = []
     max_iterations = 10  # prevent runaway loops
 
     for iteration in range(max_iterations):
         try:
-            with client.messages.stream(
+            # First, make a non-streaming call to see if the model wants tools
+            response = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=4096,
                 system=system,
                 tools=TOOL_DEFINITIONS,
                 messages=api_messages,
-                thinking={"type": "adaptive"},
-            ) as stream:
-                # Stream text tokens and citations as they arrive
-                for event in stream:
-                    if event.type == "content_block_delta":
-                        if event.delta.type == "text_delta":
-                            yield {"event": "token", "data": {"text": event.delta.text}}
-                        elif event.delta.type == "citations_delta":
-                            yield {"event": "citation", "data": _serialize_citation(event.delta.citation)}
-
-                response = stream.get_final_message()
+            )
 
         except anthropic.AuthenticationError:
             yield {"event": "error", "data": {"message": "Invalid Anthropic API key. Check your key in Settings."}}
@@ -186,12 +192,35 @@ def run_agent(
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
         if not tool_use_blocks:
-            # No tool calls — agent is done.
-            # Also emit any citations from the final response's text blocks
+            # No tool calls — agent is done. Emit text and citations.
+            all_citations = []
             for block in response.content:
-                if block.type == "text" and hasattr(block, "citations") and block.citations:
-                    for citation in block.citations:
-                        yield {"event": "citation", "data": _serialize_citation(citation)}
+                if block.type == "text":
+                    # Emit text as tokens for streaming feel
+                    text = block.text
+                    chunk_size = 12
+                    for i in range(0, len(text), chunk_size):
+                        yield {"event": "token", "data": {"text": text[i:i + chunk_size]}}
+                    # Collect citations from this block
+                    if hasattr(block, "citations") and block.citations:
+                        for citation in block.citations:
+                            all_citations.append(citation)
+
+            # Deduplicate citations by source+cited_text and emit
+            seen = set()
+            for citation in all_citations:
+                source = getattr(citation, "source", "")
+                cited_text = getattr(citation, "cited_text", "")
+                key = f"{source}|{cited_text}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                logger.info("Citation: type=%s source=%s title=%s cited_text=%s",
+                            getattr(citation, "type", "?"),
+                            source,
+                            getattr(citation, "title", "?"),
+                            cited_text[:80] if cited_text else "")
+                yield {"event": "citation", "data": _serialize_citation(citation, search_result_registry)}
 
             yield {
                 "event": "done",
@@ -228,6 +257,11 @@ def run_agent(
             # Build compact summary for multi-turn context
             tool_input_str = json.dumps(tool_block.input, default=str)
             tool_summaries.append(f"{tool_block.name}({tool_input_str})")
+
+            # Track search_result blocks for citation source mapping
+            for block in result:
+                if block.get("type") == "search_result":
+                    search_result_registry.append(block)
 
             tool_results.append({
                 "type": "tool_result",

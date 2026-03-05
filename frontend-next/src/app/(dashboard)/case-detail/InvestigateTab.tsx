@@ -9,7 +9,9 @@ import { useInvestigateFilters } from '@/hooks/useInvestigateFilters'
 import type { ChatFilters } from '@/lib/chatApi'
 import type { EvidenceType } from '@/lib/storage'
 import ChatMessage from './ChatMessage'
+import ChatInput from './ChatInput'
 import InvestigateFilterBar from './InvestigateFilterBar'
+import { readJSON, type TranscriptData } from '@/lib/storage'
 
 interface InvestigateTabProps {
   caseId: string
@@ -41,10 +43,8 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
     clearFilters, hasActiveFilters,
   } = useInvestigateFilters(transcripts)
 
-  const [input, setInput] = useState('')
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
 
   // Cancel stream on unmount to prevent state updates on unmounted component
@@ -77,10 +77,33 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
     }
   }, [isStreaming, messages, activeConversationId, saveConversation])
 
-  const handleSend = useCallback(() => {
-    const text = input.trim()
-    if (!text) return
-    setInput('')
+  const handleSend = useCallback(async (text: string, mentionedKeys: string[]) => {
+    // Build message with @mentioned transcript context
+    let contextPrefix = ''
+    if (mentionedKeys.length > 0) {
+      const transcriptTexts: string[] = []
+      for (const key of mentionedKeys) {
+        try {
+          const data = await readJSON<TranscriptData>(`cases/${caseId}/transcripts/${key}.json`)
+          if (data?.lines) {
+            const title = data.title || data.media_filename || key
+            const lines = (data.lines as Array<Record<string, string>>).map((l) => {
+              const ts = l.timestamp ? `[${l.timestamp}] ` : ''
+              const speaker = l.speaker ? `${l.speaker}: ` : ''
+              return `${ts}${speaker}${l.text || ''}`
+            }).join('\n')
+            transcriptTexts.push(`[Full transcript: ${title}]\n${lines}\n[End of transcript]`)
+          }
+        } catch {
+          // Skip unreadable transcripts
+        }
+      }
+      if (transcriptTexts.length > 0) {
+        contextPrefix = transcriptTexts.join('\n\n') + '\n\n'
+      }
+    }
+
+    const fullMessage = contextPrefix + text
 
     const chatFilters: ChatFilters = {}
     if (filters.evidenceTypes.length > 0) chatFilters.evidence_types = filters.evidenceTypes
@@ -89,22 +112,9 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
     if (filters.speakers.length > 0) chatFilters.speakers = filters.speakers
     if (filters.location) chatFilters.location = filters.location
 
-    sendMessage(text, caseId, Object.keys(chatFilters).length > 0 ? chatFilters : undefined)
-  }, [input, caseId, filters, sendMessage])
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value)
-    const el = e.target
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 150) + 'px' // ~6 rows max
-  }
+    const displayText = contextPrefix ? text : undefined
+    sendMessage(fullMessage, caseId, Object.keys(chatFilters).length > 0 ? chatFilters : undefined, displayText)
+  }, [caseId, filters, sendMessage])
 
   const handleNewConversation = () => {
     clearMessages()
@@ -243,34 +253,12 @@ export default function InvestigateTab({ caseId, transcripts }: InvestigateTabPr
       </div>
 
       {/* Input area */}
-      <div className="flex gap-2">
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask a question about this case..."
-          rows={1}
-          disabled={isStreaming}
-          className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200 disabled:opacity-50"
-        />
-        {isStreaming ? (
-          <button
-            onClick={cancelStream}
-            className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white font-medium text-sm rounded-xl transition-colors flex-shrink-0"
-          >
-            Cancel
-          </button>
-        ) : (
-          <button
-            onClick={handleSend}
-            disabled={!input.trim()}
-            className="px-4 py-2.5 bg-primary-600 hover:bg-primary-500 text-white font-medium text-sm rounded-xl transition-colors disabled:opacity-50 flex-shrink-0"
-          >
-            Send
-          </button>
-        )}
-      </div>
+      <ChatInput
+        transcripts={transcripts}
+        isStreaming={isStreaming}
+        onSend={handleSend}
+        onCancel={cancelStream}
+      />
     </div>
   )
 }
