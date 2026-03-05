@@ -1,17 +1,16 @@
 // ─── Tauri Native Filesystem Adapter ─────────────────────────────────
 //
-// Implements PlatformFS using @tauri-apps/plugin-fs, @tauri-apps/plugin-dialog,
-// and @tauri-apps/plugin-store for workspace path persistence.
-// All paths are workspace-relative with forward slashes; this adapter
-// converts them to OS-native paths at the boundary.
+// Implements PlatformFS using @tauri-apps/plugin-fs.
+// Uses Tauri's appDataDir for transcripts/config and appCacheDir for media cache.
+// All paths from the storage layer are workspace-relative with forward slashes;
+// this adapter converts them to OS-native paths at the boundary.
 
 import type { PlatformFS, WorkspaceInitResult } from './types'
 
 const CONFIG_FILENAME = 'config.json'
-const STORE_KEY_WORKSPACE_PATH = 'workspace-path'
 
-let workspacePath: string | null = null
-let workspaceName: string | null = null
+let dataPath: string | null = null   // ~/Library/Application Support/com.transcribealpha.app/
+let cachePath: string | null = null  // ~/Library/Caches/com.transcribealpha.app/
 
 // ─── Lazy imports (loaded only when running in Tauri) ───────────────
 
@@ -19,28 +18,21 @@ async function getTauriFs() {
   return await import('@tauri-apps/plugin-fs')
 }
 
-async function getTauriDialog() {
-  return await import('@tauri-apps/plugin-dialog')
-}
-
-async function getTauriStore() {
-  const { LazyStore } = await import('@tauri-apps/plugin-store')
-  return new LazyStore('settings.json')
-}
-
 // ─── Path helpers ───────────────────────────────────────────────────
 
 async function getSep(): Promise<string> {
   const pathMod = await import('@tauri-apps/api/path')
-  // sep may be a string constant or a function depending on the API version
   const s = typeof pathMod.sep === 'function' ? (pathMod.sep as () => string)() : pathMod.sep
   return String(s)
 }
 
 async function toNative(workspaceRelative: string): Promise<string> {
   const s = await getSep()
-  const nativeParts = workspaceRelative.split('/').filter(Boolean)
-  return workspacePath + s + nativeParts.join(s)
+  const parts = workspaceRelative.split('/').filter(Boolean)
+  // Route cache/* paths to cachePath, everything else to dataPath
+  const base = parts[0] === 'cache' ? cachePath : dataPath
+  if (!base) throw new Error('tauriFS not initialized')
+  return base + s + parts.join(s)
 }
 
 async function parentDir(nativePath: string): Promise<string> {
@@ -67,15 +59,15 @@ function buildDefaultConfig() {
   }
 }
 
-async function ensureWorkspaceStructure(): Promise<void> {
+async function ensureDirectoryStructure(): Promise<void> {
   const fs = await getTauriFs()
   const s = await getSep()
   const dirs = [
-    `${workspacePath}${s}cases`,
-    `${workspacePath}${s}uncategorized`,
-    `${workspacePath}${s}cache`,
-    `${workspacePath}${s}cache${s}converted`,
-    `${workspacePath}${s}cache${s}playback`,
+    `${dataPath}${s}cases`,
+    `${dataPath}${s}uncategorized`,
+    `${cachePath}${s}cache`,
+    `${cachePath}${s}cache${s}converted`,
+    `${cachePath}${s}cache${s}playback`,
   ]
   for (const dir of dirs) {
     await fs.mkdir(dir, { recursive: true })
@@ -86,60 +78,27 @@ async function ensureWorkspaceStructure(): Promise<void> {
 
 export const tauriFSAdapter: PlatformFS = {
   async pickWorkspaceDirectory(): Promise<{ isExisting: boolean }> {
-    const dialog = await getTauriDialog()
-    const selected = await dialog.open({ directory: true, title: 'Choose Workspace Folder' })
-    if (!selected) throw new DOMException('User cancelled', 'AbortError')
-
-    const pickedPath = typeof selected === 'string' ? selected : (selected as any).path ?? String(selected)
-    const fs = await getTauriFs()
-    const s = await getSep()
-
-    let isExisting = false
-    try {
-      await fs.readTextFile(`${pickedPath}${s}${CONFIG_FILENAME}`)
-      isExisting = true
-    } catch {
-      // New workspace
-    }
-
-    workspacePath = pickedPath
-    workspaceName = pickedPath.split(s).pop() || pickedPath
-
-    if (!isExisting) {
-      await ensureWorkspaceStructure()
-      await fs.writeTextFile(
-        `${pickedPath}${s}${CONFIG_FILENAME}`,
-        JSON.stringify(buildDefaultConfig(), null, 2),
-      )
-    }
-
-    // Persist workspace path
-    const store = await getTauriStore()
-    await store.set(STORE_KEY_WORKSPACE_PATH, pickedPath)
-    await store.save()
-
-    return { isExisting }
+    // No-op in Tauri — app directories are auto-provisioned.
+    return { isExisting: true }
   },
 
   async initWorkspace(): Promise<WorkspaceInitResult> {
     try {
-      const store = await getTauriStore()
-      const storedPath = await store.get<string>(STORE_KEY_WORKSPACE_PATH)
-      if (!storedPath) {
-        return { status: 'no-handle', handle: null }
-      }
+      const pathMod = await import('@tauri-apps/api/path')
+      dataPath = await pathMod.appDataDir()
+      cachePath = await pathMod.appCacheDir()
 
+      await ensureDirectoryStructure()
+
+      // Write config.json if it doesn't exist
       const fs = await getTauriFs()
-      const pathExists = await fs.exists(storedPath)
-      if (!pathExists) {
-        return { status: 'no-handle', handle: null }
+      const s = await getSep()
+      const configPath = `${dataPath}${s}${CONFIG_FILENAME}`
+      const exists = await fs.exists(configPath)
+      if (!exists) {
+        await fs.writeTextFile(configPath, JSON.stringify(buildDefaultConfig(), null, 2))
       }
 
-      workspacePath = storedPath
-      const s = await getSep()
-      workspaceName = storedPath.split(s).pop() || storedPath
-
-      await ensureWorkspaceStructure()
       return { status: 'ok', handle: null }
     } catch (err) {
       console.warn('[tauriFS] initWorkspace error:', err)
@@ -148,29 +107,20 @@ export const tauriFSAdapter: PlatformFS = {
   },
 
   async isWorkspaceConfigured(): Promise<boolean> {
-    try {
-      const store = await getTauriStore()
-      const storedPath = await store.get<string>(STORE_KEY_WORKSPACE_PATH)
-      return !!storedPath
-    } catch {
-      return false
-    }
+    return true
   },
 
   async clearWorkspace(): Promise<void> {
-    const store = await getTauriStore()
-    await store.delete(STORE_KEY_WORKSPACE_PATH)
-    await store.save()
-    workspacePath = null
-    workspaceName = null
+    dataPath = null
+    cachePath = null
   },
 
   getWorkspaceName(): string | null {
-    return workspaceName
+    return 'TranscribeAlpha'
   },
 
   async getStorageEstimate(): Promise<{ fileCount: number; totalSize: number }> {
-    if (!workspacePath) return { fileCount: 0, totalSize: 0 }
+    if (!dataPath) return { fileCount: 0, totalSize: 0 }
 
     const fs = await getTauriFs()
     let fileCount = 0
@@ -199,7 +149,8 @@ export const tauriFSAdapter: PlatformFS = {
       }
     }
 
-    await walk(workspacePath)
+    await walk(dataPath)
+    if (cachePath) await walk(cachePath)
     return { fileCount, totalSize }
   },
 
@@ -309,7 +260,7 @@ export const tauriFSAdapter: PlatformFS = {
   // ─── Platform-specific ──────────────────────────────────────────
 
   getWorkspaceBasePath(): string | null {
-    return workspacePath
+    return dataPath
   },
 
   getWorkspaceHandle(): FileSystemDirectoryHandle | null {

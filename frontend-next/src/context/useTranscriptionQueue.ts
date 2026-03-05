@@ -11,7 +11,7 @@ import {
 import { cacheMediaForPlayback } from '@/lib/mediaCache'
 import { summarizeTranscript } from '@/lib/chatApi'
 import { logger } from '@/utils/logger'
-import { getMediaFile, storeMediaHandle } from '@/lib/mediaHandles'
+import { getMediaFile, storeMediaHandle, storeMediaPath } from '@/lib/mediaHandles'
 import {
   FFmpegCanceledError,
   cancelActiveFFmpegJob,
@@ -187,6 +187,12 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
       record.media_handle_id = mediaKey
       record.media_storage_mode = activeFile?.fileHandle ? 'external-handle' : 'workspace-cache'
 
+      // Tauri path-based jobs: store the absolute path for direct playback.
+      if (job?.sourceFilePath) {
+        record.media_absolute_path = job.sourceFilePath
+        record.media_storage_mode = 'external-handle'
+      }
+
       let workspaceRelativePath: string | null = null
       if (activeFile?.fileHandle) {
         try {
@@ -223,7 +229,9 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
             // Ignore playback-cache write failures; transcript persistence remains primary.
           }
         }
-      } else if (!workspaceRelativePath && activeFile?.file) {
+      } else if (!workspaceRelativePath && !job?.sourceFilePath && activeFile?.file) {
+        // Skip cache write for Tauri path-based jobs: the file is on disk and activeFile.file
+        // is only a 4KB header stub. Media will be read directly from the absolute path.
         try {
           const cached = await cacheMediaForPlayback(mediaKey, activeFile.file, {
             filename: mediaFilename,
@@ -838,6 +846,11 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
         // Store handle immediately when available so reloads can still playback/relink.
         if (item.fileHandle) {
           storeMediaHandle(item.mediaKey, item.fileHandle).catch(() => undefined)
+        }
+        // Tauri: store absolute path under mediaKey so playback can find it.
+        if (item.sourceFilePath && !item.fileHandle) {
+          storeMediaPath(item.mediaKey, item.sourceFilePath, item.originalFileName || item.file.name)
+            .catch(() => undefined)
         }
 
         const job: JobRecord = {

@@ -10,6 +10,7 @@ import {
   isPersistentStorage,
   setupMultiTabDetection,
 } from '@/lib/storage'
+import { isTauri } from '@/lib/platform'
 
 export default function WorkspaceGate({ children }: { children: React.ReactNode }) {
   const { refreshCases, refreshRecentTranscripts, jobs } = useDashboard()
@@ -26,6 +27,21 @@ export default function WorkspaceGate({ children }: { children: React.ReactNode 
   }, [])
 
   const checkWorkspace = useCallback(async () => {
+    // Tauri: app directories are auto-provisioned — no picker needed.
+    if (isTauri()) {
+      const result = await initWorkspaceDetailed()
+      if (result.status === 'ok') {
+        setReady(true)
+        setChecking(false)
+        void Promise.allSettled([refreshCases(), refreshRecentTranscripts()])
+        return
+      }
+      // If init fails in Tauri, there's not much the user can do — show error state
+      console.error('[WorkspaceGate] Tauri init failed:', result.status)
+      setChecking(false)
+      return
+    }
+
     const configured = await isWorkspaceConfigured()
     if (!configured) {
       setShowSetup(true)

@@ -1,9 +1,10 @@
 import { touchMediaCacheEntry } from './mediaCache'
 import {
   getFirstAvailableMediaFile,
+  getMediaFile,
   getMediaHandlePermissionState,
 } from './mediaHandles'
-import { isTauri, getPlatformFS } from './platform'
+import { isTauri } from './platform'
 import { readWorkspaceRelativeFile } from './storage'
 
 export type MediaSourceKind = 'workspace-relative' | 'workspace-cache' | 'external-handle'
@@ -12,10 +13,12 @@ export interface MediaRecordShape {
   media_key?: string
   media_handle_id?: string | null
   media_workspace_relpath?: string | null
+  media_absolute_path?: string | null
   media_storage_mode?: string | null
   playback_cache_path?: string | null
   playback_cache_content_type?: string | null
   media_filename?: string | null
+  media_content_type?: string | null
 }
 
 export interface MediaResolution {
@@ -131,23 +134,37 @@ export async function resolveMediaObjectURLForRecord(
   record: MediaRecordShape,
   options?: { requestPermission?: boolean },
 ): Promise<MediaResolution> {
-  // Tauri: try convertFileSrc for direct streaming (no JS memory copy).
+  // Tauri: try reading from the stored absolute path (no workspace-relative indirection).
   if (isTauri()) {
     const mediaKey = asText(record.media_key)
-    const workspacePath = asText(record.media_workspace_relpath)
-    if (workspacePath) {
-      const url = await tauriConvertFileSrc(workspacePath)
-      if (url) {
+    const absolutePath = asText(record.media_absolute_path)
+    if (absolutePath) {
+      // Read from absolute path via Tauri FS, create blob URL
+      try {
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        const bytes = await readFile(absolutePath)
+        const filename = asText(record.media_filename) || absolutePath.split(/[\\/]/).pop() || 'media'
+        const ext = filename.split('.').pop()?.toLowerCase() || ''
+        const mimeMap: Record<string, string> = {
+          mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
+          wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
+          ogg: 'audio/ogg', aac: 'audio/aac', wma: 'audio/x-ms-wma', webm: 'video/webm',
+        }
+        const type = mimeMap[ext] || asText(record.media_content_type) || 'application/octet-stream'
+        const blob = new Blob([bytes], { type })
         if (mediaKey) await touchMediaCacheEntry(mediaKey)
-        return { objectUrl: url, sourceKind: 'workspace-relative', reconnectRecommended: false }
+        return { objectUrl: URL.createObjectURL(blob), sourceKind: 'external-handle', reconnectRecommended: false }
+      } catch {
+        // File may have been moved/deleted — fall through to other resolution paths
       }
     }
-    const cachePath = asText(record.playback_cache_path)
-    if (cachePath) {
-      const url = await tauriConvertFileSrc(cachePath)
-      if (url) {
+    // Fallback: try IDB lookup by media_handle_id (TauriPathRecord)
+    const handleCandidates = buildHandleCandidates(record)
+    for (const candidate of handleCandidates) {
+      const file = await getMediaFile(candidate)
+      if (file) {
         if (mediaKey) await touchMediaCacheEntry(mediaKey)
-        return { objectUrl: url, sourceKind: 'workspace-cache', reconnectRecommended: false }
+        return { objectUrl: URL.createObjectURL(file), sourceKind: 'external-handle', reconnectRecommended: false }
       }
     }
   }
@@ -212,22 +229,3 @@ export async function resolveMediaFileForRecord(
   }
 }
 
-// ─── Tauri helper ─────────────────────────────────────────────────────────
-
-/** Convert a workspace-relative path to an asset:// URL for direct streaming. */
-async function tauriConvertFileSrc(workspaceRelPath: string): Promise<string | null> {
-  try {
-    const fs = await getPlatformFS()
-    const basePath = fs.getWorkspaceBasePath()
-    if (!basePath) return null
-
-    const { sep } = await import('@tauri-apps/api/path')
-    const s = typeof sep === 'function' ? (sep as () => string)() : sep
-    const absolutePath = basePath + s + workspaceRelPath.split('/').filter(Boolean).join(s)
-
-    const { convertFileSrc } = await import('@tauri-apps/api/core')
-    return convertFileSrc(absolutePath)
-  } catch {
-    return null
-  }
-}

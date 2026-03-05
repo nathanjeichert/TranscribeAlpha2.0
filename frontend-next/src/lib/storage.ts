@@ -52,6 +52,7 @@ export interface TranscriptData {
   media_content_type?: string
   media_handle_id?: string
   media_workspace_relpath?: string
+  media_absolute_path?: string
   media_storage_mode?: 'workspace-relative' | 'external-handle' | 'workspace-cache'
   media_blob_name?: string
   playback_cache_path?: string
