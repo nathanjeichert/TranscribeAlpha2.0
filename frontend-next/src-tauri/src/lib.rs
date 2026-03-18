@@ -1,11 +1,27 @@
-use tauri::{Emitter, Manager};
+use rand::{distributions::Alphanumeric, Rng};
+use std::sync::Mutex;
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_fs::FsExt;
 use tauri_plugin_shell::ShellExt;
 
 const SIDECAR_PORT: u16 = 18080;
 
-/// Kill any existing process listening on the sidecar port.
-/// Prevents zombie sidecars from previous app sessions blocking the new one.
+struct SidecarChild(Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
+struct DesktopSessionToken(String);
+
+#[tauri::command]
+fn get_desktop_session_token(session: State<'_, DesktopSessionToken>) -> String {
+    session.0.clone()
+}
+
+fn generate_session_token() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(48)
+        .map(char::from)
+        .collect()
+}
+
 #[cfg(unix)]
 fn kill_zombie_sidecar() {
     let output = std::process::Command::new("lsof")
@@ -16,12 +32,15 @@ fn kill_zombie_sidecar() {
         let pids = String::from_utf8_lossy(&out.stdout);
         for pid_str in pids.split_whitespace() {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                if pid <= 1 { continue; } // never kill init/kernel or broadcast to process group
+                if pid <= 1 {
+                    continue;
+                }
                 log::info!("[sidecar] killing zombie process {pid} on port {SIDECAR_PORT}");
-                unsafe { libc::kill(pid, libc::SIGTERM); }
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
             }
         }
-        // Brief pause to let the port free up
         if !pids.trim().is_empty() {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
@@ -30,19 +49,22 @@ fn kill_zombie_sidecar() {
 
 #[cfg(windows)]
 fn kill_zombie_sidecar() {
-    // Use netstat + taskkill on Windows to find and kill processes on the sidecar port
     let output = std::process::Command::new("cmd")
-        .args(["/C", &format!("netstat -ano | findstr :{SIDECAR_PORT} | findstr LISTENING")])
+        .args([
+            "/C",
+            &format!("netstat -ano | findstr :{SIDECAR_PORT} | findstr LISTENING"),
+        ])
         .output();
 
     if let Ok(out) = output {
         let text = String::from_utf8_lossy(&out.stdout);
         let mut killed = false;
         for line in text.lines() {
-            // netstat output: "  TCP  0.0.0.0:18080  0.0.0.0:0  LISTENING  <PID>"
             if let Some(pid_str) = line.split_whitespace().last() {
                 if let Ok(pid) = pid_str.parse::<u32>() {
-                    if pid == 0 { continue; }
+                    if pid == 0 {
+                        continue;
+                    }
                     log::info!("[sidecar] killing zombie process {pid} on port {SIDECAR_PORT}");
                     let _ = std::process::Command::new("taskkill")
                         .args(["/F", "/PID", &pid.to_string()])
@@ -57,11 +79,10 @@ fn kill_zombie_sidecar() {
     }
 }
 
-/// Poll the sidecar /health endpoint until it responds or we time out.
 async fn wait_for_sidecar_ready() -> bool {
     let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{SIDECAR_PORT}/health");
-    let max_attempts = 50; // 50 × 200ms = 10s max
+    let max_attempts = 50;
     for i in 0..max_attempts {
         if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {
@@ -91,19 +112,21 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .invoke_handler(tauri::generate_handler![get_desktop_session_token])
         .setup(|app| {
-            // Allow full filesystem access so the user can pick any workspace folder
             let fs_scope = app.fs_scope();
             let _ = fs_scope.allow_directory("/", true);
 
-            // Kill any leftover sidecar from a previous session
             kill_zombie_sidecar();
 
+            let session_token = generate_session_token();
+            app.manage(DesktopSessionToken(session_token.clone()));
+
             let sidecar_cmd = match app.shell().sidecar("transcribealpha-server") {
-                Ok(cmd) => cmd,
+                Ok(cmd) => cmd.env("STANDALONE_SESSION_TOKEN", session_token),
                 Err(e) => {
                     log::error!("Failed to create sidecar command: {e}");
-                    app.manage(SidecarChild(std::sync::Mutex::new(None)));
+                    app.manage(SidecarChild(Mutex::new(None)));
                     return Ok(());
                 }
             };
@@ -112,12 +135,11 @@ pub fn run() {
                 Ok(result) => result,
                 Err(e) => {
                     log::error!("Failed to spawn sidecar: {e}");
-                    app.manage(SidecarChild(std::sync::Mutex::new(None)));
+                    app.manage(SidecarChild(Mutex::new(None)));
                     return Ok(());
                 }
             };
 
-            // Log sidecar stdout/stderr in a background task
             tauri::async_runtime::spawn(async move {
                 use tauri_plugin_shell::process::CommandEvent;
                 while let Some(event) = rx.recv().await {
@@ -143,15 +165,12 @@ pub fn run() {
                 }
             });
 
-            // Store child handle so we can kill the sidecar on exit
-            app.manage(SidecarChild(std::sync::Mutex::new(Some(child))));
+            app.manage(SidecarChild(Mutex::new(Some(child))));
 
-            // Wait for sidecar to be ready before the UI starts making requests
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if !wait_for_sidecar_ready().await {
-                    log::error!("[sidecar] backend did not start — transcription will fail");
-                    // Emit an event the frontend can listen for if needed
+                    log::error!("[sidecar] backend did not start; transcription will fail");
                     let _ = app_handle.emit("sidecar-status", "failed");
                 } else {
                     let _ = app_handle.emit("sidecar-status", "ready");
@@ -170,5 +189,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-struct SidecarChild(std::sync::Mutex<Option<tauri_plugin_shell::process::CommandChild>>);

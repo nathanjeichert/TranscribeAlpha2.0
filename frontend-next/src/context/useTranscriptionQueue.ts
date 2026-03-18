@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { getAuthHeaders } from '@/utils/auth'
-import { apiUrl } from '@/lib/platform/api'
+import { apiUrl, getPlatformApiHeaders } from '@/lib/platform/api'
 import { nowIso, sleep, getFileExtension } from '@/utils/helpers'
 import {
   resolveWorkspaceRelativePathForHandle,
@@ -432,12 +432,13 @@ export function useTranscriptionQueue(deps: TranscriptionQueueDeps) {
         }
 
         const authHeaders = getAuthHeaders()
+        const platformHeaders = await getPlatformApiHeaders({
+          'Content-Type': 'application/json',
+          ...authHeaders,
+        })
         const response = await fetch(endpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...authHeaders,
-          },
+          headers: platformHeaders,
           body: JSON.stringify(body),
           signal: controller.signal,
         })

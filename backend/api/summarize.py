@@ -6,7 +6,7 @@ for a newly transcribed file using Claude Haiku.
 import json
 import logging
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,14 @@ class SummarizeResponse(BaseModel):
 
 
 @router.post("/api/summarize", response_model=SummarizeResponse)
-async def summarize_transcript(req: SummarizeRequest = Body(...)):
+async def summarize_transcript(request: Request, req: SummarizeRequest = Body(...)):
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+
+    require_standalone_session(request)
+
     try:
         from standalone_config import get_api_key
     except ImportError:
@@ -67,7 +74,14 @@ async def summarize_transcript(req: SummarizeRequest = Body(...)):
 
     try:
         import anthropic
+    except Exception:
+        logger.exception("Anthropic SDK unavailable for summarization")
+        raise HTTPException(
+            status_code=500,
+            detail="Summarization is temporarily unavailable.",
+        )
 
+    try:
         client = anthropic.Anthropic(api_key=api_key)
 
         response = client.messages.create(
@@ -108,6 +122,25 @@ async def summarize_transcript(req: SummarizeRequest = Body(...)):
 
         return SummarizeResponse(ai_summary=ai_summary, evidence_type=evidence_type)
 
-    except Exception as e:
-        logger.warning("Summarize failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Summarization failed: {e}")
+    except anthropic.AuthenticationError:
+        raise HTTPException(
+            status_code=400,
+            detail="Anthropic API key is invalid. Update it in Settings.",
+        )
+    except anthropic.RateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="Anthropic rate limit reached. Please wait a moment and try again.",
+        )
+    except anthropic.APIStatusError as e:
+        logger.warning("Summarize Anthropic API error (%s): %s", e.status_code, e)
+        raise HTTPException(
+            status_code=502,
+            detail="Anthropic is temporarily unavailable. Please try again.",
+        )
+    except Exception:
+        logger.exception("Summarize failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Summarization failed. Please try again.",
+        )

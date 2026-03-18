@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Dict
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,17 @@ def _is_standalone() -> bool:
 
 
 @router.get("/api/settings/keys")
-async def get_api_keys():
+async def get_api_keys(request: Request):
     """Get current API key configuration (values are masked)."""
     if not _is_standalone():
         raise HTTPException(status_code=404, detail="Not available")
+
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+
+    require_standalone_session(request)
 
     try:
         from standalone_config import load_config
@@ -47,10 +54,17 @@ async def get_api_keys():
 
 
 @router.put("/api/settings/keys")
-async def update_api_keys(keys: Dict = Body(...)):
+async def update_api_keys(request: Request, keys: Dict = Body(...)):
     """Update API key configuration."""
     if not _is_standalone():
         raise HTTPException(status_code=404, detail="Not available")
+
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+
+    require_standalone_session(request)
 
     try:
         from standalone_config import load_config, save_config

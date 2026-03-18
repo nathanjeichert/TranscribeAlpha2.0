@@ -6,7 +6,7 @@ Streams agent responses as Server-Sent Events.
 import json
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,11 @@ router = APIRouter()
 
 @router.post("/api/chat")
 async def chat(request: Request):
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+
     try:
         from standalone_config import get_api_key
     except ImportError:
@@ -56,6 +61,11 @@ async def chat(request: Request):
         return _sse_error(str(e), status=400)
 
     # Parse request body
+    try:
+        require_standalone_session(request)
+    except HTTPException as e:
+        return _sse_error(str(e.detail), status=e.status_code)
+
     try:
         body = await request.json()
         chat_req = ChatRequest(**body)

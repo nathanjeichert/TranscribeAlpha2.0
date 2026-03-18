@@ -6,7 +6,7 @@ import { getCurrentUser, logout } from '@/utils/auth'
 import { formatBytes } from '@/utils/helpers'
 import { evictMediaCacheToCap } from '@/lib/mediaCache'
 import { isTauri } from '@/lib/platform'
-import { needsAuth, apiUrl } from '@/lib/platform/api'
+import { needsAuth, apiUrl, getPlatformApiHeaders } from '@/lib/platform/api'
 import {
   DEFAULT_MEDIA_CACHE_CAP_BYTES,
   clearWorkspace,
@@ -34,25 +34,33 @@ function ApiKeysSection() {
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
-    fetch(apiUrl('/api/settings/keys'))
-      .then((r) => r.json())
-      .then((data) => {
+    const loadKeys = async () => {
+      try {
+        const headers = await getPlatformApiHeaders()
+        const response = await fetch(apiUrl('/api/settings/keys'), { headers })
+        const data = await response.json()
         setAssemblyaiKey(data.assemblyai_api_key || '')
         setGeminiKey(data.gemini_api_key || '')
         setRevaiKey(data.rev_ai_api_key || '')
         setAnthropicKey(data.anthropic_api_key || '')
+      } catch {
+        // Best effort - the page stays usable even if key loading fails.
+      } finally {
         setLoaded(true)
-      })
-      .catch(() => setLoaded(true))
+      }
+    }
+
+    void loadKeys()
   }, [])
 
   const handleSave = async () => {
     setSaving(true)
     setStatus('')
     try {
+      const headers = await getPlatformApiHeaders({ 'Content-Type': 'application/json' })
       const resp = await fetch(apiUrl('/api/settings/keys'), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           assemblyai_api_key: assemblyaiKey,
           gemini_api_key: geminiKey,
@@ -258,22 +266,29 @@ export default function SettingsPage() {
         {inTauri && <ApiKeysSection />}
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Workspace Storage</h2>
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">{inTauri ? 'App Storage' : 'Workspace Storage'}</h2>
           <div className="space-y-4">
             <div className="flex items-center justify-between py-3 border-b border-gray-100">
               <div>
-                <p className="font-medium text-gray-900">Workspace Folder</p>
+                <p className="font-medium text-gray-900">{inTauri ? 'App Data Folder' : 'Workspace Folder'}</p>
                 <p className="text-sm text-gray-500">
                   {workspaceName || 'Not configured'}
                 </p>
+                {inTauri && (
+                  <p className="text-xs text-gray-400 mt-1">
+                    Managed automatically by the desktop app.
+                  </p>
+                )}
               </div>
-              <button
-                onClick={handleChangeWorkspace}
-                disabled={changingWorkspace}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
-              >
-                {changingWorkspace ? 'Changing...' : 'Change Workspace'}
-              </button>
+              {!inTauri && (
+                <button
+                  onClick={handleChangeWorkspace}
+                  disabled={changingWorkspace}
+                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium text-sm rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {changingWorkspace ? 'Changing...' : 'Change Workspace'}
+                </button>
+              )}
             </div>
             <div className="py-3 border-b border-gray-100">
               <p className="font-medium text-gray-900 mb-1">Storage Usage</p>

@@ -32,8 +32,12 @@ def get_workspace_path_from_request(request) -> str:
 def _safe_subpath(workspace: Path, *parts: str) -> Path:
     """Build a path under workspace, preventing traversal attacks."""
     target = workspace.joinpath(*parts).resolve()
-    if not str(target).startswith(str(workspace)):
-        raise ValueError("Path traversal detected")
+    try:
+        target.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("Path traversal detected") from exc
+    except Exception as exc:
+        raise ValueError("Invalid path") from exc
     return target
 
 

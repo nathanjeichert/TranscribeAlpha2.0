@@ -3,13 +3,14 @@ Authentication module for TranscribeAlpha.
 Handles JWT token generation, password verification, and Secret Manager integration.
 """
 
-import os
 import json
 import logging
+import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 
-from fastapi import HTTPException, status, Depends
+from fastapi import HTTPException, Request, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Heavy deps (jose, bcrypt, google-cloud-secret-manager) are imported lazily
@@ -31,11 +32,36 @@ SECRET_NAME = "transcribealpha-users"
 # Security scheme — auto_error=False so standalone/Tauri requests without
 # a Bearer token reach get_current_user instead of being rejected early.
 security = HTTPBearer(auto_error=False)
+STANDALONE_SESSION_HEADER = "x-transcribealpha-session"
 
 # In-memory cache for users (refreshed periodically)
 _users_cache: Optional[Dict[str, dict]] = None
 _cache_timestamp: Optional[datetime] = None
 CACHE_TTL_MINUTES = 5
+
+
+def is_standalone_mode() -> bool:
+    return os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
+
+
+def require_standalone_session(request: Request) -> None:
+    """
+    Validate the per-launch desktop session token for standalone/Tauri requests.
+
+    This keeps the localhost sidecar from behaving like an open unauthenticated
+    API to any page on the machine.
+    """
+    if not is_standalone_mode():
+        return
+
+    expected = os.getenv("STANDALONE_SESSION_TOKEN", "").strip()
+    if not expected:
+        logger.error("Standalone session token is missing from the sidecar environment")
+        raise HTTPException(status_code=503, detail="Desktop session unavailable")
+
+    provided = request.headers.get(STANDALONE_SESSION_HEADER, "").strip()
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid desktop session")
 
 
 def get_secret_manager_client():
@@ -258,8 +284,7 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     In standalone mode (Tauri desktop), returns a dummy local user.
     """
     # Standalone mode: skip all auth validation
-    standalone = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
-    if standalone:
+    if is_standalone_mode():
         return {"username": "local", "role": "admin", "user_id": "local"}
 
     credentials_exception = HTTPException(

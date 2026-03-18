@@ -675,6 +675,7 @@ class TranscribeLocalRequest(BaseModel):
 
 @router.post("/api/transcribe-local")
 async def transcribe_local(
+    request: Request,
     req: TranscribeLocalRequest,
     current_user: dict = Depends(get_current_user),
 ):
@@ -691,6 +692,13 @@ async def transcribe_local(
     standalone = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
     if not standalone:
         raise HTTPException(status_code=403, detail="This endpoint is only available in standalone mode")
+
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+
+    require_standalone_session(request)
 
     file_path = req.file_path
     if not file_path or not os.path.isfile(file_path):

@@ -1,5 +1,5 @@
 """
-Chat Agent — orchestrates the agentic loop with Claude Haiku,
+Chat Agent - orchestrates the agentic loop with Claude,
 executing tools and streaming SSE events back to the frontend.
 
 Uses Anthropic's native search_result citations instead of custom
@@ -9,11 +9,10 @@ cause the API to automatically generate structured citations.
 
 import json
 import logging
-from typing import Any, Generator, Optional
+from typing import Generator, Optional
 
 logger = logging.getLogger(__name__)
 
-# ─── System Prompt ────────────────────────────────────────────────────
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are a legal investigation assistant analyzing evidence transcripts for a case.
@@ -68,11 +67,7 @@ def _build_evidence_list(metadata: list[dict]) -> str:
 
 
 def _serialize_citation(citation, search_result_registry: list[dict] | None = None) -> dict:
-    """Convert an Anthropic citation object to a JSON-serializable dict.
-
-    search_result_registry maps search_result_index → the original search_result
-    block we sent, so we can recover source/title for navigation.
-    """
+    """Convert an Anthropic citation object to a JSON-serializable dict."""
     idx = getattr(citation, "search_result_index", None)
     source = ""
     title = ""
@@ -92,7 +87,62 @@ def _serialize_citation(citation, search_result_registry: list[dict] | None = No
     }
 
 
-# ─── Agentic Loop ─────────────────────────────────────────────────────
+def _stream_anthropic_response(
+    client,
+    *,
+    model: str,
+    max_tokens: int,
+    system: list[dict],
+    tools: list[dict],
+    messages: list[dict],
+) -> Generator[dict, None, tuple[object, bool, int, int]]:
+    """
+    Stream a Claude response when the SDK supports it.
+
+    Returns (response, streamed, input_tokens, output_tokens).
+    """
+    stream_fn = getattr(client.messages, "stream", None)
+    if not callable(stream_fn):
+        response = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            tools=tools,
+            messages=messages,
+        )
+        return response, False, 0, 0
+
+    input_tokens = 0
+    output_tokens = 0
+    with stream_fn(
+        model=model,
+        max_tokens=max_tokens,
+        system=system,
+        tools=tools,
+        messages=messages,
+    ) as stream:
+        for event in stream:
+            event_type = getattr(event, "type", "")
+            if event_type == "message_start":
+                usage = getattr(getattr(event, "message", None), "usage", None)
+                if usage:
+                    input_tokens = max(input_tokens, int(getattr(usage, "input_tokens", 0) or 0))
+                    output_tokens = max(output_tokens, int(getattr(usage, "output_tokens", 0) or 0))
+            elif event_type == "message_delta":
+                usage = getattr(event, "usage", None)
+                if usage:
+                    input_tokens = max(input_tokens, int(getattr(usage, "input_tokens", 0) or 0))
+                    output_tokens = max(output_tokens, int(getattr(usage, "output_tokens", 0) or 0))
+            elif event_type == "content_block_delta":
+                delta = getattr(event, "delta", None)
+                if getattr(delta, "type", "") == "text_delta":
+                    text = getattr(delta, "text", "")
+                    if text:
+                        yield {"event": "token", "data": {"text": text}}
+
+        response = stream.get_final_message()
+
+    return response, True, input_tokens, output_tokens
 
 
 def run_agent(
@@ -121,7 +171,6 @@ def run_agent(
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    # Build system prompt with cache control for prompt caching
     evidence_list = _build_evidence_list(transcript_metadata)
     system_text = SYSTEM_PROMPT_TEMPLATE.format(
         case_name=case_name,
@@ -136,37 +185,26 @@ def run_agent(
         }
     ]
 
-    # Prepare messages for the API
-    api_messages = []
-    for msg in messages:
-        api_messages.append({
-            "role": msg["role"],
-            "content": msg["content"],
-        })
-
-    # Truncate to last 10 turns if conversation is very long
+    api_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
     if len(api_messages) > 20:
         api_messages = api_messages[-20:]
 
     total_input_tokens = 0
     total_output_tokens = 0
-    tool_summaries: list[str] = []  # Track tool calls for context in subsequent turns
-    # Registry of search_result blocks from tool results, ordered by appearance.
-    # The API's citation.search_result_index maps into this list.
+    tool_summaries: list[str] = []
     search_result_registry: list[dict] = []
-    max_iterations = 10  # prevent runaway loops
+    max_iterations = 10
 
-    for iteration in range(max_iterations):
+    for _ in range(max_iterations):
         try:
-            # First, make a non-streaming call to see if the model wants tools
-            response = client.messages.create(
+            response, streamed, input_tokens, output_tokens = yield from _stream_anthropic_response(
+                client,
                 model="claude-haiku-4-5",
                 max_tokens=4096,
                 system=system,
                 tools=TOOL_DEFINITIONS,
                 messages=api_messages,
             )
-
         except anthropic.AuthenticationError:
             yield {"event": "error", "data": {"message": "Invalid Anthropic API key. Check your key in Settings."}}
             return
@@ -174,39 +212,42 @@ def run_agent(
             yield {"event": "error", "data": {"message": "Rate limited by Anthropic. Please wait a moment and try again."}}
             return
         except anthropic.APIStatusError as e:
+            logger.warning("Anthropic API error (%s): %s", e.status_code, e)
             if e.status_code >= 500:
                 yield {"event": "error", "data": {"message": "Anthropic API is temporarily unavailable. Please try again."}}
             else:
-                yield {"event": "error", "data": {"message": f"API error: {e.message}"}}
+                yield {"event": "error", "data": {"message": "Anthropic rejected the request. Please try again."}}
             return
-        except Exception as e:
-            yield {"event": "error", "data": {"message": f"Unexpected error: {str(e)}"}}
+        except Exception:
+            logger.exception("Unexpected chat agent error")
+            yield {"event": "error", "data": {"message": "Chat request failed unexpectedly. Please try again."}}
             return
 
-        # Track token usage
-        if response.usage:
-            total_input_tokens += response.usage.input_tokens
-            total_output_tokens += response.usage.output_tokens
+        usage = getattr(response, "usage", None)
+        if usage:
+            input_tokens = max(input_tokens, int(getattr(usage, "input_tokens", 0) or 0))
+            output_tokens = max(output_tokens, int(getattr(usage, "output_tokens", 0) or 0))
 
-        # Check for tool use
+        total_input_tokens += input_tokens
+        total_output_tokens += output_tokens
+
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
         if not tool_use_blocks:
-            # No tool calls — agent is done. Emit text and citations.
             all_citations = []
             for block in response.content:
-                if block.type == "text":
-                    # Emit text as tokens for streaming feel
+                if block.type != "text":
+                    continue
+
+                if not streamed:
                     text = block.text
                     chunk_size = 12
                     for i in range(0, len(text), chunk_size):
                         yield {"event": "token", "data": {"text": text[i:i + chunk_size]}}
-                    # Collect citations from this block
-                    if hasattr(block, "citations") and block.citations:
-                        for citation in block.citations:
-                            all_citations.append(citation)
 
-            # Deduplicate citations by source+cited_text and emit
+                if hasattr(block, "citations") and block.citations:
+                    all_citations.extend(block.citations)
+
             seen = set()
             for citation in all_citations:
                 source = getattr(citation, "source", "")
@@ -215,11 +256,13 @@ def run_agent(
                 if key in seen:
                     continue
                 seen.add(key)
-                logger.info("Citation: type=%s source=%s title=%s cited_text=%s",
-                            getattr(citation, "type", "?"),
-                            source,
-                            getattr(citation, "title", "?"),
-                            cited_text[:80] if cited_text else "")
+                logger.info(
+                    "Citation: type=%s source=%s title=%s cited_text=%s",
+                    getattr(citation, "type", "?"),
+                    source,
+                    getattr(citation, "title", "?"),
+                    cited_text[:80] if cited_text else "",
+                )
                 yield {"event": "citation", "data": _serialize_citation(citation, search_result_registry)}
 
             yield {
@@ -232,7 +275,6 @@ def run_agent(
             }
             return
 
-        # Execute tools and continue the loop
         api_messages.append({"role": "assistant", "content": response.content})
 
         tool_results = []
@@ -254,11 +296,9 @@ def run_agent(
                 cached_metadata=transcript_metadata,
             )
 
-            # Build compact summary for multi-turn context
             tool_input_str = json.dumps(tool_block.input, default=str)
             tool_summaries.append(f"{tool_block.name}({tool_input_str})")
 
-            # Track search_result blocks for citation source mapping
             for block in result:
                 if block.get("type") == "search_result":
                     search_result_registry.append(block)
@@ -271,7 +311,6 @@ def run_agent(
 
         api_messages.append({"role": "user", "content": tool_results})
 
-    # Hit max iterations
     yield {
         "event": "done",
         "data": {

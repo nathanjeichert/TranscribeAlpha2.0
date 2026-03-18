@@ -1,4 +1,4 @@
-import { apiUrl } from './platform/api'
+import { apiUrl, getPlatformApiHeaders } from './platform/api'
 import type { EvidenceType } from './storage'
 
 // ─── Summarize ───────────────────────────────────────────────────────
@@ -13,9 +13,10 @@ export async function summarizeTranscript(params: {
   media_filename: string
   transcript_text: string
 }): Promise<SummarizeResult> {
+  const headers = await getPlatformApiHeaders({ 'Content-Type': 'application/json' })
   const resp = await fetch(apiUrl('/api/summarize'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(params),
   })
   if (!resp.ok) {
@@ -77,12 +78,13 @@ export function streamChat(
   return new ReadableStream<SSEEvent>({
     async start(controller) {
       try {
+        const headers = await getPlatformApiHeaders({
+          'Content-Type': 'application/json',
+          'X-Workspace-Path': workspacePath,
+        })
         const resp = await fetch(apiUrl('/api/chat'), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Workspace-Path': workspacePath,
-          },
+          headers,
           body: JSON.stringify(request),
           signal,
         })
