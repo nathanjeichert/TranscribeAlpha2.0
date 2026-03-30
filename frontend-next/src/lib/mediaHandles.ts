@@ -1,5 +1,5 @@
 import { idbGet, idbPut, idbDelete } from './idb'
-import { isTauri } from './platform'
+import { getPlatformMedia } from './platform'
 
 const HANDLE_STORE = 'media-handles'
 const BLOB_STORE = 'media-blobs'
@@ -136,19 +136,11 @@ export async function removeMediaHandle(handleId: string): Promise<void> {
   }
 }
 
-/** Read a file from a Tauri stored path via plugin-fs. */
+/** Read a file from a stored path via the platform media adapter. */
 async function readFileFromTauriPath(record: TauriPathRecord): Promise<File | null> {
   try {
-    const { readFile } = await import('@tauri-apps/plugin-fs')
-    const bytes = await readFile(record.__tauriPath)
-    const ext = record.filename.split('.').pop()?.toLowerCase() || ''
-    const mimeMap: Record<string, string> = {
-      mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
-      wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
-      ogg: 'audio/ogg', aac: 'audio/aac', wma: 'audio/x-ms-wma', webm: 'video/webm',
-    }
-    const type = mimeMap[ext] || 'application/octet-stream'
-    return new File([bytes], record.filename, { type })
+    const media = await getPlatformMedia()
+    return await media.readFileFromPath(record.__tauriPath, record.filename)
   } catch {
     return null
   }
@@ -182,16 +174,12 @@ export async function getMediaFile(
 }
 
 /**
- * In Tauri mode, try to get a direct playback URL via convertFileSrc
- * (streams from disk — no JS memory copy).
+ * Try to get a direct playback URL (Tauri: streams from disk, Web: returns null).
  */
 export async function getMediaPlaybackURL(sourceId: string): Promise<string | null> {
-  if (!isTauri()) return null
   try {
-    const ref = await getRawMediaRef(sourceId)
-    if (!ref || !isTauriPathRecord(ref)) return null
-    const { convertFileSrc } = await import('@tauri-apps/api/core')
-    return convertFileSrc(ref.__tauriPath)
+    const media = await getPlatformMedia()
+    return await media.getPlaybackURL(sourceId)
   } catch {
     return null
   }
@@ -218,119 +206,12 @@ export async function promptRelinkMedia(
   expectedFilename: string,
   preferredHandleId?: string,
 ): Promise<{
-  handle: FileSystemFileHandle
   handleId: string
 } | null> {
-  if (isTauri()) {
-    return promptRelinkMediaTauri(expectedFilename, preferredHandleId)
-  }
-
   try {
-    const [handle] = await window.showOpenFilePicker({
-      types: [
-        {
-          description: `Locate: ${expectedFilename}`,
-          accept: {
-            'audio/*': [],
-            'video/*': [],
-          },
-        },
-      ],
-      multiple: false,
-    })
-
-    if (!handle) return null
-
-    const handleId = String(preferredHandleId || '').trim() || crypto.randomUUID()
-    await storeMediaHandle(handleId, handle)
-    return { handle, handleId }
-  } catch {
-    // User cancelled or API not available
-    return null
-  }
-}
-
-async function promptRelinkMediaTauri(
-  expectedFilename: string,
-  preferredHandleId?: string,
-): Promise<any> {
-  try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const selected = await open({
-      title: `Locate: ${expectedFilename}`,
-      filters: [
-        { name: 'Audio/Video', extensions: ['mp4', 'mov', 'avi', 'mkv', 'wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'wma', 'webm'] },
-      ],
-      multiple: false,
-    })
-    if (!selected) return null
-    const filePath = typeof selected === 'string' ? selected : (selected as any).path ?? String(selected)
-    const filename = filePath.split(/[\\/]/).pop() || expectedFilename
-    const handleId = String(preferredHandleId || '').trim() || crypto.randomUUID()
-    await storeMediaPath(handleId, filePath, filename)
-    return { handle: null, handleId }
+    const media = await getPlatformMedia()
+    return await media.promptRelinkMedia(expectedFilename, preferredHandleId)
   } catch {
     return null
-  }
-}
-
-/**
- * Pick one or more media files using the Tauri dialog plugin.
- * Returns file objects + stored paths. Used by the transcribe page in Tauri mode.
- */
-export async function pickMediaFilesTauri(): Promise<
-  Array<{ file: File; filePath: string; handleId: string; filename: string; fileSizeBytes: number }>
-> {
-  try {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    const { stat, open: fsOpen } = await import('@tauri-apps/plugin-fs')
-    const selected = await open({
-      title: 'Choose audio or video files',
-      filters: [
-        { name: 'Audio/Video', extensions: ['mp4', 'mov', 'avi', 'mkv', 'wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac', 'wma', 'webm'] },
-      ],
-      multiple: true,
-    })
-    if (!selected) return []
-
-    const paths = Array.isArray(selected) ? selected : [selected]
-    const results: Array<{ file: File; filePath: string; handleId: string; filename: string; fileSizeBytes: number }> = []
-
-    for (const raw of paths) {
-      const filePath = typeof raw === 'string' ? raw : (raw as any).path ?? String(raw)
-      const filename = filePath.split(/[\\/]/).pop() || 'media.bin'
-      const ext = filename.split('.').pop()?.toLowerCase() || ''
-      const mimeMap: Record<string, string> = {
-        mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
-        wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
-        ogg: 'audio/ogg', aac: 'audio/aac', wma: 'audio/x-ms-wma', webm: 'video/webm',
-      }
-      const contentType = mimeMap[ext] || 'application/octet-stream'
-      const handleId = crypto.randomUUID()
-
-      // Get real file size via stat, then read only the first 4KB for WAV header detection.
-      // The backend will read the full file from disk — no need to load it into JS memory.
-      const fileStat = await stat(filePath)
-      const fileSizeBytes = fileStat.size
-      const HEADER_BYTES = 4096
-      let headerData: Uint8Array<ArrayBuffer>
-      try {
-        const fh = await fsOpen(filePath, { read: true })
-        const buf = new Uint8Array(HEADER_BYTES)
-        const bytesRead = await fh.read(buf)
-        headerData = bytesRead !== null && bytesRead !== undefined ? buf.slice(0, Number(bytesRead)) as Uint8Array<ArrayBuffer> : buf
-        await fh.close()
-      } catch {
-        headerData = new Uint8Array(0) as Uint8Array<ArrayBuffer>
-      }
-      const file = new File([headerData], filename, { type: contentType })
-
-      await storeMediaPath(handleId, filePath, filename)
-      results.push({ file, filePath, handleId, filename, fileSizeBytes })
-    }
-
-    return results
-  } catch {
-    return []
   }
 }

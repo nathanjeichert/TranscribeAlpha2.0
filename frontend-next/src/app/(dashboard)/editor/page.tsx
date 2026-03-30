@@ -14,7 +14,7 @@ import {
   saveTranscript as localSaveTranscript,
 } from '@/lib/storage'
 import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
-import { getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
+import { getMediaFile, getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
 import { resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 
 type TranscriptData = EditorSessionResponse & {
@@ -183,8 +183,10 @@ export default function EditorPage() {
       const result = await promptRelinkMedia(mediaFilename || 'media file', mediaKey)
       if (!result) return
 
-      const relinkedFile = await result.handle.getFile()
-      const workspaceRelativePath = await resolveWorkspaceRelativePathForHandle(result.handle)
+      const relinkedFile = await getMediaFile(result.handleId, { requestPermission: true })
+      if (!relinkedFile) return
+      const handle = await getMediaHandle(result.handleId)
+      const workspaceRelativePath = handle ? await resolveWorkspaceRelativePathForHandle(handle) : null
 
       let cachedPlaybackPath = ''
       let cachedPlaybackType = ''

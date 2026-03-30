@@ -55,8 +55,11 @@ def get_api_key(key_name: str) -> Optional[str]:
     Get an API key. In standalone mode, reads from local config.
     Falls back to environment variable if not set in config.
     """
-    standalone = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
-    if standalone:
+    try:
+        from config import is_standalone_mode
+    except ImportError:
+        from .config import is_standalone_mode
+    if is_standalone_mode():
         config = load_config()
         value = config.get(key_name, "").strip()
         if value:

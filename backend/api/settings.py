@@ -4,7 +4,6 @@ Allows users to manage API keys via the settings page.
 """
 
 import logging
-import os
 from typing import Dict
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -14,14 +13,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _is_standalone() -> bool:
-    return os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
-
-
 @router.get("/api/settings/keys")
 async def get_api_keys(request: Request):
     """Get current API key configuration (values are masked)."""
-    if not _is_standalone():
+    try:
+        from config import is_standalone_mode
+    except ImportError:
+        from ..config import is_standalone_mode
+    if not is_standalone_mode():
         raise HTTPException(status_code=404, detail="Not available")
 
     try:
@@ -56,7 +55,11 @@ async def get_api_keys(request: Request):
 @router.put("/api/settings/keys")
 async def update_api_keys(request: Request, keys: Dict = Body(...)):
     """Update API key configuration."""
-    if not _is_standalone():
+    try:
+        from config import is_standalone_mode
+    except ImportError:
+        from ..config import is_standalone_mode
+    if not is_standalone_mode():
         raise HTTPException(status_code=404, detail="Not available")
 
     try:

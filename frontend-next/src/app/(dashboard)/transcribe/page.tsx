@@ -8,8 +8,7 @@ import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
 import { createCase as localCreateCase } from '@/lib/storage'
 import { detectCodec, type CodecInfo } from '@/lib/ffmpegWorker'
-import { isTauri } from '@/lib/platform'
-import { pickMediaFilesTauri } from '@/lib/mediaHandles'
+import { hasNativeFilePicker, getPlatformMedia } from '@/lib/platform'
 
 interface FormData {
   case_name: string
@@ -230,7 +229,7 @@ export default function TranscribePage() {
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     // When showOpenFilePicker is available (or in Tauri mode), the parent onClick
     // already handles file selection via handleOpenFilePicker. Ignore the <input> change.
-    if (isTauri() || typeof window.showOpenFilePicker === 'function') {
+    if (hasNativeFilePicker()) {
       event.target.value = ''
       return
     }
@@ -282,53 +281,9 @@ export default function TranscribePage() {
 
   const handleOpenFilePicker = useCallback(async () => {
     try {
-      // Tauri: use the native dialog plugin for file picking.
-      if (isTauri()) {
-        const picked = await pickMediaFilesTauri()
-        if (!picked.length) return
-
-        setPageError('')
-        setPageNotice('')
-
-        const baseQueue = queueRef.current
-        const remainingSlots = Math.max(MAX_BATCH_FILES - baseQueue.length, 0)
-        if (remainingSlots <= 0) {
-          setPageError(`Batch limit reached. Maximum ${MAX_BATCH_FILES} files per run.`)
-          return
-        }
-
-        const accepted = picked.slice(0, remainingSlots)
-        const dropped = picked.length - accepted.length
-
-        const nextItems: QueueItem[] = []
-        const acceptedFiles: File[] = []
-        for (const item of accepted) {
-          acceptedFiles.push(item.file)
-          nextItems.push(createQueueItem(item.file, null, item.filePath, item.fileSizeBytes))
-        }
-        setQueue([...baseQueue, ...nextItems])
-        void inspectForJailCalls(acceptedFiles)
-
-        if (dropped > 0) {
-          setPageError(`Added ${accepted.length} file(s). ${dropped} file(s) were not added because of the ${MAX_BATCH_FILES}-file limit.`)
-        }
-        return
-      }
-
-      // Web: use the File System Access API for FileSystemFileHandles.
-      const handles: FileSystemFileHandle[] = await window.showOpenFilePicker({
-        multiple: true,
-        types: [
-          {
-            description: 'Audio/Video files',
-            accept: {
-              'audio/*': ['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac', '.wma'],
-              'video/*': ['.mp4', '.mov', '.avi', '.mkv'],
-            },
-          },
-        ],
-      })
-      if (!handles.length) return
+      const media = await getPlatformMedia()
+      const picked = await media.pickMediaFiles()
+      if (!picked.length) return
 
       setPageError('')
       setPageNotice('')
@@ -340,15 +295,14 @@ export default function TranscribePage() {
         return
       }
 
-      const accepted = handles.slice(0, remainingSlots)
-      const dropped = handles.length - accepted.length
+      const accepted = picked.slice(0, remainingSlots)
+      const dropped = picked.length - accepted.length
 
       const nextItems: QueueItem[] = []
       const acceptedFiles: File[] = []
-      for (const handle of accepted) {
-        const file = await handle.getFile()
-        acceptedFiles.push(file)
-        nextItems.push(createQueueItem(file, handle))
+      for (const item of accepted) {
+        acceptedFiles.push(item.file)
+        nextItems.push(createQueueItem(item.file, null, undefined, item.fileSizeBytes))
       }
       setQueue([...baseQueue, ...nextItems])
       void inspectForJailCalls(acceptedFiles)
@@ -625,7 +579,7 @@ export default function TranscribePage() {
               onClick={(e) => {
                 // Tauri: always use handleOpenFilePicker (routes to native dialog).
                 // Web: use showOpenFilePicker when available for FileSystemFileHandles.
-                if (isTauri() || typeof window.showOpenFilePicker === 'function') {
+                if (hasNativeFilePicker()) {
                   e.preventDefault()
                   handleOpenFilePicker()
                 } else {

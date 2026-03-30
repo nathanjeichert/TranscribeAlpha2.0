@@ -3,6 +3,10 @@ import os
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 STANDALONE_MODE = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
 
+
+def is_standalone_mode() -> bool:
+    return STANDALONE_MODE
+
 STANDALONE_ALLOWED_ORIGINS = [
     "tauri://localhost",
     "http://tauri.localhost",

@@ -59,38 +59,9 @@ export function formatDuration(seconds?: number): string {
 }
 
 export async function downloadBlob(blob: Blob, filename: string): Promise<void> {
-  // Tauri: show native save dialog
-  try {
-    const { isTauri } = await import('@/lib/platform')
-    if (isTauri()) {
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const { writeFile } = await import('@tauri-apps/plugin-fs')
-
-      const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.') + 1) : ''
-      const filters = ext
-        ? [{ name: ext.toUpperCase(), extensions: [ext] }]
-        : []
-
-      const path = await save({ defaultPath: filename, filters })
-      if (!path) return // User cancelled
-
-      const bytes = new Uint8Array(await blob.arrayBuffer())
-      await writeFile(path, bytes)
-      return
-    }
-  } catch {
-    // Fall through to browser download
-  }
-
-  // Browser: standard anchor download
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+  const { getPlatformMedia } = await import('@/lib/platform')
+  const media = await getPlatformMedia()
+  await media.downloadFile(blob, filename)
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {

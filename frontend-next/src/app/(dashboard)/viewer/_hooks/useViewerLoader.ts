@@ -7,7 +7,7 @@ import {
   type TranscriptData,
 } from '@/lib/storage'
 import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
-import { getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
+import { getMediaFile, getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
 import { resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 import { normalizeViewerTranscript, type ViewerTranscript } from '@/utils/transcriptFormat'
 
@@ -150,8 +150,10 @@ export function useViewerLoader({ queryMediaKey }: UseViewerLoaderParams) {
     const result = await promptRelinkMedia(expected, transcript.media_key)
     if (!result) return
 
-    const relinkedFile = await result.handle.getFile()
-    const workspaceRelativePath = await resolveWorkspaceRelativePathForHandle(result.handle)
+    const relinkedFile = await getMediaFile(result.handleId, { requestPermission: true })
+    if (!relinkedFile) return
+    const handle = await getMediaHandle(result.handleId)
+    const workspaceRelativePath = handle ? await resolveWorkspaceRelativePathForHandle(handle) : null
 
     let cachePath = ''
     let cacheType = ''

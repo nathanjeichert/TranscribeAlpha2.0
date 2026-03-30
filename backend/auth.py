@@ -13,9 +13,9 @@ from typing import Optional, Dict, List
 from fastapi import HTTPException, Request, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-# Heavy deps (jose, bcrypt, google-cloud-secret-manager) are imported lazily
-# inside the functions that use them.  This lets the sidecar (standalone mode)
-# load this module without bundling or installing those packages.
+# WARNING: jose, bcrypt, and google-cloud-secretmanager MUST remain lazy imports
+# (inside functions). The PyInstaller sidecar.spec excludes these packages —
+# module-level imports will break the desktop build.
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,10 @@ _cache_timestamp: Optional[datetime] = None
 CACHE_TTL_MINUTES = 5
 
 
-def is_standalone_mode() -> bool:
-    return os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
+try:
+    from config import is_standalone_mode
+except ImportError:
+    from .config import is_standalone_mode
 
 
 def require_standalone_session(request: Request) -> None:
@@ -323,49 +325,6 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
         raise credentials_exception
 
 
-async def get_current_user_optional(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[dict]:
-    """
-    Optional authentication dependency.
-    Returns user if authenticated, None if not.
-    Useful for endpoints that work with or without auth.
-    """
-    if credentials is None:
-        return None
-
-    try:
-        return await get_current_user(credentials)
-    except HTTPException:
-        return None
-
-
-def generate_initial_password_hash(password: str) -> str:
-    """
-    Helper function to generate password hash for initial setup.
-    This should be run locally, not in production code.
-    """
-    return get_password_hash(password)
-
-
-# For development/testing: Generate a sample users JSON structure
-def generate_sample_users_json(username: str, password: str) -> str:
-    """
-    Generate a sample users JSON for Secret Manager.
-    Usage: python -c "from backend.auth import generate_sample_users_json; print(generate_sample_users_json('VerdictGroup', 'your_secure_password'))"
-    """
-    password_hash = get_password_hash(password)
-    users_data = {
-        "users": [
-            {
-                "username": username,
-                "password_hash": password_hash,
-                "role": "admin",
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-        ]
-    }
-    return json.dumps(users_data, indent=2)
-
-
 if __name__ == "__main__":
     # Helper script to generate password hash
     import sys
@@ -374,4 +333,3 @@ if __name__ == "__main__":
         print(f"Password hash: {get_password_hash(password)}")
     else:
         print("Usage: python auth.py <password>")
-        print("Or: python -c \"from backend.auth import generate_sample_users_json; print(generate_sample_users_json('username', 'password'))\"")

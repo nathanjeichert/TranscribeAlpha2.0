@@ -1,6 +1,7 @@
-import type { PlatformFS } from './types'
+import type { PlatformFS, PlatformMedia } from './types'
 
 let _fs: PlatformFS | null = null
+let _media: PlatformMedia | null = null
 
 /**
  * Synchronous check for Tauri environment.
@@ -27,5 +28,31 @@ export async function getPlatformFS(): Promise<PlatformFS> {
   return _fs
 }
 
+/**
+ * Whether the platform supports a native file picker dialog
+ * (Tauri native dialog or File System Access API).
+ * Falls back to `<input type="file">` when false.
+ */
+export function hasNativeFilePicker(): boolean {
+  return isTauri() || (typeof window !== 'undefined' && typeof window.showOpenFilePicker === 'function')
+}
+
+/**
+ * Returns the platform-specific media adapter.
+ * Web: File System Access API pickers + anchor downloads.
+ * Tauri: native dialog + plugin-fs.
+ */
+export async function getPlatformMedia(): Promise<PlatformMedia> {
+  if (_media) return _media
+  if (isTauri()) {
+    const mod = await import('./tauriMedia')
+    _media = mod.tauriMediaAdapter
+  } else {
+    const mod = await import('./webMedia')
+    _media = mod.webMediaAdapter
+  }
+  return _media
+}
+
 // Re-export types for convenience
-export type { PlatformFS, WorkspaceInitResult, WorkspaceInitStatus } from './types'
+export type { PlatformFS, PlatformMedia, WorkspaceInitResult, WorkspaceInitStatus } from './types'

@@ -156,18 +156,29 @@ async def get_app_config():
 
 
 @router.get("/api/viewer-template")
-async def get_viewer_template_endpoint(current_user: dict = Depends(get_current_user)):
+async def get_viewer_template_endpoint(request: Request, current_user: dict = Depends(get_current_user)):
     _ = current_user
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+    require_standalone_session(request)
     template_html = get_viewer_template()
     return Response(content=template_html, media_type="text/html")
 
 
 @router.post("/api/format-pdf")
 async def format_pdf_clip_excerpt(
+    request: Request,
     payload: dict = Body(...),
     current_user: dict = Depends(get_current_user),
 ):
     _ = current_user
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+    require_standalone_session(request)
 
     title_data = payload.get("title_data")
     line_entries = payload.get("line_entries")
@@ -689,8 +700,11 @@ async def transcribe_local(
     _ = current_user
 
     # Gate behind STANDALONE_MODE
-    standalone = os.getenv("STANDALONE_MODE", "").lower() in ("true", "1", "yes")
-    if not standalone:
+    try:
+        from config import is_standalone_mode
+    except ImportError:
+        from ..config import is_standalone_mode
+    if not is_standalone_mode():
         raise HTTPException(status_code=403, detail="This endpoint is only available in standalone mode")
 
     try:
@@ -931,6 +945,11 @@ async def resync_transcript(
 ):
     """Re-sync transcript timestamps using Rev AI forced alignment (stateless)."""
     _ = current_user
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+    require_standalone_session(request)
 
     temp_media_path = None
     temp_transcript_path = None
@@ -1064,12 +1083,18 @@ async def resync_transcript(
 
 @router.post("/api/gemini-refine")
 async def gemini_refine_local(
+    request: Request,
     media_file: UploadFile = File(...),
     transcript_data: str = Form(...),
     current_user: dict = Depends(get_current_user),
 ):
     """Gemini transcript refinement endpoint (stateless)."""
     _ = current_user
+    try:
+        from auth import require_standalone_session
+    except ImportError:
+        from ..auth import require_standalone_session
+    require_standalone_session(request)
 
     temp_media_path = None
     try:

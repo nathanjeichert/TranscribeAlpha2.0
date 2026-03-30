@@ -12,6 +12,21 @@ export interface WorkspaceInitResult {
   handle: unknown
 }
 
+export interface PlatformMedia {
+  pickMediaFiles(): Promise<Array<{
+    file: File; handleId: string; filename: string; fileSizeBytes: number
+  }>>
+  promptRelinkMedia(expectedFilename: string, preferredHandleId?: string): Promise<{
+    handleId: string
+  } | null>
+  getPlaybackURL(sourceId: string): Promise<string | null>
+  /** Read an absolute file path and return a blob object URL (Tauri only, web returns null). */
+  readAbsolutePathAsObjectURL(absolutePath: string, filename: string, fallbackContentType?: string): Promise<string | null>
+  /** Read a file from an absolute path and return as File (Tauri only, web returns null). */
+  readFileFromPath(absolutePath: string, filename: string): Promise<File | null>
+  downloadFile(blob: Blob, filename: string): Promise<void>
+}
+
 export interface PlatformFS {
   // ─── Workspace lifecycle ──────────────────────────────────────────
   pickWorkspaceDirectory(): Promise<{ isExisting: boolean }>

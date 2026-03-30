@@ -4,7 +4,7 @@ import {
   getMediaFile,
   getMediaHandlePermissionState,
 } from './mediaHandles'
-import { isTauri } from './platform'
+import { getPlatformMedia } from './platform'
 import { readWorkspaceRelativeFile } from './storage'
 
 export type MediaSourceKind = 'workspace-relative' | 'workspace-cache' | 'external-handle'
@@ -134,38 +134,43 @@ export async function resolveMediaObjectURLForRecord(
   record: MediaRecordShape,
   options?: { requestPermission?: boolean },
 ): Promise<MediaResolution> {
-  // Tauri: try reading from the stored absolute path (no workspace-relative indirection).
-  if (isTauri()) {
-    const mediaKey = asText(record.media_key)
-    const absolutePath = asText(record.media_absolute_path)
-    if (absolutePath) {
-      // Read from absolute path via Tauri FS, create blob URL
-      try {
-        const { readFile } = await import('@tauri-apps/plugin-fs')
-        const bytes = await readFile(absolutePath)
-        const filename = asText(record.media_filename) || absolutePath.split(/[\\/]/).pop() || 'media'
-        const ext = filename.split('.').pop()?.toLowerCase() || ''
-        const mimeMap: Record<string, string> = {
-          mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
-          wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
-          ogg: 'audio/ogg', aac: 'audio/aac', wma: 'audio/x-ms-wma', webm: 'video/webm',
-        }
-        const type = mimeMap[ext] || asText(record.media_content_type) || 'application/octet-stream'
-        const blob = new Blob([bytes], { type })
+  // Try platform-specific fast paths before the generic resolution pipeline.
+  const media = await getPlatformMedia()
+  const mediaKey = asText(record.media_key)
+
+  // 1. Try direct playback URL via platform adapter (Tauri: zero-copy streaming).
+  const handleCandidates = buildHandleCandidates(record)
+  for (const candidate of handleCandidates) {
+    try {
+      const url = await media.getPlaybackURL(candidate)
+      if (url) {
         if (mediaKey) await touchMediaCacheEntry(mediaKey)
-        return { objectUrl: URL.createObjectURL(blob), sourceKind: 'external-handle', reconnectRecommended: false }
-      } catch {
-        // File may have been moved/deleted — fall through to other resolution paths
+        return { objectUrl: url, sourceKind: 'external-handle', reconnectRecommended: false }
       }
+    } catch {
+      // Fall through
     }
-    // Fallback: try IDB lookup by media_handle_id (TauriPathRecord)
-    const handleCandidates = buildHandleCandidates(record)
-    for (const candidate of handleCandidates) {
-      const file = await getMediaFile(candidate)
-      if (file) {
-        if (mediaKey) await touchMediaCacheEntry(mediaKey)
-        return { objectUrl: URL.createObjectURL(file), sourceKind: 'external-handle', reconnectRecommended: false }
-      }
+  }
+
+  // 2. Try reading from stored absolute path via platform adapter.
+  const absolutePath = asText(record.media_absolute_path)
+  if (absolutePath) {
+    const filename = asText(record.media_filename) || absolutePath.split(/[\\/]/).pop() || 'media'
+    const objectUrl = await media.readAbsolutePathAsObjectURL(
+      absolutePath, filename, asText(record.media_content_type),
+    )
+    if (objectUrl) {
+      if (mediaKey) await touchMediaCacheEntry(mediaKey)
+      return { objectUrl, sourceKind: 'external-handle', reconnectRecommended: false }
+    }
+  }
+
+  // 3. IDB handle/path lookup fallback.
+  for (const candidate of handleCandidates) {
+    const file = await getMediaFile(candidate)
+    if (file) {
+      if (mediaKey) await touchMediaCacheEntry(mediaKey)
+      return { objectUrl: URL.createObjectURL(file), sourceKind: 'external-handle', reconnectRecommended: false }
     }
   }
 
@@ -184,7 +189,6 @@ export async function resolveMediaObjectURLForRecord(
     }
   }
 
-  const handleCandidates = buildHandleCandidates(record)
   const reconnectRecommended = await shouldRecommendReconnect(handleCandidates)
   return {
     objectUrl: null,
