@@ -17,12 +17,12 @@ export const webMediaAdapter: PlatformMedia = {
     })
     if (!handles.length) return []
 
-    const results: Array<{ file: File; handleId: string; filename: string; fileSizeBytes: number }> = []
+    const results: Array<{ file: File; handleId: string; filename: string; fileSizeBytes: number; fileHandle: FileSystemFileHandle }> = []
     for (const handle of handles) {
       const file = await handle.getFile()
       const handleId = crypto.randomUUID()
       await storeMediaHandle(handleId, handle)
-      results.push({ file, handleId, filename: file.name, fileSizeBytes: file.size })
+      results.push({ file, handleId, filename: file.name, fileSizeBytes: file.size, fileHandle: handle })
     }
     return results
   },

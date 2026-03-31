@@ -302,7 +302,7 @@ export default function TranscribePage() {
       const acceptedFiles: File[] = []
       for (const item of accepted) {
         acceptedFiles.push(item.file)
-        nextItems.push(createQueueItem(item.file, null, undefined, item.fileSizeBytes))
+        nextItems.push(createQueueItem(item.file, item.fileHandle ?? null, item.filePath, item.fileSizeBytes))
       }
       setQueue([...baseQueue, ...nextItems])
       void inspectForJailCalls(acceptedFiles)

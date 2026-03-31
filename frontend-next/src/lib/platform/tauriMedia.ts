@@ -16,7 +16,7 @@ export const tauriMediaAdapter: PlatformMedia = {
     if (!selected) return []
 
     const paths = Array.isArray(selected) ? selected : [selected]
-    const results: Array<{ file: File; handleId: string; filename: string; fileSizeBytes: number }> = []
+    const results: Array<{ file: File; handleId: string; filename: string; fileSizeBytes: number; filePath: string }> = []
 
     for (const raw of paths) {
       const filePath = typeof raw === 'string' ? raw : (raw as any).path ?? String(raw)
@@ -40,7 +40,7 @@ export const tauriMediaAdapter: PlatformMedia = {
       const file = new File([headerData], filename, { type: contentType })
 
       await storeMediaPath(handleId, filePath, filename)
-      results.push({ file, handleId, filename, fileSizeBytes })
+      results.push({ file, handleId, filename, fileSizeBytes, filePath })
     }
 
     return results

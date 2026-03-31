@@ -14,7 +14,7 @@ export interface WorkspaceInitResult {
 
 export interface PlatformMedia {
   pickMediaFiles(): Promise<Array<{
-    file: File; handleId: string; filename: string; fileSizeBytes: number
+    file: File; handleId: string; filename: string; fileSizeBytes: number; filePath?: string; fileHandle?: FileSystemFileHandle
   }>>
   promptRelinkMedia(expectedFilename: string, preferredHandleId?: string): Promise<{
     handleId: string
