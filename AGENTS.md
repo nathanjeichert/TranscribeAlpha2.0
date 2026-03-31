@@ -53,7 +53,7 @@ Agent commit/PR rules:
 TranscribeAlpha/
 ├── backend/                    # Python backend (FastAPI)
 │   ├── server.py              # FastAPI app wiring (routers, middleware, static files)
-│   ├── config.py              # Env-driven constants (CORS, environment)
+│   ├── config.py              # Env-driven constants (CORS, environment, is_standalone_mode())
 │   ├── standalone_config.py   # Standalone (Tauri) config (API keys incl. anthropic_api_key)
 │   ├── models.py              # Pydantic models (TranscriptTurn, WordTimestamp, Gemini structs)
 │   ├── chat_agent.py          # Investigation agent loop (Sonnet + tools + SSE events)
@@ -76,7 +76,7 @@ TranscribeAlpha/
 │   │   └── template.html      # Standalone HTML viewer template
 │   ├── transcriber.py         # AssemblyAI integration + media probing
 │   ├── rev_ai_sync.py         # Rev AI forced alignment
-│   ├── auth.py                # JWT authentication
+│   ├── auth.py                # JWT authentication + require_standalone_session guard
 │   └── requirements.txt       # Python dependencies (includes anthropic>=0.42.0)
 │
 ├── frontend-next/             # Next.js frontend
@@ -140,13 +140,21 @@ TranscribeAlpha/
 │   │   │   └── useInvestigateFilters.ts # Filter state + available options
 │   │   ├── lib/               # Shared utilities
 │   │   │   ├── chatApi.ts           # API client for chat + summarize
-│   │   │   └── storage.ts          # Workspace storage (includes EvidenceType, ai_summary)
+│   │   │   ├── storage.ts          # Workspace storage (includes EvidenceType, ai_summary)
+│   │   │   ├── mediaHandles.ts     # IDB handle/path CRUD, delegates to platform adapters
+│   │   │   ├── mediaPlayback.ts    # Media URL resolution (platform-unified pipeline)
+│   │   │   ├── mimeTypes.ts        # File extension → MIME type mapping
+│   │   │   └── platform/           # Platform abstraction layer (Tauri vs Web)
+│   │   │       ├── index.ts        # isTauri(), getPlatformFS(), getPlatformMedia(), hasNativeFilePicker()
+│   │   │       ├── types.ts        # PlatformFS + PlatformMedia interfaces
+│   │   │       ├── tauriMedia.ts   # Tauri: native dialog, plugin-fs, convertFileSrc
+│   │   │       └── webMedia.ts     # Web: File System Access API, anchor downloads
 │   │   └── utils/             # Utility functions
 │   │       ├── transcriptFormat.ts  # Shared transcript formatting + normalization
 │   │       │                        #   formatClock/Range, parseTimeInput, escapeScriptBoundary,
 │   │       │                        #   sanitizeDownloadStem, buildViewerPayload, normalizeViewerTranscript
-│   │       └── helpers.ts           # General utilities incl. downloadBlob, bytesToBase64,
-│   │                                #   fileToBase64, utf8ToBase64
+│   │       └── helpers.ts           # General utilities incl. downloadBlob (delegates to platform),
+│   │                                #   bytesToBase64, fileToBase64, utf8ToBase64
 │   └── out/                   # Static export (production)
 │
 ├── scripts/                   # Admin utility scripts
@@ -195,6 +203,7 @@ kept intentionally thin to wire middleware, include routers, and mount the stati
 | `chat_models.py` | Chat/summarize models | Pydantic request/filter models |
 | `workspace_reader.py` | Workspace file access | Transcript metadata loading, search, page reading (traversal-safe) |
 | `standalone_config.py` | Standalone config | API key storage for Tauri sidecar mode |
+| `config.py` | Shared config | `is_standalone_mode()`, CORS origins, environment constants |
 
 ### Transcription Pipeline
 
@@ -457,6 +466,30 @@ The Anthropic API key is stored alongside other API keys in the standalone confi
 - `backend/api/settings.py` — included in the managed keys list for `/api/settings/keys`
 - `frontend-next/src/app/(dashboard)/settings/page.tsx` — Anthropic API Key input field in the API Keys section (Tauri only)
 
+### Platform Abstraction Layer
+
+All platform-divergent behavior (file picking, media playback, downloads) is routed through two adapter interfaces in `frontend-next/src/lib/platform/`:
+
+| Interface | Purpose | Tauri Adapter | Web Adapter |
+|-----------|---------|---------------|-------------|
+| `PlatformFS` | Workspace file I/O (read/write JSON, binary, list dirs) | `tauriFS.ts` (plugin-fs) | `webFS.ts` (File System Access API) |
+| `PlatformMedia` | File picking, media playback URLs, downloads | `tauriMedia.ts` (native dialog + plugin-fs) | `webMedia.ts` (showOpenFilePicker + anchor) |
+
+Access via async getters: `getPlatformFS()`, `getPlatformMedia()`. Sync check: `isTauri()`, `hasNativeFilePicker()`.
+
+**Critical: `pickMediaFiles()` return contract.** Both adapters return `{ file, handleId, filename, fileSizeBytes }`, but platform-specific fields must also be passed through:
+- **Tauri** returns `filePath` — the absolute disk path. Without this, the transcription queue falls into the upload-based flow with a 4KB header stub instead of telling the sidecar to read from disk. This caused a P0 bug when the field was accidentally dropped during the platform abstraction refactor.
+- **Web** returns `fileHandle` — the `FileSystemFileHandle`. Without this, workspace-relative path resolution and media relink after cache eviction break.
+
+**Do not unify these two flows** into a single code path that ignores platform-specific fields. The `transcribe/page.tsx` picker handler must pass both: `createQueueItem(item.file, item.fileHandle ?? null, item.filePath, item.fileSizeBytes)`.
+
+**Tauri File stub:** In Tauri mode, `pickMediaFiles()` only reads the first 4096 bytes of each file into the `File` object (for WAV header detection). The backend reads the full file from disk via `sourceFilePath`. Never send this stub through the upload-based transcription flow.
+
+Other platform-delegated operations:
+- `mediaHandles.ts` → delegates to `PlatformMedia` for file reading and relink dialogs
+- `mediaPlayback.ts` → platform-unified resolution pipeline: (1) direct playback URL, (2) absolute path read, (3) IDB handle/path fallback, (4) workspace-relative, (5) workspace-cache
+- `helpers.ts` `downloadBlob()` → delegates to `PlatformMedia.downloadFile()` (Tauri: native save dialog, Web: anchor download)
+
 ### Import Pattern
 The codebase uses a multi-context import pattern to work in different execution contexts:
 ```python
@@ -476,12 +509,12 @@ except ImportError:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/config` | GET | Returns enabled feature flags |
-| `/api/viewer-template` | GET | Returns standalone HTML viewer template |
+| `/api/viewer-template` | GET | Returns standalone HTML viewer template (standalone-only) |
 | `/api/convert` | POST | Stateless ffmpeg conversion to browser-playable media |
-| `/api/format-pdf` | POST | Stateless PDF regeneration from line entries |
+| `/api/format-pdf` | POST | Stateless PDF regeneration from line entries (standalone-only) |
 | `/api/transcribe` | POST | Main transcription (file → PDF + XML + HTML) |
-| `/api/resync` | POST | Re-align transcript with audio (Rev AI, multipart) |
-| `/api/gemini-refine` | POST | Gemini refinement pass (multipart) |
+| `/api/resync` | POST | Re-align transcript with audio (Rev AI, standalone-only) |
+| `/api/gemini-refine` | POST | Gemini refinement pass (multipart, standalone-only) |
 | `/api/summarize` | POST | AI summary + evidence type classification (Haiku) |
 | `/api/chat` | POST | Agentic chat SSE stream (Haiku 4.5 + tools + search_result citations) |
 | `/api/auth/login` | POST | User authentication |
@@ -627,4 +660,4 @@ After any change, verify:
 
 ---
 
-*Last updated: 2026-03-02 — Investigation chat: switched to Haiku 4.5, replaced custom [[CITE:...]] markers with API native search_result citations, added prompt caching, markdown rendering, auto-expanding textarea, and multi-turn tool history context*
+*Last updated: 2026-03-30 — Platform abstraction layer: unified Tauri/Web file picking, media playback, and downloads behind PlatformMedia/PlatformFS interfaces. Centralized is_standalone_mode() in config.py. Added require_standalone_session guards to viewer-template, format-pdf, resync, and gemini-refine endpoints.*
