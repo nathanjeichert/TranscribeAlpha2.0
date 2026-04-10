@@ -47,6 +47,21 @@ Agent commit/PR rules:
 - Promote changes with a deliberate PR from `alpha` to `main` after validation.
 - Never run the Cloud Build trigger unless explicitly asked by the user.
 
+**Desktop (Tauri) releases — version bump is REQUIRED:**
+The in-app updater (`TauriUpdater.tsx`) checks `releases/latest/download/latest.json` and only prompts when the remote semver is **strictly greater** than the installed version. If you ship a new build without bumping the version, existing installs will silently report "no update available" and users will be stuck on old code.
+
+Before cutting a desktop release, bump the version in **both** files to the same new semver:
+- `frontend-next/src-tauri/tauri.conf.json` → `"version"`
+- `frontend-next/src-tauri/Cargo.toml` → `version`
+
+Then cut the release by pushing a matching git tag:
+```bash
+git tag v0.2.8 && git push origin v0.2.8
+```
+The tag push triggers `.github/workflows/desktop-build.yml`, which builds macOS + Windows artifacts and publishes a GitHub release. The workflow has a `Set app version from tag` step that re-syncs `tauri.conf.json` from the tag name as a safety net, but **always bump the source files anyway** — `workflow_dispatch` runs (rolling `main` release) skip that step and will otherwise ship with a stale version.
+
+After the release publishes, confirm on GitHub that the new tag is marked **Latest** (the `releases/latest/...` redirect the updater depends on points at whichever release has that flag). If an older rolling `main` release is still flagged Latest, update it manually via `gh release edit <tag> --latest`.
+
 ## Codebase Architecture
 
 ```
