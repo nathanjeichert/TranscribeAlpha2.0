@@ -18,12 +18,19 @@ export const routes = {
     if (!mediaKey) return base
     return `${base}?key=${encodeURIComponent(mediaKey)}`
   },
-  viewer: (mediaKey?: string, caseId?: string, highlightLineId?: string) => {
+  viewer: (
+    mediaKey?: string,
+    caseId?: string,
+    highlightLineId?: string,
+    options?: { tools?: 'clips' | 'sequences'; clipLineId?: string },
+  ) => {
     const base = withTrailingSlash('/viewer')
     const params = new URLSearchParams()
     if (mediaKey) params.set('key', mediaKey)
     if (caseId) params.set('case', caseId)
     if (highlightLineId) params.set('highlight', highlightLineId)
+    if (options?.tools) params.set('tools', options.tools)
+    if (options?.clipLineId) params.set('clip_line', options.clipLineId)
     const query = params.toString()
     return query ? `${base}?${query}` : base
   },

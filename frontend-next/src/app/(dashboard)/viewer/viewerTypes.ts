@@ -18,3 +18,16 @@ export type SequenceState =
 
 export type ViewerMode = 'document' | 'caption'
 export type ToolsTab = 'clips' | 'sequences'
+
+export interface ClipDraft {
+  id: string
+  source: 'assistant' | 'citation'
+  name: string
+  startLineId: string
+  endLineId: string
+  startTime: number
+  endTime: number
+  rationale?: string
+  confidence?: 'low' | 'medium' | 'high'
+  warnings?: string[]
+}

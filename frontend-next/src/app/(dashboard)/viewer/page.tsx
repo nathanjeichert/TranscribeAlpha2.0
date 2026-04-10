@@ -2,10 +2,13 @@
 
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { formatClock, captionTextForLine, splitSpeakerPrefix, type ViewerLine } from '@/utils/transcriptFormat'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { formatClock, captionTextForLine, splitSpeakerPrefix, parseTimeInput, type ViewerLine } from '@/utils/transcriptFormat'
 import { routes } from '@/utils/routes'
 import { guardedPush } from '@/utils/navigationGuard'
+import { useDashboard } from '@/context/DashboardContext'
+import { requestClipAssistant } from '@/lib/clipAssistantApi'
+import type { ClipRecord } from '@/lib/storage'
 import { useViewerLoader } from './_hooks/useViewerLoader'
 import { useCaseArtifacts } from './_hooks/useCaseArtifacts'
 import { usePlayerSync } from './_hooks/usePlayerSync'
@@ -17,9 +20,24 @@ import { useExport } from './_hooks/useExport'
 import { CaptionWindow } from './_components/CaptionWindow'
 import { ClipsPanel } from './_components/ClipsPanel'
 import { SequencesPanel } from './_components/SequencesPanel'
-import type { ViewerMode, ToolsTab } from './viewerTypes'
+import type { ViewerMode, ToolsTab, ClipDraft } from './viewerTypes'
 
 const PROGRAMMATIC_SCROLL_RESET_MS = 700
+
+function formatClipInputTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
+  const totalTenths = Math.round(seconds * 10)
+  const totalSeconds = Math.floor(totalTenths / 10)
+  const tenths = totalTenths % 10
+  const hrs = Math.floor(totalSeconds / 3600)
+  const mins = Math.floor((totalSeconds % 3600) / 60)
+  const secs = totalSeconds % 60
+  const secText = tenths === 0
+    ? String(secs).padStart(2, '0')
+    : `${String(secs).padStart(2, '0')}.${tenths}`
+  if (hrs > 0) return `${hrs}:${String(mins).padStart(2, '0')}:${secText}`
+  return `${mins}:${secText}`
+}
 
 export default function ViewerPage() {
   const router = useRouter()
@@ -27,6 +45,9 @@ export default function ViewerPage() {
   const queryMediaKey = searchParams.get('key')
   const queryCaseId = searchParams.get('case')
   const queryHighlightLineId = searchParams.get('highlight')
+  const queryTools = searchParams.get('tools')
+  const queryClipLineId = searchParams.get('clip_line')
+  const { oncueXmlEnabled } = useDashboard()
 
   // DOM refs — owned by the page, passed to hooks as needed
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -36,11 +57,16 @@ export default function ViewerPage() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const waveformRef = useRef<HTMLDivElement>(null)
+  const processedClipLineRef = useRef<string | null>(null)
 
   // Local UI state
   const [viewerMode, setViewerMode] = useState<ViewerMode>('document')
-  const [showToolsPanel, setShowToolsPanel] = useState(false)
-  const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>('clips')
+  const [showToolsPanel, setShowToolsPanel] = useState(() => Boolean(queryCaseId || queryTools || queryClipLineId))
+  const [activeToolsTab, setActiveToolsTab] = useState<ToolsTab>(() => (queryTools === 'sequences' ? 'sequences' : 'clips'))
+  const [clipAssistantPrompt, setClipAssistantPrompt] = useState('')
+  const [clipAssistantBusy, setClipAssistantBusy] = useState(false)
+  const [clipAssistantError, setClipAssistantError] = useState('')
+  const [clipDraft, setClipDraft] = useState<ClipDraft | null>(null)
 
   // ─── Hooks ───────────────────────────────────────────────────────────────
 
@@ -140,6 +166,7 @@ export default function ViewerPage() {
     setExportMenuOpen,
     exportMenuRef,
     exportTranscriptPdf,
+    exportOnCueXml,
     exportStandaloneViewer,
     exportClipPdf,
     requestClipPdfBlob,
@@ -270,6 +297,21 @@ export default function ViewerPage() {
   }, [visibleClips])
 
   const canEditClips = !!effectiveCaseId
+  const oncueReady = oncueXmlEnabled && Boolean(transcript?.oncue_xml_base64)
+
+  const draftLineIdSet = useMemo(() => {
+    const ids = new Set<string>()
+    if (!transcript || !clipDraft) return ids
+    const startIndex = transcript.lines.findIndex((line) => line.id === clipDraft.startLineId)
+    const endIndex = transcript.lines.findIndex((line) => line.id === clipDraft.endLineId)
+    if (startIndex < 0 || endIndex < 0) return ids
+    const from = Math.min(startIndex, endIndex)
+    const to = Math.max(startIndex, endIndex)
+    for (let index = from; index <= to; index += 1) {
+      ids.add(transcript.lines[index].id)
+    }
+    return ids
+  }, [clipDraft, transcript])
 
   const activeLineIndex = useMemo(() => {
     if (!transcript || !activeLineId) return -1
@@ -290,6 +332,199 @@ export default function ViewerPage() {
     }
   }, [activeLineIndex, transcript])
 
+  const scrollLineIntoView = useCallback((lineId: string) => {
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const target = lineRefs.current[lineId]
+        if (!target) return
+        programmaticScrollRef.current = true
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        setTimeout(() => {
+          programmaticScrollRef.current = false
+        }, PROGRAMMATIC_SCROLL_RESET_MS)
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [programmaticScrollRef])
+
+  const applyClipDraftFromLineIds = useCallback((params: {
+    source: ClipDraft['source']
+    name: string
+    startLineId: string
+    endLineId: string
+    rationale?: string
+    confidence?: ClipDraft['confidence']
+    warnings?: string[]
+  }) => {
+    if (!transcript) return false
+    const startIndex = transcript.lines.findIndex((line) => line.id === params.startLineId)
+    const endIndex = transcript.lines.findIndex((line) => line.id === params.endLineId)
+    if (startIndex < 0 || endIndex < 0) return false
+
+    const first = transcript.lines[Math.min(startIndex, endIndex)]
+    const last = transcript.lines[Math.max(startIndex, endIndex)]
+    const name = params.name.trim() || 'Draft clip'
+
+    setClipDraft({
+      id: `${params.source}-${crypto.randomUUID()}`,
+      source: params.source,
+      name,
+      startLineId: first.id,
+      endLineId: last.id,
+      startTime: first.start,
+      endTime: last.end,
+      rationale: params.rationale,
+      confidence: params.confidence,
+      warnings: params.warnings?.filter(Boolean),
+    })
+    setClipName(name)
+    setClipStart(formatClipInputTime(first.start))
+    setClipEnd(formatClipInputTime(last.end))
+    setSelectedLineId(first.id)
+    setHighlightLineId(first.id)
+    setShowToolsPanel(true)
+    setActiveToolsTab('clips')
+    scrollLineIntoView(first.id)
+    return true
+  }, [scrollLineIntoView, setHighlightLineId, setSelectedLineId, transcript, setClipName, setClipStart, setClipEnd])
+
+  const buildDraftClipRecord = useCallback((): ClipRecord | null => {
+    if (!clipDraft || !transcript || !currentMediaKey) return null
+    setClipError('')
+
+    const startVal = parseTimeInput(clipStart)
+    const endVal = parseTimeInput(clipEnd)
+    if (startVal === null || endVal === null) {
+      setClipError('Enter valid start and end times before previewing or exporting.')
+      return null
+    }
+
+    const maxDuration = duration || transcript.audio_duration || Number.MAX_SAFE_INTEGER
+    const start = Math.max(0, Math.min(startVal, maxDuration))
+    const end = Math.max(0, Math.min(endVal, maxDuration))
+    if (end <= start) {
+      setClipError('End time must be greater than start time.')
+      return null
+    }
+
+    const startLine =
+      nearestLineFromTime(start) ||
+      transcript.lines.find((line) => line.id === clipDraft.startLineId) ||
+      null
+    const endLine =
+      nearestLineFromTime(end) ||
+      transcript.lines.find((line) => line.id === clipDraft.endLineId) ||
+      null
+
+    return {
+      clip_id: clipDraft.id,
+      name: clipName.trim() || clipDraft.name || 'Draft clip',
+      source_media_key: currentMediaKey,
+      start_time: start,
+      end_time: end,
+      start_pgln: startLine ? (startLine.pgln ?? null) : null,
+      end_pgln: endLine ? (endLine.pgln ?? null) : null,
+      start_page: startLine ? (startLine.page ?? null) : null,
+      start_line: startLine ? (startLine.line ?? null) : null,
+      end_page: endLine ? (endLine.page ?? null) : null,
+      end_line: endLine ? (endLine.line ?? null) : null,
+      created_at: new Date().toISOString(),
+      order: -1,
+    }
+  }, [clipDraft, clipEnd, clipName, clipStart, currentMediaKey, duration, nearestLineFromTime, transcript])
+
+  const runClipAssistant = useCallback(async () => {
+    setClipAssistantError('')
+    setClipError('')
+    if (!transcript || !currentMediaKey) {
+      setClipAssistantError('Open a transcript before drafting a clip.')
+      return
+    }
+
+    const requestText = clipAssistantPrompt.trim()
+    if (!requestText) {
+      setClipAssistantError('Tell the assistant what part to clip.')
+      return
+    }
+
+    setClipAssistantBusy(true)
+    try {
+      const response = await requestClipAssistant({
+        media_key: currentMediaKey,
+        case_id: effectiveCaseId || null,
+        transcript_title: transcript.title_data?.FILE_NAME || transcript.media_filename || transcript.media_key,
+        media_duration: duration || transcript.audio_duration || 0,
+        selected_line_id: selectedLineId || queryClipLineId || null,
+        user_request: requestText,
+        lines: transcript.lines.map((line) => ({
+          id: line.id,
+          page: line.page ?? null,
+          line: line.line ?? null,
+          pgln: line.pgln ?? null,
+          start: line.start,
+          end: line.end,
+          speaker: line.speaker || '',
+          text: line.text || line.rendered_text || '',
+        })),
+      })
+
+      if (response.status === 'needs_clarification') {
+        setClipAssistantError(response.message)
+        return
+      }
+
+      const applied = applyClipDraftFromLineIds({
+        source: 'assistant',
+        name: response.draft.name,
+        startLineId: response.draft.start_line_id,
+        endLineId: response.draft.end_line_id,
+        rationale: response.draft.rationale,
+        confidence: response.draft.confidence,
+        warnings: response.draft.warnings,
+      })
+      if (!applied) {
+        setClipAssistantError('The assistant returned a range that no longer matches this transcript.')
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Clip Assistant failed. Please try again.'
+      setClipAssistantError(message)
+    } finally {
+      setClipAssistantBusy(false)
+    }
+  }, [applyClipDraftFromLineIds, clipAssistantPrompt, currentMediaKey, duration, effectiveCaseId, queryClipLineId, selectedLineId, transcript])
+
+  const previewDraftClip = useCallback(async () => {
+    const draftClip = buildDraftClipRecord()
+    if (!draftClip) return
+    await playRange(draftClip.start_time, draftClip.end_time, draftClip.clip_id)
+  }, [buildDraftClipRecord, playRange])
+
+  const saveDraftClip = useCallback(async () => {
+    const saved = await createClip()
+    if (saved) setClipDraft(null)
+  }, [createClip])
+
+  const exportDraftPdf = useCallback(() => {
+    const draftClip = buildDraftClipRecord()
+    if (!draftClip) return
+    void exportClipPdf(draftClip, setClipError)
+  }, [buildDraftClipRecord, exportClipPdf])
+
+  const exportDraftMedia = useCallback(() => {
+    const draftClip = buildDraftClipRecord()
+    if (!draftClip) return
+    void exportClipMedia(draftClip)
+  }, [buildDraftClipRecord, exportClipMedia])
+
+  const clearClipDraft = useCallback(() => {
+    setClipDraft(null)
+    setClipAssistantError('')
+    setClipError('')
+    setClipName('')
+    setClipStart('')
+    setClipEnd('')
+  }, [setClipName, setClipStart, setClipEnd])
+
   // ─── Effects ──────────────────────────────────────────────────────────────
 
   // Reset duration when transcript changes
@@ -298,6 +533,62 @@ export default function ViewerPage() {
       setDuration(transcript.audio_duration || 0)
     }
   }, [transcript, setDuration])
+
+  // Case links open as a review workspace with the Clip Builder ready.
+  useEffect(() => {
+    if (queryTools === 'clips' || queryClipLineId) {
+      setShowToolsPanel(true)
+      setActiveToolsTab('clips')
+      return
+    }
+    if (queryTools === 'sequences') {
+      setShowToolsPanel(true)
+      setActiveToolsTab('sequences')
+      return
+    }
+    if (queryCaseId) {
+      setShowToolsPanel(true)
+      setActiveToolsTab('clips')
+    }
+  }, [queryCaseId, queryClipLineId, queryTools])
+
+  // Keep draft actions aligned if the user manually tweaks the range fields.
+  useEffect(() => {
+    if (!clipDraft) return
+    const start = parseTimeInput(clipStart)
+    const end = parseTimeInput(clipEnd)
+    if (start === null || end === null || end <= start) return
+    setClipDraft((prev) => {
+      if (!prev) return prev
+      if (prev.startTime === start && prev.endTime === end) return prev
+      return { ...prev, startTime: start, endTime: end }
+    })
+  }, [clipDraft, clipEnd, clipStart])
+
+  // Create an unsaved one-line citation draft plus one surrounding line on each side.
+  useEffect(() => {
+    if (!queryClipLineId || !transcript || isLoading) return
+    const processedKey = `${transcript.media_key}:${queryClipLineId}`
+    if (processedClipLineRef.current === processedKey) return
+
+    const citationIndex = transcript.lines.findIndex((line) => line.id === queryClipLineId)
+    if (citationIndex < 0) return
+
+    processedClipLineRef.current = processedKey
+    const startLine = transcript.lines[Math.max(0, citationIndex - 1)]
+    const endLine = transcript.lines[Math.min(transcript.lines.length - 1, citationIndex + 1)]
+    const cited = transcript.lines[citationIndex]
+    const label = cited.page && cited.line ? `p.${cited.page}:${cited.line}` : 'cited line'
+
+    applyClipDraftFromLineIds({
+      source: 'citation',
+      name: `Citation clip ${label}`,
+      startLineId: startLine.id,
+      endLineId: endLine.id,
+      rationale: 'Drafted from the cited line with one surrounding transcript line before and after.',
+      confidence: 'medium',
+    })
+  }, [applyClipDraftFromLineIds, isLoading, queryClipLineId, transcript])
 
   // Scroll to highlighted line from case search results
   useEffect(() => {
@@ -549,12 +840,18 @@ export default function ViewerPage() {
                 </button>
               </div>
 
+              {oncueReady && (
+                <span className="rounded border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-800">
+                  OnCue XML ready
+                </span>
+              )}
+
               <button
                 type="button"
                 className="btn-outline px-3 py-1.5 text-sm"
                 onClick={() => setShowToolsPanel((prev) => !prev)}
               >
-                {showToolsPanel ? 'Hide Tools' : 'Show Tools'}
+                {showToolsPanel ? 'Hide Workbench' : 'Clip Builder'}
               </button>
 
               <button
@@ -566,6 +863,16 @@ export default function ViewerPage() {
               >
                 Download PDF
               </button>
+
+              {oncueReady && (
+                <button
+                  type="button"
+                  className="rounded border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+                  onClick={exportOnCueXml}
+                >
+                  Download OnCue XML
+                </button>
+              )}
 
               <div ref={exportMenuRef} className="relative">
                 <button
@@ -588,6 +895,18 @@ export default function ViewerPage() {
                     >
                       Download PDF
                     </button>
+                    {oncueReady && (
+                      <button
+                        type="button"
+                        className="block w-full rounded px-3 py-2 text-left text-sm hover:bg-gray-50"
+                        onClick={() => {
+                          setExportMenuOpen(false)
+                          exportOnCueXml()
+                        }}
+                      >
+                        Download OnCue XML
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="block w-full rounded px-3 py-2 text-left text-sm hover:bg-gray-50"
@@ -623,7 +942,7 @@ export default function ViewerPage() {
       )}
 
       <div className={`min-h-0 ${presentationMode ? 'h-screen' : 'h-[calc(100vh-74px)]'}`}>
-        <div className={`grid h-full min-h-0 ${toolsVisible ? 'grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1'}`}>
+        <div className={`grid h-full min-h-0 ${toolsVisible ? 'grid-cols-1 xl:grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-1'}`}>
           <div className={`grid h-full min-h-0 ${isDocumentMode ? 'grid-cols-1 xl:grid-cols-[minmax(340px,44%)_minmax(0,1fr)]' : 'grid-cols-1'}`}>
             <section
               className="relative flex min-h-0 flex-col bg-stone-100"
@@ -797,9 +1116,11 @@ export default function ViewerPage() {
                                 const currentMatch = currentSearchLineId === line.id
                                 const lineDisplay = splitSpeakerPrefix(line)
                                 const highlighted = highlightLineId === line.id
+                                const inDraftRange = draftLineIdSet.has(line.id)
 
                                 const lineClasses = [
                                   'group grid cursor-pointer grid-cols-[36px_minmax(0,1fr)] gap-2 px-1 font-mono text-[12pt] leading-[2] text-stone-900 transition-colors hover:bg-blue-50/30',
+                                  inDraftRange ? 'bg-emerald-50/80' : '',
                                   active ? 'bg-amber-100/80' : '',
                                   selected && !highlighted ? 'ring-1 ring-inset ring-blue-400 bg-blue-50/70' : '',
                                   match ? 'bg-amber-50' : '',
@@ -860,7 +1181,10 @@ export default function ViewerPage() {
             <aside className="flex h-full min-h-0 flex-col border-l border-blue-100 bg-gradient-to-b from-white to-blue-50/35">
               <div className="border-b border-blue-100 px-4 py-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold text-gray-900">Tools</div>
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">Clip Builder</div>
+                    <div className="mt-0.5 text-xs text-gray-600">Draft, preview, save, and export trial clips.</div>
+                  </div>
                   <button type="button" className="btn-outline px-2 py-1 text-xs" onClick={() => setShowToolsPanel(false)}>
                     Hide
                   </button>
@@ -895,6 +1219,11 @@ export default function ViewerPage() {
                     queryCaseId={queryCaseId}
                     currentMediaKey={currentMediaKey}
                     activeClipPlaybackId={activeClipPlaybackId}
+                    clipAssistantPrompt={clipAssistantPrompt}
+                    setClipAssistantPrompt={setClipAssistantPrompt}
+                    clipAssistantBusy={clipAssistantBusy}
+                    clipAssistantError={clipAssistantError}
+                    clipDraft={clipDraft}
                     clipName={clipName}
                     setClipName={setClipName}
                     clipStart={clipStart}
@@ -907,7 +1236,13 @@ export default function ViewerPage() {
                     dragClipId={dragClipId}
                     setDragClipId={setDragClipId}
                     groupedVisibleClips={groupedVisibleClips}
-                    onCreateClip={() => void createClip()}
+                    onRunClipAssistant={() => void runClipAssistant()}
+                    onPreviewDraft={() => void previewDraftClip()}
+                    onSaveDraft={() => void saveDraftClip()}
+                    onExportDraftPdf={() => void exportDraftPdf()}
+                    onExportDraftMedia={() => void exportDraftMedia()}
+                    onClearDraft={clearClipDraft}
+                    onCreateClip={() => void saveDraftClip()}
                     onStartEditingClip={startEditingClip}
                     onSaveEditedClip={() => void saveEditedClip()}
                     onCancelEditingClip={cancelEditingClip}

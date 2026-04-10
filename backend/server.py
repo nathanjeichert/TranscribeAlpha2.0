@@ -50,6 +50,11 @@ try:
 except ImportError:
     from api.chat import router as chat_router
 
+try:
+    from .api.clip_assistant import router as clip_assistant_router
+except ImportError:
+    from api.clip_assistant import router as clip_assistant_router
+
 
 app = FastAPI(
     title="TranscribeAlpha API",
@@ -71,6 +76,7 @@ app.include_router(health_router)
 app.include_router(settings_router)
 app.include_router(summarize_router)
 app.include_router(chat_router)
+app.include_router(clip_assistant_router)
 
 frontend_candidates = [
     os.path.join(os.path.dirname(__file__), "..", "frontend"),

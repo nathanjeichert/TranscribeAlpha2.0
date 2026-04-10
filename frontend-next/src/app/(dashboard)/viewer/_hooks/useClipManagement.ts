@@ -97,7 +97,7 @@ export function useClipManagement({
     emitClipError('')
     if (!transcript || !currentMediaKey || !effectiveCaseId) {
       emitClipError('Clips are available only for transcripts assigned to a case.')
-      return
+      return null
     }
 
     const startVal = parseTimeInput(clipStart)
@@ -105,7 +105,7 @@ export function useClipManagement({
 
     if (startVal === null || endVal === null) {
       emitClipError('Enter valid start and end times (M:SS or H:MM:SS).')
-      return
+      return null
     }
 
     const maxDuration = duration || transcript.audio_duration || Number.MAX_SAFE_INTEGER
@@ -114,7 +114,7 @@ export function useClipManagement({
 
     if (end <= start) {
       emitClipError('End time must be greater than start time.')
-      return
+      return null
     }
 
     const startLine = nearestLineFromTime(start)
@@ -147,6 +147,8 @@ export function useClipManagement({
     setClipName('')
     setClipStart('')
     setClipEnd('')
+
+    return clip
   }, [clipEnd, clipName, clipStart, clips, currentMediaKey, duration, effectiveCaseId, emitClipError, loadCaseArtifacts, nearestLineFromTime, transcript])
 
   const startEditingClip = useCallback((clip: ClipRecord) => {

@@ -129,6 +129,18 @@ export function useExport({
     downloadBlob(new Blob([array], { type: 'application/pdf' }), `${mediaBaseName} transcript.pdf`)
   }, [transcript])
 
+  const exportOnCueXml = useCallback(() => {
+    if (!transcript?.oncue_xml_base64) return
+    const bytes = atob(transcript.oncue_xml_base64)
+    const array = new Uint8Array(bytes.length)
+    for (let i = 0; i < bytes.length; i += 1) {
+      array[i] = bytes.charCodeAt(i)
+    }
+    const mediaNameRaw = transcript.title_data?.FILE_NAME || transcript.media_filename || transcript.media_key || 'transcript'
+    const mediaBaseName = sanitizeDownloadStem(String(mediaNameRaw).replace(/\.[^.]+$/, ''))
+    downloadBlob(new Blob([array], { type: 'application/xml' }), `${mediaBaseName} OnCue.xml`)
+  }, [transcript])
+
   const exportStandaloneViewer = useCallback(async (setError: (msg: string) => void) => {
     if (!transcript) return
     setExporting(true)
@@ -189,6 +201,7 @@ export function useExport({
     setExportMenuOpen,
     exportMenuRef,
     exportTranscriptPdf,
+    exportOnCueXml,
     exportStandaloneViewer,
     exportClipPdf,
     requestClipPdfBlob,

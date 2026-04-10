@@ -25,17 +25,23 @@ export default function CitationCard({ citation, caseId }: CitationCardProps) {
   const router = useRouter()
   const { mediaKey, lineId } = parseSource(citation.source)
 
-  const handleClick = () => {
+  const handleViewTranscript = () => {
     guardedPush(
       router,
       routes.viewer(mediaKey, caseId, lineId),
     )
   }
 
+  const handleCreateClip = () => {
+    guardedPush(
+      router,
+      routes.viewer(mediaKey, caseId, lineId, { tools: 'clips', clipLineId: lineId }),
+    )
+  }
+
   return (
-    <button
-      onClick={handleClick}
-      className="inline-flex flex-col items-start gap-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg px-3 py-2 text-left transition-colors max-w-md"
+    <div
+      className="inline-flex max-w-md flex-col items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-left"
     >
       <div className="flex items-center gap-1.5 text-xs text-blue-700 font-medium">
         <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -48,9 +54,24 @@ export default function CitationCard({ citation, caseId }: CitationCardProps) {
           &ldquo;{citation.cited_text}&rdquo;
         </p>
       )}
-      <span className="text-xs text-blue-600 font-medium">
-        View in transcript &rarr;
-      </span>
-    </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={handleViewTranscript}
+          className="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+        >
+          View in transcript
+        </button>
+        {lineId && (
+          <button
+            type="button"
+            onClick={handleCreateClip}
+            className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-100"
+          >
+            Create clip
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
