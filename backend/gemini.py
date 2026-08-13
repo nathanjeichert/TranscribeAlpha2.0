@@ -71,9 +71,9 @@ def run_gemini_edit(xml_text: str, audio_path: str, audio_mime: str, duration_hi
         logger.error("google-genai not available: %s", exc)
         raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
 
-    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3-pro-preview").strip()
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.7-flash").strip()
     if not model_name:
-        model_name = "gemini-3-pro-preview"
+        model_name = "gemini-3.7-flash"
 
     instructions = (
         "You are improving an OnCue-style legal transcript. "
@@ -247,7 +247,7 @@ def transcribe_with_gemini(
     speaker_name_list: Optional[List[str]] = None,
 ) -> List[dict]:
     """
-    Transcribe audio using Gemini 3.0 Pro with thinking_level="low".
+    Transcribe audio using Gemini 3.7 Flash with thinking_level="low".
 
     Args:
         audio_path: Path to the audio file
@@ -282,9 +282,9 @@ def transcribe_with_gemini(
         logger.error("google-genai not available: %s", exc)
         raise HTTPException(status_code=500, detail="Gemini client library not installed") from exc
 
-    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3-pro-preview").strip()
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-3.7-flash").strip()
     if not model_name:
-        model_name = "gemini-3-pro-preview"
+        model_name = "gemini-3.7-flash"
 
     # Build speaker instructions
     speaker_instructions = ""

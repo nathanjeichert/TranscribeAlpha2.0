@@ -45,7 +45,7 @@ substitutions:
   _REQUEST_TIMEOUT: '300'
   _ASSEMBLYAI_API_KEY: 'your-assemblyai-key-here'
   _GEMINI_API_KEY: 'your-gemini-key-here'
-  _GEMINI_MODEL_NAME: 'models/gemini-3-pro-preview'
+  _GEMINI_MODEL_NAME: 'models/gemini-3.7-flash'
   _JWT_SECRET_KEY: 'your-jwt-secret-key-here-use-a-long-random-string'
   _REV_AI_API_KEY: 'your-rev-ai-key-here'
 
