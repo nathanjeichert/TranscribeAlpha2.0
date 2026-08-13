@@ -11,7 +11,7 @@ Instructions for AI coding agents (Claude Code, Cursor, Copilot, etc.) working o
 | Backend | FastAPI (Python 3.x) |
 | Frontend | Next.js 14 + TypeScript + Tailwind CSS |
 | Desktop App | Tauri v2 (Rust shell + Python sidecar via PyInstaller) |
-| Transcription | AssemblyAI (slam-1) or Gemini 3.0 Pro |
+| Transcription | AssemblyAI (Universal-3.5 Pro) or Gemini 3.0 Pro |
 | Timestamp Alignment | Rev AI Forced Alignment API |
 | AI Investigation | Anthropic Claude API — Haiku 4.5 (chat agent + auto-summary) with native search_result citations |
 | Storage Model | Local-first (File System Access API + IndexedDB) |

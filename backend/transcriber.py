@@ -195,7 +195,7 @@ def build_assemblyai_config(speakers_expected: Optional[int] = None) -> "aai.Tra
     )
 
     config_kwargs = {
-        "speech_models": ["universal-3-pro"],
+        "speech_models": ["universal-3-5-pro"],
         "prompt": prompt,
         "format_text": True,
         "speaker_labels": True,
@@ -224,7 +224,7 @@ def build_assemblyai_multichannel_config() -> "aai.TranscriptionConfig":
     )
 
     config_kwargs = {
-        "speech_models": ["universal-3-pro"],
+        "speech_models": ["universal-3-5-pro"],
         "prompt": prompt,
         "format_text": True,
         "multichannel": True,

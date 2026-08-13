@@ -4,7 +4,7 @@ Professional legal transcript generation from audio and video files. Runs as a *
 
 ## Features
 
-- **Multi-engine transcription** — AssemblyAI (slam-1) or Google Gemini 3.0 Pro
+- **Multi-engine transcription** — AssemblyAI (Universal-3.5 Pro) or Google Gemini 3.0 Pro
 - **Batch processing** — queue up to 3,000 files per session
 - **Jail-call mode** — automatic G.729 detection and multichannel splitting
 - **Transcript editor** — line-by-line editing with synchronized audio/video playback and waveform visualization
