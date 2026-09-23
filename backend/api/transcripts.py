@@ -49,7 +49,10 @@ try:
     from ..transcriber import (
         build_assemblyai_multichannel_config,
         build_assemblyai_config,
+        call_with_network_retries,
+        is_transient_network_error,
         convert_video_to_audio,
+        extract_upload_audio,
         get_media_duration,
         turns_from_assemblyai_multichannel_response,
         turns_from_assemblyai_response,
@@ -58,7 +61,10 @@ except ImportError:
     from transcriber import (
         build_assemblyai_multichannel_config,
         build_assemblyai_config,
+        call_with_network_retries,
+        is_transient_network_error,
         convert_video_to_audio,
+        extract_upload_audio,
         get_media_duration,
         turns_from_assemblyai_multichannel_response,
         turns_from_assemblyai_response,
@@ -719,8 +725,8 @@ async def transcribe_local(
         raise HTTPException(status_code=400, detail="File not found at the specified path")
 
     file_size = os.path.getsize(file_path)
-    if file_size > 2 * 1024 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large. Maximum size is 2GB.")
+    # No size cap up front: AssemblyAI jobs upload an extracted audio track, not the raw file.
+    # The 2GB limit only applies if we'd have to upload the original media (see _run_aai).
 
     logger.info("Received local transcription request for path=%s model=%s size=%.2f MB",
                 file_path, req.transcription_model, file_size / (1024 * 1024))
@@ -779,9 +785,39 @@ async def transcribe_local(
                     else build_assemblyai_config(req.speakers_expected)
                 )
 
+                aai.settings.http_timeout = 300.0
+
                 def _run_aai():
-                    with open(file_path, "rb") as f:
-                        return aai.Transcriber().transcribe(f, config=config)
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        upload_path = file_path
+                        # Multichannel jobs need the original channel layout; everything else
+                        # uploads a compact mono track instead of the (often multi-GB) video.
+                        if not req.multichannel:
+                            extracted = extract_upload_audio(
+                                file_path, os.path.join(temp_dir, "upload_audio.mp3")
+                            )
+                            if extracted:
+                                upload_path = extracted
+
+                        if os.path.getsize(upload_path) > 2 * 1024 * 1024 * 1024:
+                            raise RuntimeError(
+                                "File too large. Maximum size is 2GB, and audio could not be extracted from it."
+                            )
+
+                        def _transcribe_once():
+                            with open(upload_path, "rb") as f:
+                                result = aai.Transcriber().transcribe(f, config=config)
+                            # The SDK reports upload/network failures as an errored transcript
+                            # rather than raising; surface transient ones so they get retried.
+                            status = getattr(getattr(result, "status", None), "value", None)
+                            error_text = str(getattr(result, "error", None) or "")
+                            if status == "error" and is_transient_network_error(RuntimeError(error_text)):
+                                raise RuntimeError(error_text)
+                            return result
+
+                        return call_with_network_retries(
+                            _transcribe_once, label=f"AssemblyAI transcription of {display_filename}"
+                        )
 
                 transcript = await anyio.to_thread.run_sync(_run_aai)
 

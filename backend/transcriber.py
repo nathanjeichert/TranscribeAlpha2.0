@@ -1,5 +1,7 @@
 import os
+import sys
 import inspect
+import threading
 import time
 import re
 import logging
@@ -33,6 +35,15 @@ import platform
 
 def find_executable_path(executable_name: str) -> Optional[str]:
     """Cross-platform executable finder"""
+    # Desktop sidecar: Tauri bundles ffmpeg next to the frozen server binary, and
+    # GUI-launched apps don't inherit a shell PATH, so check there first.
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        for candidate in (executable_name, f"{executable_name}.exe"):
+            bundled = os.path.join(exe_dir, candidate)
+            if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+                return bundled
+
     # First try shutil.which (works on all platforms)
     path = shutil.which(executable_name)
     if path:
@@ -181,6 +192,87 @@ def convert_video_to_audio(input_path: str, output_path: str, format: str = "mp3
     except Exception as e:
         logger.error("Unexpected error in convert_video_to_audio: %s", e)
         return None
+
+
+# Batches can queue dozens of multi-GB videos at once; cap concurrent ffmpeg
+# decodes so they don't thrash the disk (often an external drive) and CPU.
+_EXTRACTION_SLOTS = threading.BoundedSemaphore(4)
+
+
+def extract_upload_audio(input_path: str, output_path: str) -> Optional[str]:
+    """Extract a compact mono speech track (~30 MB/hour) for ASR upload.
+
+    Uploading raw body-cam video means multi-GB uploads that hit the 2GB cap or
+    get dropped mid-transfer; the audio alone is all the ASR provider needs.
+    """
+    if not ffmpeg_executable_path:
+        logger.warning("ffmpeg not available; uploading original media for %s", input_path)
+        return None
+
+    cmd = [
+        ffmpeg_executable_path,
+        "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-i", input_path,
+        "-vn", "-sn", "-dn",
+        "-map", "0:a:0",
+        "-ac", "1", "-ar", "22050",
+        "-c:a", "libmp3lame", "-b:a", "64k",
+        "-y", output_path,
+    ]
+    with _EXTRACTION_SLOTS:
+        start = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+        logger.error("Audio extraction failed for %s (rc=%d): %s", input_path, result.returncode, result.stderr[-2000:])
+        return None
+
+    logger.info(
+        "Extracted upload audio for %s in %.1fs (%.1f MB -> %.1f MB)",
+        os.path.basename(input_path),
+        time.time() - start,
+        os.path.getsize(input_path) / (1024 * 1024),
+        os.path.getsize(output_path) / (1024 * 1024),
+    )
+    return output_path
+
+
+_TRANSIENT_ERROR_MARKERS = (
+    "nodename nor servname",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "errno 8",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "remote end closed",
+    "timed out",
+    "timeout",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    " 502",
+    " 503",
+    " 504",
+)
+
+
+def is_transient_network_error(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in message for marker in _TRANSIENT_ERROR_MARKERS)
+
+
+def call_with_network_retries(fn, *, attempts: int = 4, base_delay: float = 5.0, label: str = "request"):
+    """Run fn(), retrying DNS failures, dropped connections, and 5xx gateway errors with backoff."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt >= attempts or not is_transient_network_error(exc):
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning("%s failed with transient error (attempt %d/%d), retrying in %.0fs: %s",
+                           label, attempt, attempts, delay, exc)
+            time.sleep(delay)
 
 
 def build_assemblyai_config(speakers_expected: Optional[int] = None) -> "aai.TranscriptionConfig":
