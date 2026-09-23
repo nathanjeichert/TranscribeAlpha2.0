@@ -8,7 +8,7 @@
 
 import { logger } from '@/utils/logger'
 import { isTauri } from '@/lib/platform'
-import { apiUrl, needsAuth } from '@/lib/platform/api'
+import { apiUrl, getPlatformApiHeaders, needsAuth } from '@/lib/platform/api'
 
 export interface User {
   username: string;
@@ -139,9 +139,11 @@ export async function authenticatedFetch(
 ): Promise<Response> {
   const fullUrl = apiUrl(url)
 
-  // Tauri: no auth needed, just fetch with the correct base URL.
+  // Tauri: no JWT needed, but the sidecar still requires the per-launch
+  // desktop session header — inject it before fetching.
   if (!needsAuth()) {
-    return fetch(fullUrl, options)
+    const platformHeaders = await getPlatformApiHeaders(options.headers)
+    return fetch(fullUrl, { ...options, headers: platformHeaders })
   }
 
   let token = getAccessToken();
