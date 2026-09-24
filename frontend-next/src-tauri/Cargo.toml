@@ -1,6 +1,6 @@
 [package]
 name = "transcribealpha"
-version = "0.3.1"
+version = "0.3.2"
 description = "TranscribeAlpha Desktop"
 authors = ["TranscribeAlpha"]
 edition = "2021"
