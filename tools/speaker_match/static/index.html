@@ -7,55 +7,73 @@
 <style>
   :root {
     --bg: #f6f7f9; --panel: #fff; --ink: #1c2230; --muted: #667085; --line: #e3e6ec;
-    --accent: #2f5bd3; --accent-ink: #fff; --ok: #1f8a4c; --warn: #b54708; --chip: #eef2ff;
+    --accent: #2f5bd3; --accent-ink: #fff; --ok: #1f8a4c; --ok-bg: #ecfdf3; --warn: #b54708; --warn-bg: #fffaeb;
+    --bad: #b42318; --bad-bg: #fef3f2; --chip: #eef2ff; --pending: #fff8e6;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
-  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
   select, input[type=text], button { font: inherit; }
   select, input[type=text] { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: #fff; color: var(--ink); }
-  button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--ink); }
+  button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 5px 11px; cursor: pointer; color: var(--ink); }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.yes { border-color: #a6e3bf; color: var(--ok); }
+  button.no { border-color: #f5c2bd; color: var(--bad); }
   button:disabled { opacity: .5; cursor: default; }
-  .muted { color: var(--muted); }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button.active { background: var(--chip); border-color: #c7d2fe; font-weight: 600; }
+  .muted, .sub { color: var(--muted); }
+  .sub { font-size: 12px; }
   .spacer { flex: 1; }
-  main { padding: 16px 20px 96px; max-width: 1200px; margin: 0 auto; }
-  .notice { background: #fffaeb; border: 1px solid #fedf89; color: #7a2e0e; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+  main { padding: 16px 20px 96px; max-width: 1280px; margin: 0 auto; }
+  .notice { background: var(--warn-bg); border: 1px solid #fedf89; color: #7a2e0e; border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; }
   .notice.info { background: #eff4ff; border-color: #c7d7fe; color: #1d3a8a; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 14px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
   .card-head { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); background: #fafbfc; }
   .card-head .tag { font-weight: 600; white-space: nowrap; }
   .card-head input { flex: 1; min-width: 0; text-transform: uppercase; }
-  table { width: 100%; border-collapse: collapse; }
-  td { padding: 7px 10px; border-top: 1px solid var(--line); vertical-align: top; }
-  tr:first-child td { border-top: 0; }
-  .file { font-weight: 500; }
-  .sub { font-size: 12px; color: var(--muted); }
-  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin-right: 4px; }
-  .chip.wearer { background: #ecfdf3; color: var(--ok); }
-  .chip.low { background: #fef3f2; color: #b42318; }
-  .samples { margin-top: 6px; display: grid; gap: 4px; max-width: 420px; }
+  .member { display: grid; grid-template-columns: 28px 1fr auto; gap: 8px 10px; padding: 9px 12px; border-top: 1px solid var(--line); }
+  .member:first-child { border-top: 0; }
+  .member.pending { background: var(--pending); }
+  .member.off { opacity: .45; }
+  .file { font-weight: 600; word-break: break-all; }
+  .chips { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+  .chip.good { background: var(--ok-bg); color: var(--ok); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); cursor: pointer; }
+  .side { text-align: right; min-width: 150px; }
+  .side .num { font-weight: 600; }
+  .side select { margin-top: 6px; max-width: 170px; }
+  .decide { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+  .samples { margin-top: 6px; display: grid; gap: 3px; max-width: 560px; }
   .sample { display: grid; grid-template-columns: auto auto 1fr; gap: 6px; align-items: baseline; font-size: 12.5px; }
-  .sample button { padding: 1px 8px; font-size: 11px; }
-  .sample.playing .said { color: var(--accent); font-weight: 500; }
-  .said { color: var(--ink); }
-  .num { text-align: right; white-space: nowrap; }
-  .progress { min-width: 260px; }
+  .sample button, .lines button.play { padding: 0 8px; font-size: 11px; }
+  .playing .said { color: var(--accent); font-weight: 500; }
+  .progress { min-width: 240px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
   .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
   footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 12px; align-items: center; }
-  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(720px, 92vw); }
-  dialog .body { padding: 16px; max-height: 60vh; overflow: auto; }
-  dialog .foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
-  h2 { font-size: 15px; margin: 22px 0 10px; }
-  .row-off td { opacity: .45; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(860px, 94vw); background: var(--panel); color: var(--ink); }
+  dialog .head { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  dialog .body { padding: 12px 16px; max-height: 62vh; overflow: auto; }
+  dialog .foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+  h2 { font-size: 15px; margin: 24px 0 10px; }
+  table.files { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  table.files td, table.files th { padding: 7px 12px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+  table.files th { background: #fafbfc; font-weight: 600; font-size: 12px; color: var(--muted); }
+  .lines { width: 100%; border-collapse: collapse; }
+  .lines td { padding: 5px 6px; border-top: 1px solid var(--line); vertical-align: top; font-size: 13px; }
+  .lines tr.move td { background: var(--ok-bg); }
+  .lines tr.unsure td { background: var(--warn-bg); }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #11141a; --panel: #1a1f28; --ink: #e6e9ef; --muted: #98a2b3; --line: #2c3340; --chip: #243049; }
+    :root { --bg: #11141a; --panel: #1a1f28; --ink: #e6e9ef; --muted: #98a2b3; --line: #2c3340; --chip: #243049;
+      --ok-bg: #12291c; --warn-bg: #2a2111; --bad-bg: #2c1515; --pending: #262012; }
     select, input[type=text], button { background: #141821; color: var(--ink); }
-    .card-head { background: #161b23; }
-    .notice { background: #2a2111; border-color: #5c4413; color: #f5d7a0; }
+    .card-head, table.files th { background: #161b23; }
+    .notice { border-color: #5c4413; color: #f5d7a0; }
     .notice.info { background: #16213a; border-color: #2c4380; color: #c7d7fe; }
   }
 </style>
@@ -66,22 +84,26 @@
   <select id="caseSel"></select>
   <button id="analyzeBtn">Analyze voices</button>
   <div class="progress" id="progress" hidden><div class="sub" id="progressMsg"></div><div class="bar"><div id="progressBar"></div></div></div>
+  <div class="tabs"><button data-tab="people" class="active">People</button><button data-tab="files">Files</button></div>
   <div class="spacer"></div>
   <label class="sub">Match strictness
-    <input id="threshold" type="range" min="0.30" max="0.80" step="0.02" value="0.50" style="vertical-align:middle">
-    <span id="thresholdVal">0.50</span>
+    <input id="threshold" type="range" min="0.30" max="0.80" step="0.02" value="0.42" style="vertical-align:middle">
+    <span id="thresholdVal">0.42</span>
   </label>
 </header>
 
 <main>
-  <div class="notice">Close any transcript you have open in TranscribeAlpha's editor before applying names. Every changed file is backed up first (<code>tools/speaker_match/backups/</code>).</div>
+  <div class="notice">Close any transcript you have open in TranscribeAlpha's editor before applying. Every changed file is backed up first (<code>tools/speaker_match/backups/</code>).</div>
   <div id="status"></div>
-  <div class="grid" id="people"></div>
-  <div id="unmatchedWrap"></div>
+  <section id="peopleView">
+    <div class="grid" id="people"></div>
+    <div id="lowWrap"></div>
+  </section>
+  <section id="filesView" hidden></section>
 </main>
 
 <footer>
-  <span id="summary" class="muted">No names entered yet.</span>
+  <span id="summary" class="muted"></span>
   <div class="spacer"></div>
   <button class="primary" id="reviewBtn" disabled>Review &amp; apply</button>
 </footer>
@@ -91,21 +113,41 @@
   <div class="foot"><button id="cancelBtn">Cancel</button><button class="primary" id="confirmBtn">Apply to TranscribeAlpha</button></div>
 </dialog>
 
+<dialog id="splitDlg">
+  <div class="head" id="splitHead"></div>
+  <div class="body" id="splitBody"></div>
+  <div class="foot">
+    <span class="sub" id="splitCount"></span><div class="spacer"></div>
+    <button id="splitAll">Select all proposed</button><button id="splitNone">Select none</button>
+    <button id="splitCancel">Cancel</button><button class="primary" id="splitApply">Move selected</button>
+  </div>
+</dialog>
+
 <audio id="player"></audio>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let caseId = null;
-let people = [];      // [{name, members:[member]}]
-let unmatched = [];   // [{...member, name}]
-let pollTimer = null;
-document.addEventListener('DOMContentLoaded', () => $('player').addEventListener('ended', () =>
-  document.querySelectorAll('.sample.playing').forEach((el) => el.classList.remove('playing'))));
-
-const memberKey = (m) => `${m.media_key}::${m.label}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmtTime = (s) => s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`;
-const shortFile = (f) => f.replace(/^axon_body_\d_video_/i, '').replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+const clock = (t) => { t = Math.max(0, t); const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = Math.floor(t % 60);
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(s).padStart(2, '0')}`; };
+const keyOf = (m) => `${m.media_key}::${m.label}`;
+
+let caseId = null, data = null, people = [], nextId = 1, pollTimer = null, split = null;
+
+// ── Drafts: names and yes/no decisions survive regrouping and re-analysis ──
+const draftKey = () => `speaker-match:${caseId}`;
+function loadDraft() { try { return JSON.parse(localStorage.getItem(draftKey()) || '{}'); } catch { return {}; } }
+function saveDraft() {
+  const d = {};
+  for (const p of people) for (const m of p.members) {
+    const entry = {};
+    if (m.decision) entry.decision = m.decision;
+    if (p.name.trim() && m.include && !m.pending) entry.name = p.name.trim().toUpperCase();
+    if (Object.keys(entry).length) d[keyOf(m)] = entry;
+  }
+  try { localStorage.setItem(draftKey(), JSON.stringify(d)); } catch { /* storage unavailable */ }
+}
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -120,172 +162,290 @@ async function loadCases() {
   if (caseId) await loadGroups();
 }
 
+function buildPeople() {
+  const draft = loadDraft();
+  const mk = (members, name = '', low = false) => ({ id: nextId++, name, low, members });
+  let cards = data.people.map((p) => mk(p.members.map((m) => ({ ...m, include: true, pending: m.suggested, decision: null })), p.suggested_name));
+  cards = cards.concat(data.unmatched.map((m) => mk([{ ...m, include: true, pending: false, decision: null, match: null }], core_name(m), true)));
+
+  // Re-apply saved decisions.
+  const extra = [];
+  for (const c of cards) {
+    c.members = c.members.filter((m) => {
+      const d = draft[keyOf(m)];
+      if (d?.decision === 'yes') { m.pending = false; m.decision = 'yes'; }
+      if (d?.decision === 'no' && c.members.length > 1) { m.pending = false; m.decision = 'no'; extra.push(mk([m])); return false; }
+      return true;
+    });
+  }
+  cards = cards.concat(extra).filter((c) => c.members.length);
+
+  // Members with a saved name gather into one card per name.
+  const byName = new Map();
+  for (const c of cards) {
+    const keep = [];
+    for (const m of c.members) {
+      const name = draft[keyOf(m)]?.name;
+      if (!name) { keep.push(m); continue; }
+      m.pending = false;
+      if (!byName.has(name)) byName.set(name, mk([], name));
+      byName.get(name).members.push(m);
+    }
+    c.members = keep;
+  }
+  people = [...byName.values(), ...cards.filter((c) => c.members.length)];
+}
+function core_name(m) { return /^SPEAKER [A-Z0-9]+$/.test(m.label) ? '' : m.label; }
+
 async function loadGroups() {
-  const threshold = $('threshold').value;
-  const data = await api(`/api/groups/${caseId}?threshold=${threshold}`);
-  people = data.people.map((p) => ({ name: p.suggested_name, members: p.members.map((m) => ({ ...m, include: true })) }));
-  unmatched = data.unmatched.map((m) => ({ ...m, name: '' }));
+  data = await api(`/api/groups/${caseId}?threshold=${$('threshold').value}`);
+  buildPeople();
   const notes = [];
-  if (!data.analyzed) notes.push('This case has not been analyzed yet. Click <b>Analyze voices</b> (a few minutes per hour of audio).');
-  else if (data.stale.length) notes.push(`${data.stale.length} transcript(s) changed or are new since the last analysis; click <b>Analyze voices</b> to update them.`);
+  if (!data.analyzed) notes.push('This case has not been analyzed yet. Click <b>Analyze voices</b>.');
+  else if (data.stale.length) notes.push(`${data.stale.length} transcript(s) changed since the last analysis. Click <b>Analyze voices</b> to update them.`);
   if (data.errors.length) notes.push('Could not analyze: ' + data.errors.map((e) => `${esc(e.file)} (${esc(e.error)})`).join('; '));
+  if (data.alignments.length) notes.push(`Found ${data.alignments.length} pair(s) of recordings made at the same time; speakers heard in both are linked automatically.`);
   $('status').innerHTML = notes.map((n) => `<div class="notice info">${n}</div>`).join('');
   render();
 }
 
-const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+// ── Rendering ──
 function sampleList(m) {
-  if (!m.samples.length) return '<div class="sub">No clean solo speech found for this speaker.</div>';
+  if (!m.samples.length) return '<div class="sub" style="margin-top:4px">No clean solo speech to sample.</div>';
   return `<div class="samples">${m.samples.map((s) => `
-    <div class="sample"><button data-clip="${esc(s.clip)}" title="Play ${esc(m.label)} at ${clock(s.start)}">▶</button>
-      <span class="sub">${clock(s.start)}</span> <span class="said">“${esc(s.text)}”</span></div>`).join('')}</div>`;
+    <div class="sample"><button data-clip="/clips/${caseId}/${esc(s.clip)}">▶</button>
+      <span class="sub">${clock(s.start)}</span><span class="said">“${esc(s.text)}”</span></div>`).join('')}</div>`;
 }
 
-function memberRow(m, pIndex) {
-  const moveOptions = people.map((p, i) => i === pIndex ? '' : `<option value="${i}">Person ${i + 1}${p.name ? ' – ' + esc(p.name) : ''}</option>`).join('');
+function memberHtml(m, p) {
   const chips = [
     `<span class="chip">${esc(m.label)}</span>`,
-    m.likely_wearer ? '<span class="chip wearer">likely camera wearer</span>' : '',
-    m.camera ? `<span class="chip">cam ${esc(m.camera)}</span>` : '',
+    m.camera ? `<span class="chip">camera ${esc(m.camera)}</span>` : '',
+    m.likely_wearer ? '<span class="chip good">likely camera wearer</span>' : '',
+    ...m.aligned.map((a) => `<span class="chip good" title="Recorded at the same time; this speaker talks at the same moments as ${esc(a.label)} in ${esc(a.file)}">same moments as ${esc(a.label)} · ${esc(a.file.replace(/\.[^.]+$/, ''))}</span>`),
+    m.same_file.length ? `<span class="chip warn">same file as ${m.same_file.map(esc).join(', ')} – merge?</span>` : '',
+    m.split ? `<span class="chip bad" data-split="${esc(keyOf(m))}" title="Two distinct voices found under this label">may be 2 people · review split</span>` : '',
   ].join('');
-  const match = m.match == null ? '—' : `${Math.round(m.match * 100)}%`;
-  return `<tr class="${m.include ? '' : 'row-off'}">
-    <td><input type="checkbox" data-include="${pIndex}|${esc(memberKey(m))}" ${m.include ? 'checked' : ''} title="Rename this speaker"></td>
-    <td><div class="file">${esc(shortFile(m.file))}</div><div>${chips}</div>${sampleList(m)}</td>
-    <td class="num"><div>${fmtTime(m.talk_seconds)}</div><div class="sub">talk</div></td>
-    <td class="num"><div>${match}</div><div class="sub">match</div></td>
-    <td><select data-move="${pIndex}|${esc(memberKey(m))}"><option value="">Move…</option>${moveOptions}<option value="new">New person</option></select></td>
-  </tr>`;
+  const moveOpts = people.filter((q) => q !== p && !q.low).map((q, i) => `<option value="${q.id}">${esc(q.name || 'Person ' + (people.indexOf(q) + 1))}</option>`).join('');
+  const decide = m.pending
+    ? `<div class="decide"><button class="yes" data-yes="${p.id}|${esc(keyOf(m))}">✓ Same person</button><button class="no" data-no="${p.id}|${esc(keyOf(m))}">✗ Not them</button></div>`
+    : '';
+  return `<div class="member ${m.pending ? 'pending' : ''} ${m.include ? '' : 'off'}">
+    <div>${m.pending ? '' : `<input type="checkbox" data-include="${p.id}|${esc(keyOf(m))}" ${m.include ? 'checked' : ''} title="Include in this person">`}</div>
+    <div><div class="file">${esc(m.file)}</div><div class="chips">${chips}</div>${sampleList(m)}</div>
+    <div class="side"><div class="num">${fmtTime(m.talk_seconds)}</div><div class="sub">speaking</div>
+      ${m.match == null ? '' : `<div class="num" style="margin-top:4px">${Math.round(m.match * 100)}%</div><div class="sub">voice match</div>`}
+      ${decide}
+      <select data-move="${p.id}|${esc(keyOf(m))}"><option value="">Move to…</option>${moveOpts}<option value="new">New person</option></select>
+    </div></div>`;
+}
+
+function cardHtml(p) {
+  const pendingN = p.members.filter((m) => m.pending).length;
+  return `<div class="card"><div class="card-head">
+      <span class="tag">${p.low ? 'Short speaker' : 'Person ' + (people.filter((q) => !q.low).indexOf(p) + 1)}</span>
+      <span class="sub">${p.members.length} label${p.members.length === 1 ? '' : 's'}${pendingN ? ` · ${pendingN} to confirm` : ''}</span>
+      <input type="text" placeholder="Name (e.g. Officer Nguyen)" value="${esc(p.name)}" data-name="${p.id}">
+    </div>${p.members.map((m) => memberHtml(m, p)).join('')}</div>`;
 }
 
 function render() {
-  $('people').innerHTML = people.map((p, i) => `
-    <div class="card">
-      <div class="card-head">
-        <span class="tag">Person ${i + 1}</span>
-        <span class="sub">${p.members.length} file${p.members.length === 1 ? '' : 's'}</span>
-        <input type="text" placeholder="Name (e.g. Officer Nguyen)" value="${esc(p.name)}" data-name="${i}">
-      </div>
-      <table>${p.members.map((m) => memberRow(m, i)).join('')}</table>
-    </div>`).join('');
-
-  $('unmatchedWrap').innerHTML = unmatched.length ? `
-    <h2>Too little speech to match automatically (${unmatched.length})</h2>
-    <div class="card"><table>${unmatched.map((m, i) => `
-      <tr><td><div class="file">${esc(shortFile(m.file))}</div><div><span class="chip">${esc(m.label)}</span><span class="chip low">${fmtTime(m.talk_seconds)} of speech</span></div>
-        ${sampleList(m)}</td>
-      <td><input type="text" placeholder="Name" value="${esc(m.name)}" data-uname="${i}" style="text-transform:uppercase"></td></tr>`).join('')}
-    </table></div>` : '';
+  const main = people.filter((p) => !p.low), low = people.filter((p) => p.low);
+  $('people').innerHTML = main.map(cardHtml).join('');
+  $('lowWrap').innerHTML = low.length ? `<h2>Too little clean speech to match by voice (${low.length})</h2>
+    <p class="sub">Name these directly, or use “Move to…” to add them to a person.</p><div class="grid">${low.map(cardHtml).join('')}</div>` : '';
+  renderFiles();
   updateSummary();
+}
+
+function assignment() {
+  const map = new Map();
+  for (const p of people) for (const m of p.members) {
+    const name = p.name.trim().toUpperCase();
+    if (name && m.include && !m.pending) map.set(keyOf(m), name);
+  }
+  return map;
+}
+
+function renderFiles() {
+  const names = assignment();
+  let total = 0, done = 0;
+  const rows = data.files.map((f) => {
+    const cells = f.labels.map((l) => {
+      total++;
+      const name = names.get(`${f.media_key}::${l.label}`);
+      if (name) done++;
+      return `<div>${esc(l.label)} <span class="sub">(${fmtTime(l.talk_seconds)})</span> → ${name ? `<b>${esc(name)}</b>` : '<span class="chip warn">unnamed</span>'}</div>`;
+    }).join('');
+    return `<tr><td class="file">${esc(f.file)}</td><td>${cells}</td></tr>`;
+  }).join('');
+  $('filesView').innerHTML = `<p><b>${done} of ${total}</b> speaker labels across ${data.files.length} transcripts have a name.</p>
+    <table class="files"><tr><th>Source file</th><th>Speaker labels</th></tr>${rows}</table>`;
+  return { done, total };
 }
 
 function collectRenames() {
   const out = [];
-  people.forEach((p) => {
-    const name = p.name.trim().toUpperCase();
-    if (!name) return;
-    p.members.forEach((m) => { if (m.include && m.label !== name) out.push({ media_key: m.media_key, from_label: m.label, to: name, file: m.file }); });
-  });
-  unmatched.forEach((m) => {
-    const name = m.name.trim().toUpperCase();
-    if (name && m.label !== name) out.push({ media_key: m.media_key, from_label: m.label, to: name, file: m.file });
-  });
+  for (const [key, name] of assignment()) {
+    const [media_key, label] = key.split('::');
+    if (label !== name) out.push({ media_key, from_label: label, to: name });
+  }
   return out;
 }
 
 function updateSummary() {
+  const { done, total } = renderFiles();
   const renames = collectRenames();
-  const files = new Set(renames.map((r) => r.media_key)).size;
-  $('summary').textContent = renames.length ? `${renames.length} speaker rename${renames.length === 1 ? '' : 's'} across ${files} transcript${files === 1 ? '' : 's'}` : 'No names entered yet.';
+  const pending = people.reduce((n, p) => n + p.members.filter((m) => m.pending).length, 0);
+  $('summary').textContent = `${done} of ${total} speaker labels named` + (pending ? ` · ${pending} suggestion${pending === 1 ? '' : 's'} to confirm` : '') +
+    (renames.length ? ` · ${renames.length} rename${renames.length === 1 ? '' : 's'} ready` : '');
   $('reviewBtn').disabled = !renames.length;
 }
 
+// ── Interactions ──
+const findCard = (id) => people.find((p) => p.id === +id);
+function takeMember(ref) {
+  const [pid, key] = ref.split('|');
+  const card = findCard(pid);
+  const i = card.members.findIndex((m) => keyOf(m) === key);
+  return [card, i, card.members[i]];
+}
+
 document.addEventListener('input', (e) => {
-  if (e.target.dataset.name !== undefined) { people[+e.target.dataset.name].name = e.target.value; updateSummary(); }
-  if (e.target.dataset.uname !== undefined) { unmatched[+e.target.dataset.uname].name = e.target.value; updateSummary(); }
+  if (e.target.dataset.name) { findCard(e.target.dataset.name).name = e.target.value; saveDraft(); updateSummary(); }
 });
 
 document.addEventListener('change', (e) => {
-  const inc = e.target.dataset.include;
-  if (inc) {
-    const [pi, key] = inc.split('|');
-    const m = people[+pi].members.find((x) => memberKey(x) === key);
-    m.include = e.target.checked;
-    render();
-  }
-  const mv = e.target.dataset.move;
-  if (mv && e.target.value !== '') {
-    const [pi, key] = mv.split('|');
-    const from = people[+pi];
-    const idx = from.members.findIndex((x) => memberKey(x) === key);
-    const [m] = from.members.splice(idx, 1);
-    m.match = null;
-    if (e.target.value === 'new') people.push({ name: '', members: [m] });
-    else {
-      const target = people[+e.target.value];
-      if (target.members.some((x) => x.media_key === m.media_key)) {
-        alert('That person already has a speaker from this same file. The transcript treats them as different people, so they can’t share a name here.');
-        from.members.splice(idx, 0, m);
-      } else target.members.push(m);
-    }
+  const t = e.target;
+  if (t.dataset.include) { const [, , m] = takeMember(t.dataset.include); m.include = t.checked; saveDraft(); render(); }
+  if (t.dataset.move && t.value) {
+    const [card, i, m] = takeMember(t.dataset.move);
+    const target = t.value === 'new' ? null : findCard(t.value);
+    card.members.splice(i, 1);
+    m.pending = false; m.match = null; m.decision = 'yes';
+    if (target) target.members.push(m); else people.push({ id: nextId++, name: '', low: false, members: [m] });
     people = people.filter((p) => p.members.length);
-    render();
+    saveDraft(); render();
   }
 });
 
 document.addEventListener('click', (e) => {
-  const clip = e.target.dataset.clip;
-  if (clip) {
-    const p = $('player'); p.src = `/clips/${caseId}/${clip}`; p.play();
-    document.querySelectorAll('.sample.playing').forEach((el) => el.classList.remove('playing'));
-    e.target.closest('.sample')?.classList.add('playing');
+  const t = e.target;
+  if (t.dataset.clip) {
+    const p = $('player'); p.src = t.dataset.clip; p.play();
+    document.querySelectorAll('.playing').forEach((el) => el.classList.remove('playing'));
+    t.closest('.sample, tr')?.classList.add('playing');
+  }
+  if (t.dataset.yes) { const [, , m] = takeMember(t.dataset.yes); m.pending = false; m.decision = 'yes'; saveDraft(); render(); }
+  if (t.dataset.no) {
+    const [card, i, m] = takeMember(t.dataset.no);
+    card.members.splice(i, 1); m.pending = false; m.decision = 'no'; m.match = null;
+    people.push({ id: nextId++, name: '', low: false, members: [m] });
+    saveDraft(); render();
+  }
+  if (t.dataset.split) openSplit(t.dataset.split);
+  if (t.dataset.tab) {
+    document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b === t));
+    $('peopleView').hidden = t.dataset.tab !== 'people'; $('filesView').hidden = t.dataset.tab !== 'files';
   }
 });
+$('player').addEventListener('ended', () => document.querySelectorAll('.playing').forEach((el) => el.classList.remove('playing')));
 
 $('threshold').addEventListener('input', () => { $('thresholdVal').textContent = Number($('threshold').value).toFixed(2); });
-$('threshold').addEventListener('change', () => {
-  if (collectRenames().length && !confirm('Regrouping discards the names and moves you’ve entered. Continue?')) return;
-  loadGroups();
-});
+$('threshold').addEventListener('change', loadGroups);
 $('caseSel').addEventListener('change', () => { caseId = $('caseSel').value; loadGroups(); });
 
-$('analyzeBtn').addEventListener('click', async () => {
-  try { await api(`/api/analyze/${caseId}`, { method: 'POST' }); } catch (err) { alert(err.message); return; }
+// ── Background jobs ──
+function watchJob(onDone) {
   $('analyzeBtn').disabled = true; $('progress').hidden = false;
+  clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     const s = await api('/api/status');
-    $('progressMsg').textContent = `${s.done}/${s.total} · ${s.message}`;
+    $('progressMsg').textContent = `${s.total ? `${s.done}/${s.total} · ` : ''}${s.message}`;
     $('progressBar').style.width = s.total ? `${(100 * s.done) / s.total}%` : '0';
     if (!s.running) {
       clearInterval(pollTimer); $('analyzeBtn').disabled = false; $('progress').hidden = true;
-      if (s.error) alert('Analysis failed: ' + s.error);
-      loadGroups();
+      if (s.error) alert(s.error); else onDone(s);
     }
-  }, 1500);
+  }, 1200);
+}
+$('analyzeBtn').addEventListener('click', async () => {
+  try { await api(`/api/analyze/${caseId}`, { method: 'POST' }); } catch (err) { alert(err.message); return; }
+  watchJob(() => loadGroups());
 });
 
+// ── Split review ──
+async function openSplit(key) {
+  const [media_key, label] = key.split('::');
+  try { await api(`/api/split/${caseId}/${media_key}?label=${encodeURIComponent(label)}`, { method: 'POST' }); }
+  catch (err) { alert(err.message); return; }
+  watchJob((s) => showSplit(s.result));
+}
+
+function showSplit(res) {
+  split = { ...res, selected: new Set(res.lines.filter((l) => l.proposal === 'move').map((l) => l.id)) };
+  const targets = res.target_options.map((t) => `<option ${t === res.suggested_target ? 'selected' : ''}>${esc(t)}</option>`).join('');
+  $('splitHead').innerHTML = `<b>${esc(res.file)}</b> · ${esc(res.label)} sounds like two different voices.<br>
+    <span class="sub">Utterances the tool thinks belong to the second voice are pre-selected (green). Yellow = can't tell. Play and tick each one you want moved, then choose where they go.</span>
+    <div style="margin-top:8px">Move selected lines to <select id="splitTarget">${targets}</select></div>`;
+  $('splitBody').innerHTML = `<table class="lines">${res.lines.map((l) => `
+    <tr class="${l.proposal}" data-row="${esc(l.id)}">
+      <td><input type="checkbox" data-pick="${esc(l.id)}" ${split.selected.has(l.id) ? 'checked' : ''}></td>
+      <td><button class="play" data-clip="/api/line_audio/${caseId}/${res.media_key}?start=${l.start}&end=${l.end}">▶</button></td>
+      <td class="sub">${clock(l.start)}</td><td>${esc(l.text)}</td>
+      <td class="sub">${l.proposal === 'move' ? 'second voice' : l.proposal === 'keep' ? 'main voice' : "can't tell"}</td></tr>`).join('')}</table>`;
+  updateSplitCount();
+  $('splitDlg').showModal();
+}
+function updateSplitCount() { $('splitCount').textContent = `${split.selected.size} of ${split.lines.length} utterances selected`; }
+$('splitBody').addEventListener('change', (e) => {
+  const id = e.target.dataset.pick; if (!id) return;
+  e.target.checked ? split.selected.add(id) : split.selected.delete(id); updateSplitCount();
+});
+$('splitAll').addEventListener('click', () => {
+  split.lines.forEach((l) => l.proposal === 'move' && split.selected.add(l.id));
+  document.querySelectorAll('[data-pick]').forEach((c) => (c.checked = split.selected.has(c.dataset.pick))); updateSplitCount();
+});
+$('splitNone').addEventListener('click', () => { split.selected.clear(); document.querySelectorAll('[data-pick]').forEach((c) => (c.checked = false)); updateSplitCount(); });
+$('splitCancel').addEventListener('click', () => $('splitDlg').close());
+$('splitApply').addEventListener('click', async () => {
+  if (!split.selected.size) return;
+  const target = $('splitTarget').value;
+  if (!confirm(`Move ${split.selected.size} utterance(s) from ${split.label} to ${target} in ${split.file}?`)) return;
+  try {
+    await api(`/api/split_apply/${caseId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media_key: split.media_key, target_label: target,
+        line_ids: split.lines.filter((l) => split.selected.has(l.id)).flatMap((l) => l.line_ids) }) });
+  } catch (err) { alert(err.message); return; }
+  $('splitDlg').close();
+  watchJob(() => loadGroups());
+});
+
+// ── Apply names ──
 $('reviewBtn').addEventListener('click', () => {
   const renames = collectRenames();
+  const fileName = Object.fromEntries(data.files.map((f) => [f.media_key, f.file]));
   const byFile = {};
-  renames.forEach((r) => (byFile[r.file] = byFile[r.file] || []).push(r));
-  $('reviewBody').innerHTML = `<p>These speaker labels will be renamed in TranscribeAlpha, and each file's PDF, OnCue XML and viewer export will be regenerated:</p>` +
+  renames.forEach((r) => (byFile[fileName[r.media_key]] = byFile[fileName[r.media_key]] || []).push(r));
+  const { done, total } = renderFiles();
+  $('reviewBody').innerHTML = `<p>These speaker labels will be renamed in TranscribeAlpha, and each file's PDF, OnCue XML and viewer export regenerated.
+    ${done < total ? `<br><span style="color:var(--warn)">${total - done} label(s) are still unnamed and will stay as they are (see the Files tab).</span>` : ''}</p>` +
     Object.entries(byFile).sort().map(([f, rs]) => `<div style="margin:8px 0"><div class="file">${esc(f)}</div>${rs.map((r) => `<div class="sub">${esc(r.from_label)} → <b>${esc(r.to)}</b></div>`).join('')}</div>`).join('');
+  $('confirmBtn').hidden = false; $('confirmBtn').disabled = false; $('cancelBtn').textContent = 'Cancel';
   $('review').showModal();
 });
 $('cancelBtn').addEventListener('click', () => $('review').close());
 $('confirmBtn').addEventListener('click', async () => {
   $('confirmBtn').disabled = true;
   try {
-    const res = await api(`/api/apply/${caseId}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ renames: collectRenames().map(({ media_key, from_label, to }) => ({ media_key, from_label, to })) }),
-    });
+    const res = await api(`/api/apply/${caseId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ renames: collectRenames() }) });
     const failed = res.results.filter((r) => !r.ok);
     $('reviewBody').innerHTML = `<p><b>Updated ${res.results.length - failed.length} transcript(s).</b> Backups: <code>${esc(res.backup_dir)}</code></p>` +
-      (failed.length ? `<p style="color:#b42318">Failed: ${failed.map((f) => esc(f.media_key) + ' – ' + esc(f.error)).join('<br>')}</p>` : '') +
+      (failed.length ? `<p style="color:var(--bad)">Failed: ${failed.map((f) => esc(f.media_key) + ' – ' + esc(f.error)).join('<br>')}</p>` : '') +
       '<p class="muted">Reopen transcripts in TranscribeAlpha to see the new names.</p>';
     $('confirmBtn').hidden = true; $('cancelBtn').textContent = 'Close';
-    $('cancelBtn').onclick = () => { $('review').close(); $('confirmBtn').hidden = false; $('confirmBtn').disabled = false; $('cancelBtn').textContent = 'Cancel'; $('cancelBtn').onclick = null; loadGroups(); };
+    await loadGroups();
   } catch (err) { alert(err.message); $('confirmBtn').disabled = false; }
 });
 

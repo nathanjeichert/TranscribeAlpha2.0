@@ -29,14 +29,14 @@ SAMPLE_RATE = 16000
 
 MIN_SEGMENT_S = 1.0       # shorter utterances give unreliable voiceprints
 WINDOW_S = 8.0            # long segments are embedded in windows of this size
-MAX_AUDIO_PER_SPEAKER_S = 120.0
+MAX_AUDIO_PER_SPEAKER_S = 300.0
 SAMPLE_CLIPS = 3
 SAMPLE_CLIP_MAX_S = 7.0
 SAMPLE_CLIP_MIN_S = 1.2
 SAMPLE_CLIP_MIN_WORDS = 4  # one-word clips ("Okay") don't help anyone recognize a voice
 SAMPLE_SPACING_S = 20.0   # spread sample clips across the recording
 CLIP_PAD_S = 0.15         # runs have >= core.CLEARANCE_S of silence from other speakers
-ANALYSIS_VERSION = 4      # bump to re-analyze cached transcripts after changing the method
+ANALYSIS_VERSION = 5      # bump to re-analyze cached transcripts after changing the method
 MIN_TALK_FOR_MATCH_S = 3.0  # clean speech below this: listed but not auto-grouped
 
 _model = None
@@ -87,6 +87,25 @@ def _embed(chunks: List[np.ndarray]) -> np.ndarray:
 
 def _rms_db(x: np.ndarray) -> float:
     return float(20 * np.log10(np.sqrt(np.mean(np.square(x))) + 1e-9))
+
+
+ENVELOPE_HZ = 50
+
+
+def _envelope(audio: np.ndarray) -> np.ndarray:
+    """Log-energy per 20 ms frame; enough to line up two recordings of the same scene."""
+    hop = SAMPLE_RATE // ENVELOPE_HZ
+    n = len(audio) // hop
+    frames = audio[: n * hop].reshape(n, hop)
+    return (10 * np.log10(np.mean(frames ** 2, axis=1) + 1e-10)).astype(np.float16)
+
+
+def load_arrays(case_id: str, media_key: str) -> Optional[dict]:
+    path = CACHE_ROOT / case_id / "arrays" / f"{media_key}.npz"
+    if not path.exists():
+        return None
+    with np.load(path, allow_pickle=True) as data:
+        return {k: data[k] for k in data.files}
 
 
 def _pick_clips(runs: List[dict]) -> List[dict]:
@@ -156,13 +175,28 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
     def cut(start: float, end: float) -> np.ndarray:
         return audio[max(0, int(start * SAMPLE_RATE)):int(end * SAMPLE_RATE)]
 
+    all_vecs: List[np.ndarray] = []
+    all_spans: List[tuple] = []
+    all_labels: List[str] = []
+
     for label in sorted(set(talk_by_speaker) | set(runs_by_speaker)):
         if not label:
             continue
         runs = runs_by_speaker.get(label, [])
-        usable = sorted((r for r in runs if r["end"] - r["start"] >= MIN_SEGMENT_S),
-                        key=lambda r: r["confidence"] * (r["end"] - r["start"]), reverse=True)
-        chunks, weights, budget = [], [], MAX_AUDIO_PER_SPEAKER_S
+        # Sample evenly across the whole recording (not just the most confident stretches),
+        # so a second voice hiding under this label shows up in the windows.
+        usable = [r for r in runs if r["end"] - r["start"] >= MIN_SEGMENT_S]
+        total = sum(r["end"] - r["start"] for r in usable)
+        if total > MAX_AUDIO_PER_SPEAKER_S:
+            step = total / MAX_AUDIO_PER_SPEAKER_S
+            picked, acc, next_pick = [], 0.0, 0.0
+            for r in usable:
+                if acc >= next_pick:
+                    picked.append(r)
+                    next_pick += step * (r["end"] - r["start"])
+                acc += r["end"] - r["start"]
+            usable = picked
+        chunks, weights, spans, budget = [], [], [], MAX_AUDIO_PER_SPEAKER_S
         for run in usable:
             if budget <= 0:
                 break
@@ -173,6 +207,7 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
                 if end - t >= MIN_SEGMENT_S and len(piece) >= MIN_SEGMENT_S * SAMPLE_RATE:
                     chunks.append(piece)
                     weights.append(end - t)
+                    spans.append((t, end))
                     budget -= end - t
                 t = end
 
@@ -187,6 +222,9 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
         }
         if chunks:
             vecs = _embed(chunks)
+            all_vecs.append(vecs)
+            all_spans.extend(spans)
+            all_labels.extend([label] * len(spans))
             centroid = np.average(vecs, axis=0, weights=np.array(weights))
             centroid /= np.linalg.norm(centroid) + 1e-9
             speaker["centroid"] = centroid.round(5).tolist()
@@ -200,6 +238,18 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
             speaker["samples"].append({"clip": f"{media_key}/{name}", "start": round(c["start"], 2),
                                        "duration": round(c["end"] - c["start"], 1), "text": c["text"]})
         result["speakers"][label] = speaker
+
+    # Per-window voiceprints (for split detection) and a loudness envelope (for lining up
+    # simultaneous recordings) are kept as arrays next to the index.
+    arrays_dir = case_cache / "arrays"
+    arrays_dir.mkdir(exist_ok=True)
+    np.savez_compressed(
+        arrays_dir / f"{media_key}.npz",
+        vecs=(np.concatenate(all_vecs) if all_vecs else np.zeros((0, 192))).astype(np.float16),
+        spans=np.array(all_spans, dtype=np.float32).reshape(-1, 2),
+        labels=np.array(all_labels, dtype=object),
+        envelope=_envelope(audio),
+    )
 
     # Hint: the camera wearer is usually much louder than everyone else in the file.
     loud = sorted(((s["loudness_db"], lbl) for lbl, s in result["speakers"].items() if s["loudness_db"] is not None), reverse=True)
@@ -254,6 +304,10 @@ def refresh_labels(case_id: str, index: Dict[str, dict], renames: List[dict]) ->
         spk = entry["speakers"].pop(item["from"])
         spk["label"] = new
         entry["speakers"][new] = spk
+        arrays = load_arrays(case_id, item["media_key"])
+        if arrays is not None:
+            arrays["labels"] = np.where(arrays["labels"] == item["from"], new, arrays["labels"]).astype(object)
+            np.savez_compressed(CACHE_ROOT / case_id / "arrays" / f"{item['media_key']}.npz", **arrays)
     for entry in index.values():
         path = core.record_path(case_id, entry["media_key"])
         if path.exists():
@@ -264,36 +318,56 @@ def refresh_labels(case_id: str, index: Dict[str, dict], renames: List[dict]) ->
 # ── Grouping ─────────────────────────────────────────────────────────────
 
 
-def cluster(index: Dict[str, dict], threshold: float) -> dict:
-    """Average-linkage agglomerative clustering on cosine similarity, with the
-    constraint that two speakers from the same file are never merged."""
+SAME_FILE_MARGIN = 0.10   # merging two labels from one file needs a closer voice match
+CONFIRM_MARGIN = 0.10     # voice matches within this of the threshold are shown as suggestions
+LINK_SIM = 0.99           # time-aligned co-speech counts as a near-certain match
+
+
+def cluster(index: Dict[str, dict], threshold: float, links: Optional[List[dict]] = None,
+            split_flags: Optional[Dict[tuple, dict]] = None) -> dict:
+    """Average-linkage agglomerative clustering on voice similarity.
+
+    - Time-aligned links (same person heard in two simultaneous recordings) count as ~certain.
+    - Two labels from the same file can merge (diarization often splits one person), but only
+      at a stricter bar, and they're surfaced as suggestions to confirm.
+    """
+    links = links or []
+    split_flags = split_flags or {}
     nodes, vecs, small = [], [], []
     for key, entry in index.items():
         for label, spk in entry.get("speakers", {}).items():
             node = {"media_key": key, "file": entry["file"], "camera": entry.get("camera"), "label": label,
-                    "talk_seconds": spk["talk_seconds"], "consistency": spk.get("consistency"),
-                    "loudness_db": spk.get("loudness_db"), "likely_wearer": bool(spk.get("likely_wearer")),
-                    "samples": spk.get("samples", [])}
+                    "talk_seconds": spk["talk_seconds"], "loudness_db": spk.get("loudness_db"),
+                    "likely_wearer": bool(spk.get("likely_wearer")), "samples": spk.get("samples", []),
+                    "split": split_flags.get((key, label)), "aligned": [], "same_file": [], "suggested": False}
             if spk.get("centroid") and spk["embedded_seconds"] >= MIN_TALK_FOR_MATCH_S:
                 nodes.append(node)
                 vecs.append(np.array(spk["centroid"]))
             else:
                 small.append(node)
 
+    pos = {(n["media_key"], n["label"]): i for i, n in enumerate(nodes)}
     groups: List[List[int]] = [[i] for i in range(len(nodes))]
     if nodes:
         X = np.stack(vecs)
         sim = X @ X.T
+        linked = {}
+        for link in links:
+            a, b = pos.get(tuple(link["a"])), pos.get(tuple(link["b"]))
+            if a is not None and b is not None:
+                sim[a, b] = sim[b, a] = max(sim[a, b], LINK_SIM)
+                linked[(a, b)] = linked[(b, a)] = link["cooccur"]
+
         while True:
-            best, pair = threshold, None
+            best_gain, pair = 0.0, None
             for a in range(len(groups)):
                 keys_a = {nodes[i]["media_key"] for i in groups[a]}
                 for b in range(a + 1, len(groups)):
-                    if keys_a & {nodes[i]["media_key"] for i in groups[b]}:
-                        continue  # cannot-link: same file, different diarized speakers
+                    shared_file = bool(keys_a & {nodes[i]["media_key"] for i in groups[b]})
+                    needed = threshold + (SAME_FILE_MARGIN if shared_file else 0.0)
                     score = float(np.mean(sim[np.ix_(groups[a], groups[b])]))
-                    if score > best:
-                        best, pair = score, (a, b)
+                    if score > needed and score - needed > best_gain:
+                        best_gain, pair = score - needed, (a, b)
             if not pair:
                 break
             a, b = pair
@@ -302,12 +376,29 @@ def cluster(index: Dict[str, dict], threshold: float) -> dict:
         for g in groups:
             centroid = X[g].mean(axis=0)
             centroid /= np.linalg.norm(centroid) + 1e-9
+            by_file: Dict[str, List[int]] = {}
             for i in g:
-                nodes[i]["match"] = round(float(X[i] @ centroid), 3) if len(g) > 1 else None
+                by_file.setdefault(nodes[i]["media_key"], []).append(i)
+            for i in g:
+                n = nodes[i]
+                others = [j for j in g if j != i]
+                if others:
+                    rest = X[others].mean(axis=0)
+                    n["match"] = round(float(X[i] @ (rest / (np.linalg.norm(rest) + 1e-9))), 3)
+                else:
+                    n["match"] = None
+                n["aligned"] = [{"file": nodes[j]["file"], "label": nodes[j]["label"], "cooccur": linked[(i, j)]}
+                                for j in others if (i, j) in linked]
+                same = [j for j in by_file[n["media_key"]] if j != i]
+                n["same_file"] = [nodes[j]["label"] for j in same]
+                # Needs a yes/no: a same-file merge (all but the file's main voice), or a weak voice-only match.
+                is_main_in_file = all(nodes[j]["talk_seconds"] <= n["talk_seconds"] for j in same)
+                weak = n["match"] is not None and n["match"] < threshold + CONFIRM_MARGIN and not n["aligned"]
+                n["suggested"] = bool((same and not is_main_in_file) or weak)
 
     people = []
     for g in sorted(groups, key=lambda g: (-len(g), -sum(nodes[i]["talk_seconds"] for i in g))):
-        members = sorted((nodes[i] for i in g), key=lambda n: n["file"])
+        members = sorted((nodes[i] for i in g), key=lambda n: (n["suggested"], n["file"], n["label"]))
         named = [m["label"] for m in members if not core.is_generic_label(m["label"])]
         people.append({"members": members, "suggested_name": max(set(named), key=named.count) if named else ""})
     return {"people": people, "unmatched": sorted(small, key=lambda n: (n["file"], n["label"]))}

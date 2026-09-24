@@ -291,3 +291,44 @@ def apply_renames(case_id: str, renames: Iterable[dict]) -> dict:
         except Exception as exc:  # report per file, keep going
             results.append({"media_key": media_key, "ok": False, "error": str(exc)})
     return {"backup_dir": str(backup_dir) if backup_dir.exists() else None, "results": results}
+
+
+def reassign_lines(case_id: str, media_key: str, line_ids: Iterable[str], target_label: str) -> dict:
+    """Move specific lines to another speaker label (used to split a mixed label).
+    Backs up the file, regenerates exports. Turns are relabeled only when all their lines moved."""
+    target = target_label.strip().upper()
+    wanted = set(line_ids)
+    path = record_path(case_id, media_key)
+    record = load_record(path)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = BACKUP_ROOT / stamp
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, backup_dir / path.name)
+
+    moved_per_turn: Dict[int, int] = {}
+    lines_per_turn: Dict[int, int] = {}
+    changed = 0
+    for line in record.get("lines") or []:
+        ti = line.get("turn_index")
+        if isinstance(ti, int):
+            lines_per_turn[ti] = lines_per_turn.get(ti, 0) + 1
+        if line.get("id") in wanted:
+            line["speaker"] = target
+            changed += 1
+            if isinstance(ti, int):
+                moved_per_turn[ti] = moved_per_turn.get(ti, 0) + 1
+        line["rendered_text"] = _rendered_text(line.get("speaker") or "", line.get("text") or "", bool(line.get("is_continuation")))
+
+    for key in ("turns", "source_turns"):
+        turns = record.get(key) or []
+        for ti, n in moved_per_turn.items():
+            if n == lines_per_turn.get(ti) and ti < len(turns):
+                turns[ti]["speaker"] = target
+                for word in turns[ti].get("words") or []:
+                    word["speaker"] = target
+
+    if changed:
+        regenerate_exports(record)
+        record["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        _write_atomic(path, record)
+    return {"lines_changed": changed, "backup_dir": str(backup_dir)}
