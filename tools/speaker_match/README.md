@@ -31,6 +31,10 @@ tools/speaker_match/run.sh   # first run creates .venv; opens http://127.0.0.1:8
    the ones that sound like the second voice; you approve each one and pick where they go (an
    existing label or a new one). On synthetic mixes it caught 42/47, and wrongly proposed moving
    under 3% of the other speaker's lines.
+   If a sample clip is clearly someone else, click **Different person?** on it: the same review runs
+   with that clip's voice as the second voice (on synthetic mixes it wrongly proposed under 3% of the
+   other speaker's lines). Clips whose voice doesn't match the rest of their label are tagged
+   "sounds different".
 4. Listen to the clips, fix groups, type names. Names and decisions are kept in the browser, so they
    survive regrouping and re-analysis.
 5. **Review & apply** renames the labels in the desktop app's stored transcripts and regenerates

@@ -52,6 +52,8 @@
   .sample { display: grid; grid-template-columns: auto auto 1fr; gap: 6px; align-items: baseline; font-size: 12.5px; }
   .sample button, .lines button.play { padding: 0 8px; font-size: 11px; }
   .playing .said { color: var(--accent); font-weight: 500; }
+  button.linkish { border: 0; background: none; padding: 0 2px; color: var(--muted); font-size: 11.5px; text-decoration: underline; cursor: pointer; }
+  button.linkish:hover { color: var(--accent); }
   .progress { min-width: 240px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
   .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
@@ -214,7 +216,11 @@ function sampleList(m) {
   if (!m.samples.length) return '<div class="sub" style="margin-top:4px">No clean solo speech to sample.</div>';
   return `<div class="samples">${m.samples.map((s) => `
     <div class="sample"><button data-clip="/clips/${caseId}/${esc(s.clip)}">▶</button>
-      <span class="sub">${clock(s.start)}</span><span class="said">“${esc(s.text)}”</span></div>`).join('')}</div>`;
+      <span class="sub">${clock(s.start)}</span>
+      <span><span class="said">“${esc(s.text)}”</span>
+        ${s.odd ? '<span class="chip warn" title="This clip\'s voice doesn\'t match the rest of this speaker label">sounds different</span>' : ''}
+        <button class="linkish" data-seed="${esc(keyOf(m))}|${s.start}|${s.start + (s.duration || 5)}"
+          title="If this clip is someone else, find every line in this file that sounds like it">Different person?</button></span></div>`).join('')}</div>`;
 }
 
 function memberHtml(m, p) {
@@ -344,6 +350,7 @@ document.addEventListener('click', (e) => {
     saveDraft(); render();
   }
   if (t.dataset.split) openSplit(t.dataset.split);
+  if (t.dataset.seed) { const [key, start, end] = t.dataset.seed.split('|'); openSplit(key, [start, end]); }
   if (t.dataset.tab) {
     document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b === t));
     $('peopleView').hidden = t.dataset.tab !== 'people'; $('filesView').hidden = t.dataset.tab !== 'files';
@@ -375,9 +382,10 @@ $('analyzeBtn').addEventListener('click', async () => {
 });
 
 // ── Split review ──
-async function openSplit(key) {
+async function openSplit(key, seed) {
   const [media_key, label] = key.split('::');
-  try { await api(`/api/split/${caseId}/${media_key}?label=${encodeURIComponent(label)}`, { method: 'POST' }); }
+  const seedQuery = seed ? `&seed_start=${seed[0]}&seed_end=${seed[1]}` : '';
+  try { await api(`/api/split/${caseId}/${media_key}?label=${encodeURIComponent(label)}${seedQuery}`, { method: 'POST' }); }
   catch (err) { alert(err.message); return; }
   watchJob((s) => showSplit(s.result));
 }
@@ -385,7 +393,10 @@ async function openSplit(key) {
 function showSplit(res) {
   split = { ...res, selected: new Set(res.lines.filter((l) => l.proposal === 'move').map((l) => l.id)) };
   const targets = res.target_options.map((t) => `<option ${t === res.suggested_target ? 'selected' : ''}>${esc(t)}</option>`).join('');
-  $('splitHead').innerHTML = `<b>${esc(res.file)}</b> · ${esc(res.label)} sounds like two different voices.<br>
+  const why = res.seed
+    ? `finding everything under ${esc(res.label)} that sounds like the clip at ${clock(res.seed.start)} <button class="play" data-clip="/api/line_audio/${caseId}/${res.media_key}?start=${res.seed.start}&end=${res.seed.end}">▶</button>`
+    : `${esc(res.label)} sounds like two different voices.`;
+  $('splitHead').innerHTML = `<b>${esc(res.file)}</b> · ${why}<br>
     <span class="sub">Utterances the tool thinks belong to the second voice are pre-selected (green). Yellow = can't tell. Play and tick each one you want moved, then choose where they go.</span>
     <div style="margin-top:8px">Move selected lines to <select id="splitTarget">${targets}</select></div>`;
   $('splitBody').innerHTML = `<table class="lines">${res.lines.map((l) => `

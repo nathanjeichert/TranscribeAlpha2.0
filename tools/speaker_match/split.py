@@ -87,14 +87,40 @@ def _next_label(existing: List[str]) -> str:
     return f"SPEAKER {len(used) + 1}"
 
 
+def _seeded_voices(vecs: np.ndarray, spans: np.ndarray, seed: np.ndarray, fallback_major: np.ndarray) -> dict:
+    """Two voices anchored on a clip the user says is a different person."""
+    X = vecs.astype(np.float32)
+    X /= np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
+    minor_mask = (X @ seed) > (X @ fallback_major) if len(X) else np.zeros(0, dtype=bool)
+    major = X[~minor_mask].mean(0) if (~minor_mask).sum() >= 3 else fallback_major
+    major = major / (np.linalg.norm(major) + 1e-9)
+    minor = seed + (X[minor_mask].mean(0) if minor_mask.sum() >= 3 else 0)  # keep the user's clip as the anchor
+    minor = minor / (np.linalg.norm(minor) + 1e-9)
+    return {"major": major, "minor": minor, "sim": float(major @ minor)}
+
+
 def propose(case_id: str, media_key: str, label: str, index: Dict[str, dict],
-            progress=lambda *a: None) -> dict:
+            progress=lambda *a: None, seed: Optional[tuple] = None) -> dict:
+    """Per-utterance split proposals for one label. With `seed` (start, end of a clip the user
+    marked as a different person), that clip's voice defines the second voice."""
     record = core.load_record(core.record_path(case_id, media_key))
     arrays = analyze.load_arrays(case_id, media_key)
     mask = arrays["labels"] == label
-    tv = two_voices(arrays["vecs"][mask], arrays["spans"][mask])
-    if not tv:
-        raise ValueError("Not enough clean speech to separate two voices for this speaker.")
+    audio = None
+    if seed:
+        media = core.media_path_for(record)
+        if not media:
+            raise ValueError("Media file not found (is the drive connected?)")
+        progress("Decoding audio", 0, 1)
+        audio = analyze._decode_audio(media)
+        seed_vec = analyze._embed([audio[int(seed[0] * analyze.SAMPLE_RATE):int(seed[1] * analyze.SAMPLE_RATE)]])[0]
+        centroid = index.get(media_key, {}).get("speakers", {}).get(label, {}).get("centroid")
+        fallback = np.array(centroid, dtype=np.float32) if centroid else -seed_vec
+        tv = _seeded_voices(arrays["vecs"][mask], arrays["spans"][mask], seed_vec, fallback)
+    else:
+        tv = two_voices(arrays["vecs"][mask], arrays["spans"][mask])
+        if not tv:
+            raise ValueError("Not enough clean speech to separate two voices for this speaker.")
 
     labels_in_file = sorted({(l.get("speaker") or "").strip() for l in record.get("lines") or []} - {""})
     entry = index.get(media_key, {})
@@ -107,11 +133,12 @@ def propose(case_id: str, media_key: str, label: str, index: Dict[str, dict],
     new_label = _next_label(labels_in_file)
     suggested = target if target and best_sim >= EXISTING_TARGET_SIM else new_label
 
-    progress("Decoding audio", 0, 1)
-    media = core.media_path_for(record)
-    if not media:
-        raise ValueError("Media file not found (is the drive connected?)")
-    audio = analyze._decode_audio(media)
+    if audio is None:
+        progress("Decoding audio", 0, 1)
+        media = core.media_path_for(record)
+        if not media:
+            raise ValueError("Media file not found (is the drive connected?)")
+        audio = analyze._decode_audio(media)
 
     words = []
     for turn in record.get("turns") or []:
@@ -167,7 +194,33 @@ def propose(case_id: str, media_key: str, label: str, index: Dict[str, dict],
     progress("Done", len(items), len(items))
     return {
         "media_key": media_key, "file": record.get("media_filename"), "label": label,
+        "seed": {"start": seed[0], "end": seed[1]} if seed else None,
         "voices_similarity": round(tv["sim"], 2), "suggested_target": suggested,
         "target_options": [l for l in labels_in_file if l != label] + [new_label],
         "new_label": new_label, "lines": out,
     }
+
+
+ODD_CLIP_SIM = 0.4
+
+
+def odd_clips(case_id: str, index: Dict[str, dict]) -> set:
+    """(media_key, label, clip) for sample clips whose voice doesn't match the rest of their label."""
+    odd = set()
+    for key, entry in index.items():
+        arrays = analyze.load_arrays(case_id, key)
+        if arrays is None or not len(arrays["vecs"]):
+            continue
+        V = arrays["vecs"].astype(np.float32)
+        V /= np.linalg.norm(V, axis=1, keepdims=True) + 1e-9
+        for label, spk in entry.get("speakers", {}).items():
+            if not spk.get("centroid"):
+                continue
+            c = np.array(spk["centroid"], dtype=np.float32)
+            m = arrays["labels"] == label
+            spans, vecs = arrays["spans"][m], V[m]
+            for sample in spk.get("samples", []):
+                hit = [i for i, (a, b) in enumerate(spans) if a - 0.5 <= sample["start"] <= b]
+                if hit and float(vecs[hit[0]] @ c) < ODD_CLIP_SIM:
+                    odd.add(sample["clip"])
+    return odd

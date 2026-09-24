@@ -7,7 +7,7 @@ from __future__ import annotations
 import subprocess
 import threading
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -97,7 +97,12 @@ def groups(case_id: str, threshold: float = 0.42):
                 flags[(key, label)] = f
     linked = align.speaker_links(case_id, {k: r for k, r in records.items() if k in index})
     errors = [{"file": e["file"], "error": e["error"]} for e in index.values() if e.get("error")]
-    return {**analyze.cluster(index, threshold, linked["links"], flags), "files": sorted(files, key=lambda f: f["file"]),
+    result = analyze.cluster(index, threshold, linked["links"], flags)
+    odd = split.odd_clips(case_id, index)
+    for m in [m for p in result["people"] for m in p["members"]] + result["unmatched"]:
+        for sample in m["samples"]:
+            sample["odd"] = sample["clip"] in odd
+    return {**result, "files": sorted(files, key=lambda f: f["file"]),
             "alignments": linked["pairs"], "stale": stale, "errors": errors, "analyzed": len(index)}
 
 
@@ -125,9 +130,12 @@ def line_audio(case_id: str, media_key: str, start: float, end: float):
 
 
 @app.post("/api/split/{case_id}/{media_key}")
-def start_split_review(case_id: str, media_key: str, label: str):
+def start_split_review(case_id: str, media_key: str, label: str,
+                       seed_start: Optional[float] = None, seed_end: Optional[float] = None):
     index = analyze.load_index(case_id)
-    return _start_job("split", case_id, lambda progress: split.propose(case_id, media_key, label, index, progress))
+    seed = (seed_start, seed_end) if seed_start is not None and seed_end is not None else None
+    return _start_job("split", case_id,
+                      lambda progress: split.propose(case_id, media_key, label, index, progress, seed=seed))
 
 
 class SplitApply(BaseModel):
