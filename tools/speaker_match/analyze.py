@@ -1,8 +1,8 @@
 """Voiceprints per (transcript, speaker) and cross-file grouping.
 
-For each transcript: decode the media's audio once (16 kHz mono), cut that speaker's
-longest segments, embed them with SpeechBrain's ECAPA-TDNN model, and average into one
-voiceprint per speaker. Short sample clips are kept for listening; the full decoded
+For each transcript: decode the media's audio once (16 kHz mono), cut each speaker's
+clean speech runs (see core.speech_runs), embed them with SpeechBrain's ECAPA-TDNN model,
+and average into one voiceprint per speaker. Short sample clips are kept for listening; the full decoded
 audio is not. Everything is cached under cache/<case_id>/ and only transcripts whose
 record changed are re-analyzed.
 
@@ -12,9 +12,9 @@ cache/<case_id>/ when the case is done.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -32,7 +32,12 @@ WINDOW_S = 8.0            # long segments are embedded in windows of this size
 MAX_AUDIO_PER_SPEAKER_S = 120.0
 SAMPLE_CLIPS = 3
 SAMPLE_CLIP_MAX_S = 7.0
-MIN_TALK_FOR_MATCH_S = 3.0  # below this, a speaker is listed but not auto-grouped
+SAMPLE_CLIP_MIN_S = 1.2
+SAMPLE_CLIP_MIN_WORDS = 4  # one-word clips ("Okay") don't help anyone recognize a voice
+SAMPLE_SPACING_S = 20.0   # spread sample clips across the recording
+CLIP_PAD_S = 0.15         # runs have >= core.CLEARANCE_S of silence from other speakers
+ANALYSIS_VERSION = 4      # bump to re-analyze cached transcripts after changing the method
+MIN_TALK_FOR_MATCH_S = 3.0  # clean speech below this: listed but not auto-grouped
 
 _model = None
 _model_lock = threading.Lock()
@@ -84,6 +89,37 @@ def _rms_db(x: np.ndarray) -> float:
     return float(20 * np.log10(np.sqrt(np.mean(np.square(x))) + 1e-9))
 
 
+def _pick_clips(runs: List[dict]) -> List[dict]:
+    """Best few clips: confident, reasonably long runs, spread out across the recording.
+    Each clip is trimmed at a word boundary so its quote is exactly what is heard."""
+    candidates = []
+    for run in runs:
+        words = run["words"]
+        if words:
+            kept = [w for w in words if w["end"] - words[0]["start"] <= SAMPLE_CLIP_MAX_S]
+            start, end, text = kept[0]["start"], kept[-1]["end"], " ".join(w["text"] for w in kept)
+        else:
+            start, end, text = run["start"], min(run["end"], run["start"] + SAMPLE_CLIP_MAX_S), run["text"]
+        if end - start < SAMPLE_CLIP_MIN_S or len(text.split()) < SAMPLE_CLIP_MIN_WORDS:
+            continue
+        candidates.append({"start": start, "end": end, "text": text,
+                           "score": run["confidence"] * min(end - start, 5.0)})
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    chosen: List[dict] = []
+    for c in candidates:
+        if all(abs(c["start"] - o["start"]) >= SAMPLE_SPACING_S for o in chosen):
+            chosen.append(c)
+        if len(chosen) == SAMPLE_CLIPS:
+            break
+    if len(chosen) < SAMPLE_CLIPS:  # short recordings: relax spacing
+        for c in candidates:
+            if c not in chosen:
+                chosen.append(c)
+            if len(chosen) == SAMPLE_CLIPS:
+                break
+    return sorted(chosen, key=lambda c: c["start"])
+
+
 def analyze_record(record: dict, case_cache: Path) -> dict:
     media_key = record["media_key"]
     media_path = core.media_path_for(record)
@@ -92,6 +128,7 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
         "file": record.get("media_filename") or media_key,
         "camera": core.camera_serial(record.get("media_filename") or ""),
         "updated_at": record.get("updated_at"),
+        "version": ANALYSIS_VERSION,
         "speakers": {},
         "error": None,
     }
@@ -105,28 +142,43 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
         shutil.rmtree(clip_dir)
     clip_dir.mkdir(parents=True)
 
-    for label, segs in core.speaker_segments(record).items():
-        talk = sum(s["end"] - s["start"] for s in segs)
-        usable = sorted((s for s in segs if s["end"] - s["start"] >= MIN_SEGMENT_S),
-                        key=lambda s: s["end"] - s["start"], reverse=True)
+    runs_by_speaker: Dict[str, List[dict]] = {}
+    for run in core.speech_runs(record):
+        runs_by_speaker.setdefault(run["speaker"], []).append(run)
+    talk_by_speaker: Dict[str, float] = {}
+    for line in record.get("lines") or []:
+        label = (line.get("speaker") or "").strip()
+        try:
+            talk_by_speaker[label] = talk_by_speaker.get(label, 0.0) + max(0.0, float(line["end"]) - float(line["start"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    def cut(start: float, end: float) -> np.ndarray:
+        return audio[max(0, int(start * SAMPLE_RATE)):int(end * SAMPLE_RATE)]
+
+    for label in sorted(set(talk_by_speaker) | set(runs_by_speaker)):
+        if not label:
+            continue
+        runs = runs_by_speaker.get(label, [])
+        usable = sorted((r for r in runs if r["end"] - r["start"] >= MIN_SEGMENT_S),
+                        key=lambda r: r["confidence"] * (r["end"] - r["start"]), reverse=True)
         chunks, weights, budget = [], [], MAX_AUDIO_PER_SPEAKER_S
-        for seg in usable:
+        for run in usable:
             if budget <= 0:
                 break
-            t = seg["start"]
-            while t < seg["end"] and budget > 0:
-                end = min(seg["end"], t + WINDOW_S)
-                if end - t >= MIN_SEGMENT_S:
-                    piece = audio[int(t * SAMPLE_RATE):int(end * SAMPLE_RATE)]
-                    if len(piece) >= MIN_SEGMENT_S * SAMPLE_RATE:
-                        chunks.append(piece)
-                        weights.append(end - t)
-                        budget -= end - t
+            t = run["start"]
+            while t < run["end"] and budget > 0:
+                end = min(run["end"], t + WINDOW_S)
+                piece = cut(t, end)
+                if end - t >= MIN_SEGMENT_S and len(piece) >= MIN_SEGMENT_S * SAMPLE_RATE:
+                    chunks.append(piece)
+                    weights.append(end - t)
+                    budget -= end - t
                 t = end
 
         speaker = {
             "label": label,
-            "talk_seconds": round(talk, 1),
+            "talk_seconds": round(talk_by_speaker.get(label, 0.0), 1),
             "embedded_seconds": round(sum(weights), 1),
             "loudness_db": round(_rms_db(np.concatenate(chunks)), 1) if chunks else None,
             "centroid": None,
@@ -140,12 +192,13 @@ def analyze_record(record: dict, case_cache: Path) -> dict:
             speaker["centroid"] = centroid.round(5).tolist()
             speaker["consistency"] = round(float(np.mean(vecs @ centroid)), 3)
 
-        for i, seg in enumerate(usable[:SAMPLE_CLIPS]):
-            end = min(seg["end"], seg["start"] + SAMPLE_CLIP_MAX_S)
-            name = f"{len(speaker['samples'])}.mp3"
-            _write_clip(audio[int(seg["start"] * SAMPLE_RATE):int(end * SAMPLE_RATE)], clip_dir / name)
-            speaker["samples"].append({"clip": f"{media_key}/{name}", "start": round(seg["start"], 2),
-                                       "text": seg["text"][:220]})
+        # One folder per transcript, so clip names must include the speaker.
+        safe_label = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_") or "speaker"
+        for i, c in enumerate(_pick_clips(runs)):
+            name = f"{safe_label}_{i}.mp3"
+            _write_clip(cut(c["start"] - CLIP_PAD_S, c["end"] + CLIP_PAD_S), clip_dir / name)
+            speaker["samples"].append({"clip": f"{media_key}/{name}", "start": round(c["start"], 2),
+                                       "duration": round(c["end"] - c["start"], 1), "text": c["text"]})
         result["speakers"][label] = speaker
 
     # Hint: the camera wearer is usually much louder than everyone else in the file.
@@ -170,7 +223,8 @@ def analyze_case(case_id: str, progress: Callable[[str, int, int], None] = lambd
         key = record["media_key"]
         keep.add(key)
         cached = index.get(key)
-        if cached and cached.get("updated_at") == record.get("updated_at") and not cached.get("error"):
+        if (cached and cached.get("updated_at") == record.get("updated_at") and not cached.get("error")
+                and cached.get("version") == ANALYSIS_VERSION):
             progress(f"Cached: {record.get('media_filename')}", i, len(paths))
             continue
         progress(f"Analyzing: {record.get('media_filename')}", i, len(paths))

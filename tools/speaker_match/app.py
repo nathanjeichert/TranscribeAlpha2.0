@@ -71,7 +71,8 @@ def groups(case_id: str, threshold: float = 0.5):
     for path in core.transcript_paths(case_id):
         record = core.load_record(path)
         cached = index.get(record["media_key"])
-        if not cached or cached.get("updated_at") != record.get("updated_at"):
+        if (not cached or cached.get("updated_at") != record.get("updated_at")
+                or cached.get("version") != analyze.ANALYSIS_VERSION):
             stale.append(record.get("media_filename"))
     errors = [{"file": e["file"], "error": e["error"]} for e in index.values() if e.get("error")]
     return {**analyze.cluster(index, threshold), "stale": stale, "errors": errors, "analyzed": len(index)}

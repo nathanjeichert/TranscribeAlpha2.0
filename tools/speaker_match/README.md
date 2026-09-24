@@ -9,6 +9,11 @@ tools/speaker_match/run.sh   # first run creates .venv; opens http://127.0.0.1:8
 1. Pick a case and click **Analyze voices**. Each transcript's media is decoded once, each
    diarized speaker gets a voiceprint (SpeechBrain ECAPA-TDNN, runs locally on CPU), and
    short sample clips are saved. Only changed transcripts are re-analyzed on later runs.
+
+   Voiceprints and clips use only *clean* speech: runs of one speaker's words with plausible
+   word timings and ~0.3 s of clearance from anyone else. Line spans aren't used directly
+   because ASR occasionally stretches a single word over many seconds of untranscribed
+   speech. Each clip is cut at word boundaries and shown with exactly the words it contains.
 2. Speakers are grouped across files (average-linkage on cosine similarity; two speakers from
    the same file are never merged). Adjust **Match strictness** to regroup.
 3. Listen to the clips, fix groups (untick, **Move…**, or split into a new person), type names.

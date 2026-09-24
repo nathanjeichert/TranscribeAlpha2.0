@@ -36,8 +36,11 @@
   .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin-right: 4px; }
   .chip.wearer { background: #ecfdf3; color: var(--ok); }
   .chip.low { background: #fef3f2; color: #b42318; }
-  .plays button { padding: 2px 8px; margin: 2px 4px 0 0; font-size: 12px; }
-  .quote { font-size: 12px; color: var(--muted); margin-top: 4px; max-width: 360px; }
+  .samples { margin-top: 6px; display: grid; gap: 4px; max-width: 420px; }
+  .sample { display: grid; grid-template-columns: auto auto 1fr; gap: 6px; align-items: baseline; font-size: 12.5px; }
+  .sample button { padding: 1px 8px; font-size: 11px; }
+  .sample.playing .said { color: var(--accent); font-weight: 500; }
+  .said { color: var(--ink); }
   .num { text-align: right; white-space: nowrap; }
   .progress { min-width: 260px; }
   .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
@@ -96,6 +99,8 @@ let caseId = null;
 let people = [];      // [{name, members:[member]}]
 let unmatched = [];   // [{...member, name}]
 let pollTimer = null;
+document.addEventListener('DOMContentLoaded', () => $('player').addEventListener('ended', () =>
+  document.querySelectorAll('.sample.playing').forEach((el) => el.classList.remove('playing'))));
 
 const memberKey = (m) => `${m.media_key}::${m.label}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -128,6 +133,14 @@ async function loadGroups() {
   render();
 }
 
+const clock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+function sampleList(m) {
+  if (!m.samples.length) return '<div class="sub">No clean solo speech found for this speaker.</div>';
+  return `<div class="samples">${m.samples.map((s) => `
+    <div class="sample"><button data-clip="${esc(s.clip)}" title="Play ${esc(m.label)} at ${clock(s.start)}">▶</button>
+      <span class="sub">${clock(s.start)}</span> <span class="said">“${esc(s.text)}”</span></div>`).join('')}</div>`;
+}
+
 function memberRow(m, pIndex) {
   const moveOptions = people.map((p, i) => i === pIndex ? '' : `<option value="${i}">Person ${i + 1}${p.name ? ' – ' + esc(p.name) : ''}</option>`).join('');
   const chips = [
@@ -135,12 +148,10 @@ function memberRow(m, pIndex) {
     m.likely_wearer ? '<span class="chip wearer">likely camera wearer</span>' : '',
     m.camera ? `<span class="chip">cam ${esc(m.camera)}</span>` : '',
   ].join('');
-  const plays = m.samples.map((s, i) => `<button data-clip="${esc(s.clip)}" title="${esc(s.text)}">▶ ${i + 1}</button>`).join('');
-  const quote = m.samples[0] ? `<div class="quote">“${esc(m.samples[0].text)}”</div>` : '';
   const match = m.match == null ? '—' : `${Math.round(m.match * 100)}%`;
   return `<tr class="${m.include ? '' : 'row-off'}">
     <td><input type="checkbox" data-include="${pIndex}|${esc(memberKey(m))}" ${m.include ? 'checked' : ''} title="Rename this speaker"></td>
-    <td><div class="file">${esc(shortFile(m.file))}</div><div>${chips}</div><div class="plays">${plays}</div>${quote}</td>
+    <td><div class="file">${esc(shortFile(m.file))}</div><div>${chips}</div>${sampleList(m)}</td>
     <td class="num"><div>${fmtTime(m.talk_seconds)}</div><div class="sub">talk</div></td>
     <td class="num"><div>${match}</div><div class="sub">match</div></td>
     <td><select data-move="${pIndex}|${esc(memberKey(m))}"><option value="">Move…</option>${moveOptions}<option value="new">New person</option></select></td>
@@ -162,8 +173,7 @@ function render() {
     <h2>Too little speech to match automatically (${unmatched.length})</h2>
     <div class="card"><table>${unmatched.map((m, i) => `
       <tr><td><div class="file">${esc(shortFile(m.file))}</div><div><span class="chip">${esc(m.label)}</span><span class="chip low">${fmtTime(m.talk_seconds)} of speech</span></div>
-        <div class="plays">${m.samples.map((s, j) => `<button data-clip="${esc(s.clip)}" title="${esc(s.text)}">▶ ${j + 1}</button>`).join('')}</div>
-        ${m.samples[0] ? `<div class="quote">“${esc(m.samples[0].text)}”</div>` : ''}</td>
+        ${sampleList(m)}</td>
       <td><input type="text" placeholder="Name" value="${esc(m.name)}" data-uname="${i}" style="text-transform:uppercase"></td></tr>`).join('')}
     </table></div>` : '';
   updateSummary();
@@ -225,7 +235,11 @@ document.addEventListener('change', (e) => {
 
 document.addEventListener('click', (e) => {
   const clip = e.target.dataset.clip;
-  if (clip) { const p = $('player'); p.src = `/clips/${caseId}/${clip}`; p.play(); }
+  if (clip) {
+    const p = $('player'); p.src = `/clips/${caseId}/${clip}`; p.play();
+    document.querySelectorAll('.sample.playing').forEach((el) => el.classList.remove('playing'));
+    e.target.closest('.sample')?.classList.add('playing');
+  }
 });
 
 $('threshold').addEventListener('input', () => { $('thresholdVal').textContent = Number($('threshold').value).toFixed(2); });

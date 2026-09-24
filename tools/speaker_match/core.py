@@ -12,6 +12,7 @@ builders, so the app sees the same result as if it had been edited and saved the
 from __future__ import annotations
 
 import base64
+import bisect
 import json
 import os
 import re
@@ -81,28 +82,116 @@ def media_path_for(record: dict) -> Optional[str]:
     return path if path and os.path.isfile(path) else None
 
 
-# ── Speaker segments (from the editor's line list, the app's source of truth) ─
+# ── Clean speech runs ────────────────────────────────────────────────────
+#
+# Line and turn spans can't be trusted for audio: ASR occasionally stretches one word
+# across many seconds of speech it didn't transcribe (e.g. "what" timed at 19.6 s), and
+# span edges run into other speakers. So runs are built from word timings instead, and
+# only kept when every word has a plausible duration and no other speaker is talking
+# nearby. The current label for each word comes from the editor's lines (the app's
+# source of truth, since renames there don't touch word-level labels).
+
+MAX_WORD_S = 1.5
+MIN_WORD_S = 0.02
+MAX_WORD_GAP_S = 0.35
+CLEARANCE_S = 0.3
+STRETCH_LOOKBACK_S = 60.0
 
 
-def speaker_segments(record: dict, max_gap: float = 0.6) -> Dict[str, List[dict]]:
-    """Group consecutive same-speaker lines into timed segments per speaker label."""
-    segments: Dict[str, List[dict]] = {}
-    current = None
+def _line_label_lookup(record: dict):
+    spans = []
     for line in record.get("lines") or []:
-        speaker = (line.get("speaker") or "").strip()
         try:
-            start, end = float(line.get("start") or 0), float(line.get("end") or 0)
-        except (TypeError, ValueError):
+            spans.append((float(line["start"]), float(line["end"]), (line.get("speaker") or "").strip()))
+        except (KeyError, TypeError, ValueError):
             continue
-        if not speaker or end <= start:
+    spans.sort()
+    starts = [s[0] for s in spans]
+
+    def label_at(t: float) -> Optional[str]:
+        i = bisect.bisect_right(starts, t) - 1
+        if i >= 0 and spans[i][0] <= t <= spans[i][1] + 0.05:
+            return spans[i][2]
+        return None
+
+    return label_at
+
+
+def speech_runs(record: dict) -> List[dict]:
+    """Isolated single-speaker runs with trustworthy word timing.
+
+    Each run: {speaker, start, end, text, words:[{text,start,end}], confidence}.
+    """
+    label_at = _line_label_lookup(record)
+    words = []
+    for turn in record.get("turns") or []:
+        for w in turn.get("words") or []:
+            try:
+                start, end = w["start"] / 1000.0, w["end"] / 1000.0
+            except (KeyError, TypeError):
+                continue
+            label = label_at((start + end) / 2) or label_at(start) or (turn.get("speaker") or "").strip()
+            words.append({
+                "text": w.get("text") or "",
+                "start": start,
+                "end": end,
+                "conf": float(w.get("confidence") or 0.0),
+                "speaker": label,
+                "valid": MIN_WORD_S <= end - start <= MAX_WORD_S,
+            })
+    if not words:
+        return _runs_from_lines(record)
+    words.sort(key=lambda w: w["start"])
+
+    runs, current = [], None
+    for w in words:
+        if not w["valid"] or not w["speaker"]:
+            current = None
             continue
-        if current and current["speaker"] == speaker and start - current["end"] <= max_gap:
-            current["end"] = max(current["end"], end)
-            current["text"] += " " + (line.get("text") or "")
+        if current and current["speaker"] == w["speaker"] and w["start"] - current["end"] <= MAX_WORD_GAP_S:
+            current["words"].append(w)
+            current["end"] = max(current["end"], w["end"])
         else:
-            current = {"speaker": speaker, "start": start, "end": end, "text": line.get("text") or ""}
-            segments.setdefault(speaker, []).append(current)
-    return segments
+            current = {"speaker": w["speaker"], "start": w["start"], "end": w["end"], "words": [w]}
+            runs.append(current)
+
+    # Drop runs with another speaker (or an untrustworthy stretched word) nearby.
+    starts = [w["start"] for w in words]
+    clean = []
+    for run in runs:
+        lo, hi = run["start"] - CLEARANCE_S, run["end"] + CLEARANCE_S
+        # look back far enough to catch a stretched word that began earlier but runs into this window
+        i = bisect.bisect_left(starts, lo - STRETCH_LOOKBACK_S)
+        contaminated = False
+        while i < len(words) and words[i]["start"] <= hi:
+            w = words[i]
+            if w["end"] >= lo and (w["speaker"] != run["speaker"] or not w["valid"]):
+                contaminated = True
+                break
+            i += 1
+        if contaminated:
+            continue
+        run["text"] = " ".join(w["text"] for w in run["words"])
+        run["confidence"] = sum(w["conf"] for w in run["words"]) / len(run["words"])
+        run["words"] = [{"text": w["text"], "start": w["start"], "end": w["end"]} for w in run["words"]]
+        clean.append(run)
+    return clean
+
+
+def _runs_from_lines(record: dict) -> List[dict]:
+    """Fallback for transcripts without word timings: single lines with a plausible speech rate."""
+    runs = []
+    for line in record.get("lines") or []:
+        try:
+            start, end = float(line["start"]), float(line["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = line.get("text") or ""
+        n = len(text.split())
+        if end > start and n and 1.2 <= n / (end - start) <= 6:
+            runs.append({"speaker": (line.get("speaker") or "").strip(), "start": start, "end": end,
+                         "text": text, "words": [], "confidence": 0.5})
+    return runs
 
 
 # ── Rename + export regeneration ─────────────────────────────────────────
