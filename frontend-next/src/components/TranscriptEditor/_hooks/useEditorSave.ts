@@ -176,6 +176,43 @@ export function useEditorSave({
     [effectiveMediaType, getViewerTemplate],
   )
 
+  /**
+   * Persist unsaved edits for a transcript the editor is leaving (switching transcripts
+   * or unmounting). Takes explicit values and never touches component state, so it is
+   * safe to fire after the editor has moved on. Writes the edited lines first so a quick
+   * reopen sees them, then regenerates the exports.
+   */
+  const flushPendingSave = useCallback(
+    async (mediaKey: string, meta: EditorSessionResponse, pendingLines: EditorLine[]) => {
+      const caseIdRaw = (meta as unknown as Record<string, unknown>).case_id
+      const caseId = typeof caseIdRaw === 'string' && caseIdRaw ? caseIdRaw : undefined
+      try {
+        await localSaveTranscript(
+          mediaKey,
+          { ...meta, lines: pendingLines, updated_at: new Date().toISOString() } as unknown as Record<string, unknown>,
+          caseId,
+        )
+        const artifacts = await buildLocalArtifacts(pendingLines, meta, mediaKey)
+        await localSaveTranscript(
+          mediaKey,
+          {
+            ...meta,
+            lines: artifacts.lineEntries,
+            pdf_base64: artifacts.pdfBase64,
+            viewer_html_base64: artifacts.viewerHtmlBase64,
+            oncue_xml_base64: artifacts.oncueXmlBase64,
+            updated_at: new Date().toISOString(),
+          } as unknown as Record<string, unknown>,
+          caseId,
+        )
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Failed to save changes when leaving transcript'
+        setSnapshotError(msg)
+      }
+    },
+    [buildLocalArtifacts],
+  )
+
   const refreshArtifacts = useCallback(async (): Promise<EditorSaveResponse | null> => {
     const sessionMeta = sessionMetaRef.current
     if (!activeMediaKey || !sessionMeta) return null
@@ -432,6 +469,7 @@ export function useEditorSave({
     isResyncing,
     resyncError,
     handleSave,
+    flushPendingSave,
     refreshArtifacts,
     handleDownloadPdf,
     handleDownloadViewer,

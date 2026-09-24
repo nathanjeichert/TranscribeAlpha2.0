@@ -234,23 +234,25 @@ export function useEditorLines(initialLines: EditorLine[]) {
         setRenameFeedback('Enter both the current and new speaker names.')
         return
       }
-      pushHistory(lines)
       const normalizedSource = source.toUpperCase()
       const normalizedTarget = target.toUpperCase()
+      // Count and rename from the current lines synchronously. Counting inside a
+      // setLines updater doesn't work: React may defer the updater (pushHistory
+      // queues state first), so the count read 0 and the edit was never marked dirty.
       let changes = 0
-      setLines((prev) =>
-        prev.map((line) => {
-          if (line.speaker.trim().toUpperCase() === normalizedSource) {
-            changes += 1
-            return { ...line, speaker: normalizedTarget, rendered_text: undefined }
-          }
-          return line
-        }),
-      )
+      const renamed = lines.map((line) => {
+        if (line.speaker.trim().toUpperCase() === normalizedSource) {
+          changes += 1
+          return { ...line, speaker: normalizedTarget, rendered_text: undefined }
+        }
+        return line
+      })
       if (changes === 0) {
         setRenameFeedback('No matching speaker labels were found.')
         return
       }
+      pushHistory(lines)
+      setLines(renamed)
       setIsDirty(true)
       setRenameFeedback(`Renamed ${changes} line${changes === 1 ? '' : 's'}. Save to update exports.`)
     },

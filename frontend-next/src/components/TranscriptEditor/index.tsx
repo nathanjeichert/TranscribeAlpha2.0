@@ -185,9 +185,27 @@ export default function TranscriptEditor({
     viewerHtmlBase64,
   })
 
+  // ── Save unsaved edits when leaving a transcript ─────────────────────────
+  const flushPendingSaveRef = useRef(save.flushPendingSave)
+  flushPendingSaveRef.current = save.flushPendingSave
+
+  const flushIfDirty = useCallback((nextKey: string | null) => {
+    const meta = sessionMetaRef.current
+    const currentKey = meta?.media_key ?? activeMediaKey
+    if (!isDirtyRef.current || !meta || !currentKey || currentKey === nextKey) return
+    isDirtyRef.current = false
+    void flushPendingSaveRef.current(currentKey, meta, linesRef.current)
+  }, [activeMediaKey])
+
+  const flushIfDirtyRef = useRef(flushIfDirty)
+  flushIfDirtyRef.current = flushIfDirty
+  useEffect(() => () => flushIfDirtyRef.current(null), [])
+
   // ── Sync initialData changes (e.g., from parent page re-fetch / resync) ──
   useEffect(() => {
     if (!initialData) return
+    // Switching to another transcript replaces the lines below; persist the old one first.
+    flushIfDirty(initialData.media_key ?? initialMediaKey ?? null)
     setSessionMeta(initialData)
     lines.setLines(initialData.lines ?? [])
     const resolvedKey = initialData.media_key ?? initialMediaKey ?? null
