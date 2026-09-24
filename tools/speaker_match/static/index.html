@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speaker Match</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1c2230; --muted: #667085; --line: #e3e6ec;
+    --accent: #2f5bd3; --accent-ink: #fff; --ok: #1f8a4c; --warn: #b54708; --chip: #eef2ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  select, input[type=text], button { font: inherit; }
+  select, input[type=text] { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: #fff; color: var(--ink); }
+  button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: var(--muted); }
+  .spacer { flex: 1; }
+  main { padding: 16px 20px 96px; max-width: 1200px; margin: 0 auto; }
+  .notice { background: #fffaeb; border: 1px solid #fedf89; color: #7a2e0e; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+  .notice.info { background: #eff4ff; border-color: #c7d7fe; color: #1d3a8a; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .card-head { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); background: #fafbfc; }
+  .card-head .tag { font-weight: 600; white-space: nowrap; }
+  .card-head input { flex: 1; min-width: 0; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 7px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+  tr:first-child td { border-top: 0; }
+  .file { font-weight: 500; }
+  .sub { font-size: 12px; color: var(--muted); }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin-right: 4px; }
+  .chip.wearer { background: #ecfdf3; color: var(--ok); }
+  .chip.low { background: #fef3f2; color: #b42318; }
+  .plays button { padding: 2px 8px; margin: 2px 4px 0 0; font-size: 12px; }
+  .quote { font-size: 12px; color: var(--muted); margin-top: 4px; max-width: 360px; }
+  .num { text-align: right; white-space: nowrap; }
+  .progress { min-width: 260px; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 12px; align-items: center; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 0; width: min(720px, 92vw); }
+  dialog .body { padding: 16px; max-height: 60vh; overflow: auto; }
+  dialog .foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
+  h2 { font-size: 15px; margin: 22px 0 10px; }
+  .row-off td { opacity: .45; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11141a; --panel: #1a1f28; --ink: #e6e9ef; --muted: #98a2b3; --line: #2c3340; --chip: #243049; }
+    select, input[type=text], button { background: #141821; color: var(--ink); }
+    .card-head { background: #161b23; }
+    .notice { background: #2a2111; border-color: #5c4413; color: #f5d7a0; }
+    .notice.info { background: #16213a; border-color: #2c4380; color: #c7d7fe; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Speaker Match</h1>
+  <select id="caseSel"></select>
+  <button id="analyzeBtn">Analyze voices</button>
+  <div class="progress" id="progress" hidden><div class="sub" id="progressMsg"></div><div class="bar"><div id="progressBar"></div></div></div>
+  <div class="spacer"></div>
+  <label class="sub">Match strictness
+    <input id="threshold" type="range" min="0.30" max="0.80" step="0.02" value="0.50" style="vertical-align:middle">
+    <span id="thresholdVal">0.50</span>
+  </label>
+</header>
+
+<main>
+  <div class="notice">Close any transcript you have open in TranscribeAlpha's editor before applying names. Every changed file is backed up first (<code>tools/speaker_match/backups/</code>).</div>
+  <div id="status"></div>
+  <div class="grid" id="people"></div>
+  <div id="unmatchedWrap"></div>
+</main>
+
+<footer>
+  <span id="summary" class="muted">No names entered yet.</span>
+  <div class="spacer"></div>
+  <button class="primary" id="reviewBtn" disabled>Review &amp; apply</button>
+</footer>
+
+<dialog id="review">
+  <div class="body" id="reviewBody"></div>
+  <div class="foot"><button id="cancelBtn">Cancel</button><button class="primary" id="confirmBtn">Apply to TranscribeAlpha</button></div>
+</dialog>
+
+<audio id="player"></audio>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let caseId = null;
+let people = [];      // [{name, members:[member]}]
+let unmatched = [];   // [{...member, name}]
+let pollTimer = null;
+
+const memberKey = (m) => `${m.media_key}::${m.label}`;
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmtTime = (s) => s >= 60 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` : `${Math.round(s)}s`;
+const shortFile = (f) => f.replace(/^axon_body_\d_video_/i, '').replace(/\.[^.]+$/, '').replace(/_/g, ' ');
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+async function loadCases() {
+  const cases = await api('/api/cases');
+  $('caseSel').innerHTML = cases.map((c) => `<option value="${c.case_id}">${esc(c.name)} (${c.count} transcripts)</option>`).join('');
+  caseId = cases[0]?.case_id || null;
+  if (caseId) await loadGroups();
+}
+
+async function loadGroups() {
+  const threshold = $('threshold').value;
+  const data = await api(`/api/groups/${caseId}?threshold=${threshold}`);
+  people = data.people.map((p) => ({ name: p.suggested_name, members: p.members.map((m) => ({ ...m, include: true })) }));
+  unmatched = data.unmatched.map((m) => ({ ...m, name: '' }));
+  const notes = [];
+  if (!data.analyzed) notes.push('This case has not been analyzed yet. Click <b>Analyze voices</b> (a few minutes per hour of audio).');
+  else if (data.stale.length) notes.push(`${data.stale.length} transcript(s) changed or are new since the last analysis; click <b>Analyze voices</b> to update them.`);
+  if (data.errors.length) notes.push('Could not analyze: ' + data.errors.map((e) => `${esc(e.file)} (${esc(e.error)})`).join('; '));
+  $('status').innerHTML = notes.map((n) => `<div class="notice info">${n}</div>`).join('');
+  render();
+}
+
+function memberRow(m, pIndex) {
+  const moveOptions = people.map((p, i) => i === pIndex ? '' : `<option value="${i}">Person ${i + 1}${p.name ? ' – ' + esc(p.name) : ''}</option>`).join('');
+  const chips = [
+    `<span class="chip">${esc(m.label)}</span>`,
+    m.likely_wearer ? '<span class="chip wearer">likely camera wearer</span>' : '',
+    m.camera ? `<span class="chip">cam ${esc(m.camera)}</span>` : '',
+  ].join('');
+  const plays = m.samples.map((s, i) => `<button data-clip="${esc(s.clip)}" title="${esc(s.text)}">▶ ${i + 1}</button>`).join('');
+  const quote = m.samples[0] ? `<div class="quote">“${esc(m.samples[0].text)}”</div>` : '';
+  const match = m.match == null ? '—' : `${Math.round(m.match * 100)}%`;
+  return `<tr class="${m.include ? '' : 'row-off'}">
+    <td><input type="checkbox" data-include="${pIndex}|${esc(memberKey(m))}" ${m.include ? 'checked' : ''} title="Rename this speaker"></td>
+    <td><div class="file">${esc(shortFile(m.file))}</div><div>${chips}</div><div class="plays">${plays}</div>${quote}</td>
+    <td class="num"><div>${fmtTime(m.talk_seconds)}</div><div class="sub">talk</div></td>
+    <td class="num"><div>${match}</div><div class="sub">match</div></td>
+    <td><select data-move="${pIndex}|${esc(memberKey(m))}"><option value="">Move…</option>${moveOptions}<option value="new">New person</option></select></td>
+  </tr>`;
+}
+
+function render() {
+  $('people').innerHTML = people.map((p, i) => `
+    <div class="card">
+      <div class="card-head">
+        <span class="tag">Person ${i + 1}</span>
+        <span class="sub">${p.members.length} file${p.members.length === 1 ? '' : 's'}</span>
+        <input type="text" placeholder="Name (e.g. Officer Nguyen)" value="${esc(p.name)}" data-name="${i}">
+      </div>
+      <table>${p.members.map((m) => memberRow(m, i)).join('')}</table>
+    </div>`).join('');
+
+  $('unmatchedWrap').innerHTML = unmatched.length ? `
+    <h2>Too little speech to match automatically (${unmatched.length})</h2>
+    <div class="card"><table>${unmatched.map((m, i) => `
+      <tr><td><div class="file">${esc(shortFile(m.file))}</div><div><span class="chip">${esc(m.label)}</span><span class="chip low">${fmtTime(m.talk_seconds)} of speech</span></div>
+        <div class="plays">${m.samples.map((s, j) => `<button data-clip="${esc(s.clip)}" title="${esc(s.text)}">▶ ${j + 1}</button>`).join('')}</div>
+        ${m.samples[0] ? `<div class="quote">“${esc(m.samples[0].text)}”</div>` : ''}</td>
+      <td><input type="text" placeholder="Name" value="${esc(m.name)}" data-uname="${i}" style="text-transform:uppercase"></td></tr>`).join('')}
+    </table></div>` : '';
+  updateSummary();
+}
+
+function collectRenames() {
+  const out = [];
+  people.forEach((p) => {
+    const name = p.name.trim().toUpperCase();
+    if (!name) return;
+    p.members.forEach((m) => { if (m.include && m.label !== name) out.push({ media_key: m.media_key, from_label: m.label, to: name, file: m.file }); });
+  });
+  unmatched.forEach((m) => {
+    const name = m.name.trim().toUpperCase();
+    if (name && m.label !== name) out.push({ media_key: m.media_key, from_label: m.label, to: name, file: m.file });
+  });
+  return out;
+}
+
+function updateSummary() {
+  const renames = collectRenames();
+  const files = new Set(renames.map((r) => r.media_key)).size;
+  $('summary').textContent = renames.length ? `${renames.length} speaker rename${renames.length === 1 ? '' : 's'} across ${files} transcript${files === 1 ? '' : 's'}` : 'No names entered yet.';
+  $('reviewBtn').disabled = !renames.length;
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target.dataset.name !== undefined) { people[+e.target.dataset.name].name = e.target.value; updateSummary(); }
+  if (e.target.dataset.uname !== undefined) { unmatched[+e.target.dataset.uname].name = e.target.value; updateSummary(); }
+});
+
+document.addEventListener('change', (e) => {
+  const inc = e.target.dataset.include;
+  if (inc) {
+    const [pi, key] = inc.split('|');
+    const m = people[+pi].members.find((x) => memberKey(x) === key);
+    m.include = e.target.checked;
+    render();
+  }
+  const mv = e.target.dataset.move;
+  if (mv && e.target.value !== '') {
+    const [pi, key] = mv.split('|');
+    const from = people[+pi];
+    const idx = from.members.findIndex((x) => memberKey(x) === key);
+    const [m] = from.members.splice(idx, 1);
+    m.match = null;
+    if (e.target.value === 'new') people.push({ name: '', members: [m] });
+    else {
+      const target = people[+e.target.value];
+      if (target.members.some((x) => x.media_key === m.media_key)) {
+        alert('That person already has a speaker from this same file. The transcript treats them as different people, so they can’t share a name here.');
+        from.members.splice(idx, 0, m);
+      } else target.members.push(m);
+    }
+    people = people.filter((p) => p.members.length);
+    render();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const clip = e.target.dataset.clip;
+  if (clip) { const p = $('player'); p.src = `/clips/${caseId}/${clip}`; p.play(); }
+});
+
+$('threshold').addEventListener('input', () => { $('thresholdVal').textContent = Number($('threshold').value).toFixed(2); });
+$('threshold').addEventListener('change', () => {
+  if (collectRenames().length && !confirm('Regrouping discards the names and moves you’ve entered. Continue?')) return;
+  loadGroups();
+});
+$('caseSel').addEventListener('change', () => { caseId = $('caseSel').value; loadGroups(); });
+
+$('analyzeBtn').addEventListener('click', async () => {
+  try { await api(`/api/analyze/${caseId}`, { method: 'POST' }); } catch (err) { alert(err.message); return; }
+  $('analyzeBtn').disabled = true; $('progress').hidden = false;
+  pollTimer = setInterval(async () => {
+    const s = await api('/api/status');
+    $('progressMsg').textContent = `${s.done}/${s.total} · ${s.message}`;
+    $('progressBar').style.width = s.total ? `${(100 * s.done) / s.total}%` : '0';
+    if (!s.running) {
+      clearInterval(pollTimer); $('analyzeBtn').disabled = false; $('progress').hidden = true;
+      if (s.error) alert('Analysis failed: ' + s.error);
+      loadGroups();
+    }
+  }, 1500);
+});
+
+$('reviewBtn').addEventListener('click', () => {
+  const renames = collectRenames();
+  const byFile = {};
+  renames.forEach((r) => (byFile[r.file] = byFile[r.file] || []).push(r));
+  $('reviewBody').innerHTML = `<p>These speaker labels will be renamed in TranscribeAlpha, and each file's PDF, OnCue XML and viewer export will be regenerated:</p>` +
+    Object.entries(byFile).sort().map(([f, rs]) => `<div style="margin:8px 0"><div class="file">${esc(f)}</div>${rs.map((r) => `<div class="sub">${esc(r.from_label)} → <b>${esc(r.to)}</b></div>`).join('')}</div>`).join('');
+  $('review').showModal();
+});
+$('cancelBtn').addEventListener('click', () => $('review').close());
+$('confirmBtn').addEventListener('click', async () => {
+  $('confirmBtn').disabled = true;
+  try {
+    const res = await api(`/api/apply/${caseId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ renames: collectRenames().map(({ media_key, from_label, to }) => ({ media_key, from_label, to })) }),
+    });
+    const failed = res.results.filter((r) => !r.ok);
+    $('reviewBody').innerHTML = `<p><b>Updated ${res.results.length - failed.length} transcript(s).</b> Backups: <code>${esc(res.backup_dir)}</code></p>` +
+      (failed.length ? `<p style="color:#b42318">Failed: ${failed.map((f) => esc(f.media_key) + ' – ' + esc(f.error)).join('<br>')}</p>` : '') +
+      '<p class="muted">Reopen transcripts in TranscribeAlpha to see the new names.</p>';
+    $('confirmBtn').hidden = true; $('cancelBtn').textContent = 'Close';
+    $('cancelBtn').onclick = () => { $('review').close(); $('confirmBtn').hidden = false; $('confirmBtn').disabled = false; $('cancelBtn').textContent = 'Cancel'; $('cancelBtn').onclick = null; loadGroups(); };
+  } catch (err) { alert(err.message); $('confirmBtn').disabled = false; }
+});
+
+loadCases().catch((err) => { $('status').innerHTML = `<div class="notice">${esc(err.message)}</div>`; });
+</script>
+</body>
+</html>
