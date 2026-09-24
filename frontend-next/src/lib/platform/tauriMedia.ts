@@ -68,7 +68,7 @@ export const tauriMediaAdapter: PlatformMedia = {
     const ref = await idbGet<any>('media-handles', sourceId)
     if (!ref || typeof ref !== 'object' || !('__tauriPath' in ref)) return null
     const { convertFileSrc } = await import('@tauri-apps/api/core')
-    return convertFileSrc(ref.__tauriPath)
+    return convertFileSrc(ref.__tauriPath, 'media')
   },
 
   async readFileFromPath(absolutePath, filename) {
@@ -83,14 +83,14 @@ export const tauriMediaAdapter: PlatformMedia = {
   },
 
   async readAbsolutePathAsObjectURL(absolutePath) {
-    // Stream from disk via the asset protocol (same as getPlaybackURL). Reading the
+    // Stream from disk via the media protocol (same as getPlaybackURL). Reading the
     // file into a Blob copies multi-GB videos into memory several times over and
     // can exhaust system RAM.
     try {
       const { exists } = await import('@tauri-apps/plugin-fs')
       if (!(await exists(absolutePath))) return null
       const { convertFileSrc } = await import('@tauri-apps/api/core')
-      return convertFileSrc(absolutePath)
+      return convertFileSrc(absolutePath, 'media')
     } catch {
       return null
     }

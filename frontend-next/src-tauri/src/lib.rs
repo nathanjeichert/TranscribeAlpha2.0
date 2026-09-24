@@ -1,10 +1,17 @@
 use rand::{distributions::Alphanumeric, Rng};
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::Mutex;
+use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_fs::FsExt;
 use tauri_plugin_shell::ShellExt;
 
 const SIDECAR_PORT: u16 = 18080;
+
+/// Safety cap for a single ranged read. Far above any MP4 metadata box a player asks for.
+const MEDIA_MAX_RANGE_BYTES: u64 = 64 * 1024 * 1024;
+/// Chunk returned for open-ended requests (`bytes=N-`); the player asks again for more.
+const MEDIA_OPEN_RANGE_BYTES: u64 = 4 * 1024 * 1024;
 
 struct SidecarChild(Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
 struct DesktopSessionToken(String);
@@ -96,6 +103,137 @@ async fn wait_for_sidecar_ready() -> bool {
     false
 }
 
+/// Parses a single `Range: bytes=...` spec into an inclusive (start, end).
+/// Only the first range of a multi-range header is honored. None = unsatisfiable.
+fn parse_byte_range(value: &str, len: u64) -> Option<(u64, u64)> {
+    let spec = value
+        .trim()
+        .strip_prefix("bytes=")?
+        .split(',')
+        .next()?
+        .trim();
+    let (start, end) = spec.split_once('-')?;
+    let (start, end) = (start.trim(), end.trim());
+    if len == 0 {
+        return None;
+    }
+    if start.is_empty() {
+        // Suffix range: the last N bytes.
+        let suffix: u64 = end.parse().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        return Some((len.saturating_sub(suffix), len - 1));
+    }
+    let start: u64 = start.parse().ok()?;
+    if start >= len {
+        return None;
+    }
+    let end = if end.is_empty() {
+        start + MEDIA_OPEN_RANGE_BYTES - 1
+    } else {
+        let end: u64 = end.parse().ok()?;
+        if end < start {
+            return None;
+        }
+        end
+    };
+    let end = end.min(len - 1).min(start + MEDIA_MAX_RANGE_BYTES - 1);
+    Some((start, end))
+}
+
+/// `media://` protocol: streams local media files for <video>/<audio> playback.
+///
+/// Replaces Tauri's built-in `asset://` protocol for media, which truncates every
+/// range response to ~1 MB. WebKit (macOS) requests each MP4 sample table in a single
+/// range and silently drops the track when the reply comes back short, so any video
+/// longer than ~90 minutes with its `moov` atom at the end played without audio.
+/// This handler returns the full requested range, and reads off the main thread.
+fn media_protocol_response<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: &Request<Vec<u8>>,
+    origin: &str,
+) -> Response<Vec<u8>> {
+    let base = || {
+        Response::builder()
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin)
+            .header(header::ACCESS_CONTROL_EXPOSE_HEADERS, "content-range")
+            .header(header::ACCEPT_RANGES, "bytes")
+    };
+    let status_only = |status: StatusCode| base().status(status).body(Vec::new()).unwrap();
+
+    let raw_path = request.uri().path().trim_start_matches('/');
+    let path = percent_encoding::percent_decode_str(raw_path)
+        .decode_utf8_lossy()
+        .to_string();
+    if tauri::path::SafePathBuf::new(path.clone().into()).is_err()
+        || !app.asset_protocol_scope().is_allowed(&path)
+    {
+        log::error!("media protocol refused path: {path}");
+        return status_only(StatusCode::FORBIDDEN);
+    }
+
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return status_only(StatusCode::NOT_FOUND)
+        }
+        Err(e) => {
+            log::error!("media protocol failed to open {path}: {e}");
+            return status_only(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let result = (|| -> std::io::Result<Response<Vec<u8>>> {
+        let len = file.metadata()?.len();
+        let mut magic = Vec::with_capacity(len.min(8192) as usize);
+        (&mut file).take(8192).read_to_end(&mut magic)?;
+        let mime = tauri::utils::mime_type::MimeType::parse(&magic, &path);
+        let builder = base().header(header::CONTENT_TYPE, mime);
+
+        let range = request
+            .headers()
+            .get(header::RANGE)
+            .and_then(|v| v.to_str().ok());
+        let (status, start, end) = match range {
+            Some(value) => match parse_byte_range(value, len) {
+                Some((start, end)) => (StatusCode::PARTIAL_CONTENT, start, end),
+                None => {
+                    return Ok(base()
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+                        .body(Vec::new())
+                        .unwrap())
+                }
+            },
+            None => (StatusCode::OK, 0, len.saturating_sub(1)),
+        };
+        let nbytes = if len == 0 { 0 } else { end + 1 - start };
+
+        let builder = builder
+            .status(status)
+            .header(header::CONTENT_LENGTH, nbytes);
+        let builder = if status == StatusCode::PARTIAL_CONTENT {
+            builder.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
+        } else {
+            builder
+        };
+        if request.method() == tauri::http::Method::HEAD {
+            return Ok(builder.body(Vec::new()).unwrap());
+        }
+
+        let mut buf = Vec::with_capacity(nbytes as usize);
+        file.seek(SeekFrom::Start(start))?;
+        file.take(nbytes).read_to_end(&mut buf)?;
+        Ok(builder.body(buf).unwrap())
+    })();
+
+    result.unwrap_or_else(|e| {
+        log::error!("media protocol failed to read {path}: {e}");
+        status_only(StatusCode::INTERNAL_SERVER_ERROR)
+    })
+}
+
 fn kill_sidecar(state: &SidecarChild) {
     if let Some(child) = state.0.lock().unwrap().take() {
         let _ = child.kill();
@@ -113,6 +251,25 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![get_desktop_session_token])
+        .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let origin = app
+                .get_webview_window(ctx.webview_label())
+                .and_then(|webview| webview.url().ok())
+                .map(|url| {
+                    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+                    format!(
+                        "{}://{}{}",
+                        url.scheme(),
+                        url.host_str().unwrap_or_default(),
+                        port
+                    )
+                })
+                .unwrap_or_else(|| "null".into());
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(media_protocol_response(&app, &request, &origin));
+            });
+        })
         .setup(|app| {
             let fs_scope = app.fs_scope();
             let _ = fs_scope.allow_directory("/", true);
@@ -188,4 +345,46 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_range_serves_full_explicit_range() {
+        // A 1.4 MB sample-table request must not be truncated.
+        assert_eq!(
+            parse_byte_range("bytes=100-1418255", 5_000_000),
+            Some((100, 1_418_255))
+        );
+        assert_eq!(parse_byte_range("bytes=0-1", 10), Some((0, 1)));
+        assert_eq!(parse_byte_range("bytes=5-99", 10), Some((5, 9)));
+    }
+
+    #[test]
+    fn byte_range_caps_open_and_huge_ranges() {
+        let len = 3_000_000_000;
+        assert_eq!(
+            parse_byte_range("bytes=0-", len),
+            Some((0, MEDIA_OPEN_RANGE_BYTES - 1))
+        );
+        assert_eq!(parse_byte_range("bytes=0-", 10), Some((0, 9)));
+        assert_eq!(
+            parse_byte_range(&format!("bytes=0-{}", len - 1), len),
+            Some((0, MEDIA_MAX_RANGE_BYTES - 1))
+        );
+    }
+
+    #[test]
+    fn byte_range_suffix_and_invalid() {
+        assert_eq!(parse_byte_range("bytes=-4", 10), Some((6, 9)));
+        assert_eq!(parse_byte_range("bytes=-40", 10), Some((0, 9)));
+        assert_eq!(parse_byte_range("bytes=0-3, 6-8", 10), Some((0, 3)));
+        assert_eq!(parse_byte_range("bytes=10-", 10), None);
+        assert_eq!(parse_byte_range("bytes=5-2", 10), None);
+        assert_eq!(parse_byte_range("bytes=-0", 10), None);
+        assert_eq!(parse_byte_range("items=0-1", 10), None);
+        assert_eq!(parse_byte_range("bytes=0-1", 0), None);
+    }
 }
