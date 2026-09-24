@@ -5,8 +5,8 @@ import {
   deleteClip,
   type ClipRecord,
 } from '@/lib/storage'
-import { clipMedia } from '@/lib/ffmpegWorker'
-import { resolveMediaFileForRecord } from '@/lib/mediaPlayback'
+import { clipMedia, clipMediaFromPath } from '@/lib/ffmpegWorker'
+import { resolveMediaFileForRecord, resolveMediaPathForRecord } from '@/lib/mediaPlayback'
 import {
   parseTimeInput,
   formatClock,
@@ -238,15 +238,21 @@ export function useClipManagement({
         throw new Error('Unable to load transcript for clip export.')
       }
 
-      const resolvedMedia = await resolveMediaFileForRecord(record, { requestPermission: true })
-      const mediaFile = resolvedMedia.file
-      if (!mediaFile) {
-        throw new Error(
-          resolvedMedia.message || 'Media file not available. Relink media before exporting this clip.',
-        )
+      let clipFile: File
+      const mediaPath = await resolveMediaPathForRecord(record)
+      if (mediaPath) {
+        const sourceName = record.media_filename || mediaPath.split(/[\\/]/).pop() || 'media'
+        clipFile = await clipMediaFromPath(mediaPath, sourceName, clip.start_time, clip.end_time)
+      } else {
+        const resolvedMedia = await resolveMediaFileForRecord(record, { requestPermission: true })
+        const mediaFile = resolvedMedia.file
+        if (!mediaFile) {
+          throw new Error(
+            resolvedMedia.message || 'Media file not available. Relink media before exporting this clip.',
+          )
+        }
+        clipFile = await clipMedia(mediaFile, clip.start_time, clip.end_time)
       }
-
-      const clipFile = await clipMedia(mediaFile, clip.start_time, clip.end_time)
       const dotIndex = clipFile.name.lastIndexOf('.')
       const extension = dotIndex > -1 ? clipFile.name.slice(dotIndex) : ''
       const baseStem = sanitizeFilename(`${clip.name || 'clip'}-${clip.clip_id}`)

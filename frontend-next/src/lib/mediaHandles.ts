@@ -136,6 +136,16 @@ export async function removeMediaHandle(handleId: string): Promise<void> {
   }
 }
 
+/** Tauri: the native path stored for a media source, without reading the file. */
+export async function getMediaPath(sourceId: string): Promise<string | null> {
+  try {
+    const ref = await getRawMediaRef(sourceId)
+    return ref && isTauriPathRecord(ref) ? ref.__tauriPath : null
+  } catch {
+    return null
+  }
+}
+
 /** Read a file from a stored path via the platform media adapter. */
 async function readFileFromTauriPath(record: TauriPathRecord): Promise<File | null> {
   try {

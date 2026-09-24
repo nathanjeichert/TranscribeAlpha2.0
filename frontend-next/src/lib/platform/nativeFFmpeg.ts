@@ -193,19 +193,28 @@ export async function nativeExtractAudioStereo(
   }
 }
 
-export async function nativeClipMedia(
-  file: File,
+const CLIP_MIME_MAP: Record<string, string> = {
+  mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
+  wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
+  ogg: 'audio/ogg', webm: 'video/webm',
+}
+
+/**
+ * Clip directly from a file already on disk. FFmpeg seeks within the source, so
+ * only the clip's bytes are read — safe for multi-GB videos.
+ */
+export async function nativeClipMediaFromPath(
+  inputPath: string,
+  sourceName: string,
   startTime: number,
   endTime: number,
   downloadStem?: string,
   onProgress?: ProgressCallback,
+  fallbackMimeType?: string,
 ): Promise<File> {
-  const ext = file.name.split('.').pop()?.toLowerCase() || 'bin'
+  const ext = sourceName.split('.').pop()?.toLowerCase() || 'bin'
   const uid = crypto.randomUUID().slice(0, 8)
-  const inputPath = await tempPath(`input_${uid}.${ext}`)
   const outputPath = await tempPath(`output_${uid}.${ext}`)
-
-  await writeInputFile(file, inputPath)
 
   try {
     const duration = endTime - startTime
@@ -222,17 +231,34 @@ export async function nativeClipMedia(
       duration,
     )
 
-    const stem = downloadStem || file.name.replace(/\.[^.]+$/, '_clip')
+    const stem = downloadStem || sourceName.replace(/\.[^.]+$/, '_clip')
     const outputFilename = `${stem}.${ext}`
-    const mimeMap: Record<string, string> = {
-      mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
-      wav: 'audio/wav', mp3: 'audio/mpeg', m4a: 'audio/mp4', flac: 'audio/flac',
-      ogg: 'audio/ogg', webm: 'video/webm',
-    }
-    const mimeType = mimeMap[ext] || file.type || 'application/octet-stream'
+    const mimeType = CLIP_MIME_MAP[ext] || fallbackMimeType || 'application/octet-stream'
 
     return await readOutputFile(outputPath, outputFilename, mimeType)
   } finally {
-    await cleanup(inputPath, outputPath)
+    await cleanup(outputPath)
+  }
+}
+
+export async function nativeClipMedia(
+  file: File,
+  startTime: number,
+  endTime: number,
+  downloadStem?: string,
+  onProgress?: ProgressCallback,
+): Promise<File> {
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'bin'
+  const uid = crypto.randomUUID().slice(0, 8)
+  const inputPath = await tempPath(`input_${uid}.${ext}`)
+
+  await writeInputFile(file, inputPath)
+
+  try {
+    return await nativeClipMediaFromPath(
+      inputPath, file.name, startTime, endTime, downloadStem, onProgress, file.type,
+    )
+  } finally {
+    await cleanup(inputPath)
   }
 }

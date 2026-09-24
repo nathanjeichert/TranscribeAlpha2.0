@@ -1095,6 +1095,69 @@ export async function clipMedia(
   return clipped
 }
 
+/**
+ * Desktop (Tauri) clip export straight from a file on disk via native FFmpeg.
+ * Avoids loading the source into memory, which multi-GB videos can't survive.
+ */
+export async function clipMediaBatchFromPath(
+  sourcePath: string,
+  sourceName: string,
+  requests: ClipBatchRequest[],
+  onProgress?: (progress: ClipBatchProgress) => void,
+): Promise<Map<string, File>> {
+  const seenIds = new Set<string>()
+  for (const request of requests) {
+    validateClipRequest(request)
+    if (seenIds.has(request.id)) {
+      throw new Error(`Duplicate clip request id: ${request.id}`)
+    }
+    seenIds.add(request.id)
+  }
+
+  const { nativeClipMediaFromPath } = await import('./platform/nativeFFmpeg')
+  const outputById = new Map<string, File>()
+  const total = requests.length
+  let completed = 0
+
+  for (const request of requests) {
+    const stem = request.downloadStem?.trim()
+      ? sanitizeFilenameStem(request.downloadStem)
+      : replaceExtension(sourceName, `_clip-${sanitizeFilenameStem(request.id)}`)
+    const clip = await nativeClipMediaFromPath(
+      sourcePath,
+      sourceName,
+      request.startTime,
+      request.endTime,
+      stem,
+      onProgress
+        ? (ratio) => onProgress({ total, completed, currentId: request.id, currentRatio: ratio })
+        : undefined,
+    )
+    if (clip.size === 0) {
+      throw new Error('Clip export produced an empty output file')
+    }
+    outputById.set(request.id, clip)
+    completed += 1
+    onProgress?.({ total, completed, currentId: request.id, currentRatio: 1 })
+  }
+
+  onProgress?.({ total, completed, currentId: null, currentRatio: 1 })
+  return outputById
+}
+
+export async function clipMediaFromPath(
+  sourcePath: string,
+  sourceName: string,
+  startTime: number,
+  endTime: number,
+  onProgress?: ProgressCallback,
+): Promise<File> {
+  const { nativeClipMediaFromPath } = await import('./platform/nativeFFmpeg')
+  return nativeClipMediaFromPath(
+    sourcePath, sourceName, startTime, endTime, replaceExtension(sourceName, '_clip'), onProgress,
+  )
+}
+
 export async function clipMediaBatch(
   file: File,
   requests: ClipBatchRequest[],

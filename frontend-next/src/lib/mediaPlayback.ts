@@ -3,8 +3,9 @@ import {
   getFirstAvailableMediaFile,
   getMediaFile,
   getMediaHandlePermissionState,
+  getMediaPath,
 } from './mediaHandles'
-import { getPlatformMedia } from './platform'
+import { getPlatformMedia, isTauri } from './platform'
 import { readWorkspaceRelativeFile } from './storage'
 
 export type MediaSourceKind = 'workspace-relative' | 'workspace-cache' | 'external-handle'
@@ -196,6 +197,36 @@ export async function resolveMediaObjectURLForRecord(
     reconnectRecommended,
     message: buildMissingMessage(record, reconnectRecommended),
   }
+}
+
+/**
+ * Desktop (Tauri) only: the on-disk path of a record's media, without reading it.
+ * Prefer this for native FFmpeg work so multi-GB sources never load into memory.
+ */
+export async function resolveMediaPathForRecord(record: MediaRecordShape): Promise<string | null> {
+  if (!isTauri()) return null
+  const { exists } = await import('@tauri-apps/plugin-fs')
+
+  const candidates: string[] = []
+  for (const handleId of buildHandleCandidates(record)) {
+    const path = await getMediaPath(handleId)
+    if (path) candidates.push(path)
+  }
+  const absolutePath = asText(record.media_absolute_path)
+  if (absolutePath) candidates.push(absolutePath)
+
+  for (const path of candidates) {
+    try {
+      if (await exists(path)) {
+        const mediaKey = asText(record.media_key)
+        if (mediaKey) await touchMediaCacheEntry(mediaKey)
+        return path
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null
 }
 
 export async function resolveMediaFileForRecord(

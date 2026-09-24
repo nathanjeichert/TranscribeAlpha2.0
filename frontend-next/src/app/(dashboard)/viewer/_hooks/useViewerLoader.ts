@@ -7,7 +7,8 @@ import {
   type TranscriptData,
 } from '@/lib/storage'
 import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
-import { getMediaFile, getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
+import { getMediaFile, getMediaHandle, getMediaPath, promptRelinkMedia } from '@/lib/mediaHandles'
+import { mimeForFilename } from '@/lib/mimeTypes'
 import { resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 import { normalizeViewerTranscript, type ViewerTranscript } from '@/utils/transcriptFormat'
 
@@ -150,14 +151,19 @@ export function useViewerLoader({ queryMediaKey }: UseViewerLoaderParams) {
     const result = await promptRelinkMedia(expected, transcript.media_key)
     if (!result) return
 
-    const relinkedFile = await getMediaFile(result.handleId, { requestPermission: true })
-    if (!relinkedFile) return
-    const handle = await getMediaHandle(result.handleId)
+    // Tauri relinks store a native path that streams directly; reading the file (and
+    // copying it into the playback cache) would pull multi-GB media into memory.
+    const relinkedPath = await getMediaPath(result.handleId)
+    const relinkedFile = relinkedPath ? null : await getMediaFile(result.handleId, { requestPermission: true })
+    if (!relinkedPath && !relinkedFile) return
+    const relinkedName = relinkedFile?.name || relinkedPath?.split(/[\\/]/).pop() || ''
+    const relinkedType = relinkedFile?.type || (relinkedName ? mimeForFilename(relinkedName) : '')
+    const handle = relinkedPath ? null : await getMediaHandle(result.handleId)
     const workspaceRelativePath = handle ? await resolveWorkspaceRelativePathForHandle(handle) : null
 
     let cachePath = ''
     let cacheType = ''
-    if (!workspaceRelativePath) {
+    if (!workspaceRelativePath && relinkedFile) {
       try {
         const cached = await cacheMediaForPlayback(transcript.media_key, relinkedFile, {
           filename: relinkedFile.name,
@@ -173,8 +179,9 @@ export function useViewerLoader({ queryMediaKey }: UseViewerLoaderParams) {
     const nextTranscript: ViewerTranscript = {
       ...transcript,
       media_handle_id: transcript.media_key,
-      media_filename: relinkedFile.name || transcript.media_filename,
-      media_content_type: relinkedFile.type || transcript.media_content_type,
+      media_filename: relinkedName || transcript.media_filename,
+      media_content_type: relinkedType || transcript.media_content_type,
+      media_absolute_path: relinkedPath || transcript.media_absolute_path,
       media_storage_mode: workspaceRelativePath ? 'workspace-relative' : 'external-handle',
       media_workspace_relpath: workspaceRelativePath || undefined,
       playback_cache_path: cachePath || transcript.playback_cache_path,

@@ -6,8 +6,8 @@ import {
   type ClipSequenceEntry,
   type ClipSequenceRecord,
 } from '@/lib/storage'
-import { clipMediaBatch, type ClipBatchRequest } from '@/lib/ffmpegWorker'
-import { resolveMediaFileForRecord } from '@/lib/mediaPlayback'
+import { clipMediaBatch, clipMediaBatchFromPath, type ClipBatchProgress, type ClipBatchRequest } from '@/lib/ffmpegWorker'
+import { resolveMediaFileForRecord, resolveMediaPathForRecord } from '@/lib/mediaPlayback'
 import { sanitizeFilename, type ViewerTranscript } from '@/utils/transcriptFormat'
 import { downloadBlob } from '@/utils/helpers'
 import JSZip from 'jszip'
@@ -236,25 +236,32 @@ export function useSequenceManagement({
         if (!transcriptRecord) {
           throw new Error(`Unable to load transcript for "${sourceMediaKey}".`)
         }
-        const resolvedMedia = await resolveMediaFileForRecord(transcriptRecord, { requestPermission: true })
-        const mediaFile = resolvedMedia.file
-        if (!mediaFile) {
-          throw new Error(
-            resolvedMedia.message || `Media file not available for "${sourceMediaKey}". Relink media before sequence export.`,
-          )
-        }
-
         const batchRequests: ClipBatchRequest[] = sourceItems.map((item) => ({
           id: item.orderToken,
           startTime: item.clip.start_time,
           endTime: item.clip.end_time,
           downloadStem: `${item.orderToken}-${item.baseName}`,
         }))
-
-        const batchClips = await clipMediaBatch(mediaFile, batchRequests, (progress) => {
+        const onBatchProgress = (progress: ClipBatchProgress) => {
           const completedNow = mediaCompleted + progress.completed
           setSequenceExportStatus(`Exporting media clips ${completedNow}/${exportItems.length}...`)
-        })
+        }
+
+        let batchClips: Map<string, File>
+        const mediaPath = await resolveMediaPathForRecord(transcriptRecord)
+        if (mediaPath) {
+          const sourceName = transcriptRecord.media_filename || mediaPath.split(/[\\/]/).pop() || 'media'
+          batchClips = await clipMediaBatchFromPath(mediaPath, sourceName, batchRequests, onBatchProgress)
+        } else {
+          const resolvedMedia = await resolveMediaFileForRecord(transcriptRecord, { requestPermission: true })
+          const mediaFile = resolvedMedia.file
+          if (!mediaFile) {
+            throw new Error(
+              resolvedMedia.message || `Media file not available for "${sourceMediaKey}". Relink media before sequence export.`,
+            )
+          }
+          batchClips = await clipMediaBatch(mediaFile, batchRequests, onBatchProgress)
+        }
 
         batchRequests.forEach((request) => {
           const clipFile = batchClips.get(request.id)

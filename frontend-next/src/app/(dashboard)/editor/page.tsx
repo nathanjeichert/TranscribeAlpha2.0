@@ -14,7 +14,8 @@ import {
   saveTranscript as localSaveTranscript,
 } from '@/lib/storage'
 import { cacheMediaForPlayback, removeMediaCacheEntry } from '@/lib/mediaCache'
-import { getMediaFile, getMediaHandle, promptRelinkMedia } from '@/lib/mediaHandles'
+import { getMediaFile, getMediaHandle, getMediaPath, promptRelinkMedia } from '@/lib/mediaHandles'
+import { mimeForFilename } from '@/lib/mimeTypes'
 import { resolveMediaObjectURLForRecord } from '@/lib/mediaPlayback'
 
 type TranscriptData = EditorSessionResponse & {
@@ -183,14 +184,19 @@ export default function EditorPage() {
       const result = await promptRelinkMedia(mediaFilename || 'media file', mediaKey)
       if (!result) return
 
-      const relinkedFile = await getMediaFile(result.handleId, { requestPermission: true })
-      if (!relinkedFile) return
-      const handle = await getMediaHandle(result.handleId)
+      // Tauri relinks store a native path that streams directly; reading the file (and
+      // copying it into the playback cache) would pull multi-GB media into memory.
+      const relinkedPath = await getMediaPath(result.handleId)
+      const relinkedFile = relinkedPath ? null : await getMediaFile(result.handleId, { requestPermission: true })
+      if (!relinkedPath && !relinkedFile) return
+      const relinkedName = relinkedFile?.name || relinkedPath?.split(/[\\/]/).pop() || ''
+      const relinkedType = relinkedFile?.type || (relinkedName ? mimeForFilename(relinkedName) : '')
+      const handle = relinkedPath ? null : await getMediaHandle(result.handleId)
       const workspaceRelativePath = handle ? await resolveWorkspaceRelativePathForHandle(handle) : null
 
       let cachedPlaybackPath = ''
       let cachedPlaybackType = ''
-      if (!workspaceRelativePath) {
+      if (!workspaceRelativePath && relinkedFile) {
         try {
           const cached = await cacheMediaForPlayback(mediaKey, relinkedFile, {
             filename: relinkedFile.name,
@@ -206,8 +212,9 @@ export default function EditorPage() {
       const updated = {
         ...existingRecord,
         media_handle_id: mediaKey,
-        media_filename: relinkedFile.name || (existingRecord.media_filename as string | undefined),
-        media_content_type: relinkedFile.type || (existingRecord.media_content_type as string | undefined),
+        media_filename: relinkedName || (existingRecord.media_filename as string | undefined),
+        media_content_type: relinkedType || (existingRecord.media_content_type as string | undefined),
+        media_absolute_path: relinkedPath || (existingRecord.media_absolute_path as string | undefined),
         media_storage_mode: workspaceRelativePath ? 'workspace-relative' : 'external-handle',
         media_workspace_relpath: workspaceRelativePath || undefined,
         playback_cache_path: cachedPlaybackPath || existingRecord.playback_cache_path,
@@ -221,8 +228,8 @@ export default function EditorPage() {
 
       await localSaveTranscript(mediaKey, updated, caseId)
       setTranscriptData(updated as unknown as TranscriptData)
-      setMediaFilename(relinkedFile.name || mediaFilename)
-      setMediaContentType(relinkedFile.type || mediaContentType)
+      setMediaFilename(relinkedName || mediaFilename)
+      setMediaContentType(relinkedType || mediaContentType)
       refreshRecentTranscripts()
       await loadTranscript(mediaKey)
     } catch (err: any) {
